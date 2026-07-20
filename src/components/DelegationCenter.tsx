@@ -41,94 +41,92 @@ export const DelegationCenter: React.FC<DelegationCenterProps> = ({ visible, onC
 
     return (
         <motion.div
-            className="absolute inset-0 z-[60] flex items-center justify-center bg-black/95 font-mono text-sm"
+            className="absolute inset-0 z-[60] flex items-center justify-center bg-slate-900/40 backdrop-blur-sm text-sm"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
         >
-            <div className="w-[650px] border border-gray-700 bg-nobody-charcoal shadow-2xl relative flex flex-col">
+            <div className="w-[650px] rounded-2xl border border-slate-200 bg-white shadow-card-lg relative flex flex-col overflow-hidden">
 
                 {/* Header */}
-                <div className="bg-gray-900 mx-1 mt-1 p-2 border-b border-gray-700 flex justify-between items-center text-xs tracking-wider">
-                    <span className="text-white font-bold">[ 🛡️ DELEGATION CENTER ]</span>
-                    <span className="text-gray-500">[ 👤 IDENTITY: CLUELESS FOX ]</span>
-                    <span className="text-nobody-mint">[ ⚡ ENGINE: INSTANT SESSION ]</span>
+                <div className="bg-slate-50 px-5 py-3 border-b border-slate-200 flex justify-between items-center text-xs">
+                    <span className="text-slate-900 font-semibold tracking-wide">🛡️ Delegation Center</span>
+                    <span className="text-slate-400">Identity: Clueless Fox</span>
+                    <span className="text-nobody-mint font-medium">Engine: Instant Session</span>
                 </div>
 
                 <div className="p-8 space-y-6">
 
                     {/* Agent Authority Setup */}
                     <div className="space-y-2">
-                        <div className="text-nobody-mint font-bold text-xs tracking-widest">[ 🗝️ AGENT AUTHORITY SETUP ]</div>
-                        <div className="text-gray-400 text-xs leading-relaxed border-l-2 border-gray-700 pl-3">
+                        <div className="text-nobody-mint font-semibold text-xs tracking-wide">🗝️ Agent Authority Setup</div>
+                        <div className="text-slate-500 text-xs leading-relaxed border-l-2 border-slate-200 pl-3">
                             You are about to authorize your AI Agent to negotiate and sign transactions on your behalf using an Instant Session key.
                         </div>
                     </div>
 
-                    <div className="border-t border-gray-800" />
+                    <div className="border-t border-slate-100" />
 
                     {/* Delegation Limits */}
                     <div className="space-y-4">
-                        <div className="text-gray-500 font-bold text-xs tracking-widest mb-3">[ 📊 DELEGATION LIMITS ]</div>
+                        <div className="text-slate-400 font-semibold text-xs tracking-wide mb-3">📊 Delegation Limits</div>
 
                         <div className="grid grid-cols-2 gap-4 text-xs">
-                            <div className="bg-black/30 p-3 border border-gray-800 flex justify-between items-center text-gray-400">
-                                <span>- Max Spending Limit:</span>
-                                <span className="text-white font-bold">[ 5.00_______ ] AVAX</span>
+                            <div className="bg-slate-50 rounded-xl p-3 border border-slate-200 flex justify-between items-center text-slate-500">
+                                <span>Max Spending Limit</span>
+                                <span className="text-slate-900 font-semibold">5.00 AVAX</span>
                             </div>
-                            <div className="bg-black/30 p-3 border border-gray-800 flex justify-between items-center text-gray-400">
-                                <span>- Session Duration:</span>
-                                <span className="text-white font-bold">[ 24_________ ] Hours</span>
+                            <div className="bg-slate-50 rounded-xl p-3 border border-slate-200 flex justify-between items-center text-slate-500">
+                                <span>Session Duration</span>
+                                <span className="text-slate-900 font-semibold">24 Hours</span>
                             </div>
                         </div>
 
-                        <div className="bg-black/30 p-3 border border-gray-800 text-xs flex justify-between items-center text-gray-400">
-                            <span>- Allowed Protocols:</span>
-                            <span className="text-nobody-mint font-bold">[ Instant Session, Private Swap, Starpay ]</span>
+                        <div className="bg-slate-50 rounded-xl p-3 border border-slate-200 text-xs flex justify-between items-center text-slate-500">
+                            <span>Allowed Protocols</span>
+                            <span className="text-nobody-mint font-semibold">Instant Session, Private Swap, Starpay</span>
                         </div>
                     </div>
 
                     {/* Security Override */}
                     <div className="space-y-2">
-                        <div className="text-gray-500 font-bold text-xs tracking-widest mb-2">[ 🔒 SECURITY OVERRIDE ]</div>
-                        <div className="space-y-1 text-xs text-gray-400">
+                        <div className="text-slate-400 font-semibold text-xs tracking-wide mb-2">🔒 Security Override</div>
+                        <div className="space-y-1.5 text-xs text-slate-500">
                             <div className="flex items-center gap-2">
-                                <span className="text-nobody-mint">[X]</span>
+                                <span className="text-nobody-mint">✓</span>
                                 <span>Auto-terminate session if Mesh connection is lost.</span>
                             </div>
                             <div className="flex items-center gap-2">
-                                <span className="text-nobody-mint">[X]</span>
+                                <span className="text-nobody-mint">✓</span>
                                 <span>Require Master Pass for transactions {">"} 1.0 AVAX.</span>
                             </div>
                         </div>
                     </div>
 
-                    <div className="border-t border-gray-800" />
+                    <div className="border-t border-slate-100" />
 
                     {/* Delegation Status (Dynamic) */}
-                    <div className="bg-black/50 p-4 border border-gray-800 space-y-2 relative overflow-hidden">
-                        <div className="text-gray-500 font-bold text-xs tracking-widest mb-2">[ ⚙️ DELEGATION STATUS ]</div>
+                    <div className="bg-slate-50 rounded-xl p-4 border border-slate-200 space-y-2 relative overflow-hidden">
+                        <div className="text-slate-400 font-semibold text-xs tracking-wide mb-2">⚙️ Delegation Status</div>
 
-                        <ul className="text-xs space-y-1 text-gray-400 font-mono">
+                        <ul className="text-xs space-y-1.5 text-slate-500">
                             <li className="flex justify-between">
-                                <span>- Generating Ephemeral Keypair...</span>
-                                <span className={progress >= 30 ? "text-nobody-mint" : "text-gray-600"}>{progress >= 30 ? "[ DONE ]" : "..."}</span>
+                                <span>Generating Ephemeral Keypair...</span>
+                                <span className={progress >= 30 ? "text-nobody-mint font-medium" : "text-slate-300"}>{progress >= 30 ? "Done" : "..."}</span>
                             </li>
                             <li className="flex justify-between">
-                                <span>- Initializing Instant Session...</span>
-                                <span className={progress >= 60 ? "text-nobody-mint" : "text-gray-600"}>{progress >= 60 ? "[ READY ]" : "..."}</span>
+                                <span>Initializing Instant Session...</span>
+                                <span className={progress >= 60 ? "text-nobody-mint font-medium" : "text-slate-300"}>{progress >= 60 ? "Ready" : "..."}</span>
                             </li>
                             <li className="flex justify-between">
-                                <span>- Waiting for Owner Signature...</span>
-                                <span className={progress >= 100 ? "text-nobody-mint" : "text-gray-600"}>{progress >= 100 ? "[ SIGNED ]" : step === "signing" ? "[ PENDING ]" : "[ WAITING ]"}</span>
+                                <span>Waiting for Owner Signature...</span>
+                                <span className={progress >= 100 ? "text-nobody-mint font-medium" : "text-slate-300"}>{progress >= 100 ? "Signed" : step === "signing" ? "Pending" : "Waiting"}</span>
                             </li>
                         </ul>
 
-                        <div className="mt-4 border-l-2 border-nobody-mint pl-3 py-1 text-xs italic text-gray-400">
-                            <span className="text-nobody-mint font-bold not-italic">{">>"} AGENT:</span> "I will manage your intents within these bounds. Once authorized, I can trade even while you are away."
+                        <div className="mt-4 border-l-2 border-nobody-mint pl-3 py-1 text-xs text-slate-500">
+                            <span className="text-nobody-mint font-semibold">Agent:</span> "I will manage your intents within these bounds. Once authorized, I can trade even while you are away."
                         </div>
-
-                        {/* Progress Bar overlay if needed, or just relying on text */}
                     </div>
 
                     {/* Actions */}
@@ -136,16 +134,16 @@ export const DelegationCenter: React.FC<DelegationCenterProps> = ({ visible, onC
                         <button
                             onClick={handleSignAndDelegate}
                             disabled={step === "signing"}
-                            className={`flex-1 bg-white text-black font-bold py-3 hover:bg-gray-200 transition-colors uppercase tracking-wider ${step === "signing" ? "opacity-70 cursor-wait" : ""}`}
+                            className={`flex-1 bg-nobody-mint text-white font-semibold py-3 rounded-xl hover:bg-emerald-700 transition-colors ${step === "signing" ? "opacity-70 cursor-wait" : ""}`}
                         >
-                            [ {step === "signing" ? "✍️ SIGNING..." : "✍️ SIGN & DELEGATE"} ]
+                            {step === "signing" ? "✍️ Signing..." : "✍️ Sign & Delegate"}
                         </button>
                         <button
                             onClick={onCancel}
                             disabled={step === "signing"}
-                            className="px-6 border border-gray-700 text-gray-400 hover:text-white hover:border-white transition-colors font-bold uppercase disabled:opacity-50"
+                            className="px-6 rounded-xl border border-slate-200 text-slate-500 hover:text-slate-900 hover:border-slate-300 transition-colors font-semibold disabled:opacity-50"
                         >
-                            [ 🔙 CANCEL ]
+                            ← Cancel
                         </button>
                     </div>
 

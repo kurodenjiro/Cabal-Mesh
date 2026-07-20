@@ -8,9 +8,7 @@ interface StatusIndicatorProps {
 
 export const Nexus: React.FC<React.PropsWithChildren<StatusIndicatorProps>> = ({ children, showConfig }) => {
     return (
-        <div className="h-screen w-screen bg-nobody-dark overflow-hidden flex flex-col relative font-sans selection:bg-nobody-violet selection:text-white">
-            {/* Status Bar Title Removed (Moved to Composer) */}
-
+        <div className="h-screen w-screen bg-nobody-dark overflow-hidden flex flex-col relative font-sans text-slate-900 selection:bg-nobody-mint-soft selection:text-nobody-ink">
             <div className="absolute top-4 right-4 flex gap-2 z-30">
                 <StatusItem
                     icon="⚡"
@@ -30,9 +28,9 @@ export const Nexus: React.FC<React.PropsWithChildren<StatusIndicatorProps>> = ({
 
                 <button
                     onClick={showConfig}
-                    className="h-8 bg-black/40 px-4 rounded border border-gray-800 text-gray-400 hover:text-white hover:border-gray-600 transition-all text-[10px] font-mono uppercase tracking-wider backdrop-blur-sm"
+                    className="h-8 bg-white px-4 rounded-full border border-slate-200 shadow-card text-slate-500 hover:text-slate-900 hover:border-slate-300 transition-all text-xs font-medium tracking-wide"
                 >
-                    [ Config ]
+                    Config
                 </button>
             </div>
 
@@ -42,10 +40,10 @@ export const Nexus: React.FC<React.PropsWithChildren<StatusIndicatorProps>> = ({
     );
 };
 
-const StatusItem = ({ icon, label, textColor = "text-gray-300" }: { icon: string, label: string, textColor?: string }) => (
-    <div className="h-8 flex items-center gap-2 bg-black/40 px-3 rounded border border-gray-800 backdrop-blur-sm min-w-[100px] justify-center">
-        <span className="text-[10px]">{icon}</span>
-        <span className={`text-[10px] uppercase font-mono tracking-wider ${textColor}`}>
+const StatusItem = ({ icon, label, textColor = "text-slate-600" }: { icon: string, label: string, textColor?: string }) => (
+    <div className="h-8 flex items-center gap-2 bg-white px-3 rounded-full border border-slate-200 shadow-card min-w-[100px] justify-center">
+        <span className="text-xs">{icon}</span>
+        <span className={`text-xs font-medium tracking-wide ${textColor}`}>
             {label}
         </span>
     </div>

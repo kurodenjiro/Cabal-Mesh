@@ -40,18 +40,18 @@ export const IdentityInitialization: React.FC<IdentityInitializationProps> = ({ 
 
     return (
         <motion.div
-            className="absolute inset-0 z-[60] flex items-center justify-center bg-black/95 font-mono text-sm"
+            className="absolute inset-0 z-[60] flex items-center justify-center bg-slate-900/40 backdrop-blur-sm text-sm"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
         >
-            <div className="w-[600px] border border-gray-700 bg-nobody-charcoal shadow-2xl relative">
+            <div className="w-[600px] rounded-2xl border border-slate-200 bg-white shadow-card-lg relative overflow-hidden">
 
                 {/* Header */}
-                <div className="bg-gray-900 mx-1 mt-1 p-2 border-b border-gray-700 flex justify-between items-center text-xs tracking-wider">
-                    <span className="text-white font-bold">[ 🛡️ IDENTITY CREATION ]</span>
-                    <span className="text-gray-500">[ 👤 MODE: {mode === "create" ? "NEW" : "IMPORT"} ]</span>
-                    <span className="text-nobody-mint">[ 🔒 SECURITY: HIGH ]</span>
+                <div className="bg-slate-50 px-5 py-3 border-b border-slate-200 flex justify-between items-center text-xs">
+                    <span className="text-slate-900 font-semibold tracking-wide">🛡️ Identity Creation</span>
+                    <span className="text-slate-400">Mode: {mode === "create" ? "New" : "Import"}</span>
+                    <span className="text-nobody-mint font-medium">Security: High</span>
                 </div>
 
                 <div className="p-8 space-y-8">
@@ -61,64 +61,64 @@ export const IdentityInitialization: React.FC<IdentityInitializationProps> = ({ 
                         <button
                             onClick={() => setMode("create")}
                             disabled={step === "generating"}
-                            className={`flex-1 border p-4 text-left transition-colors group ${mode === "create" ? "border-nobody-mint bg-nobody-mint/10" : "border-gray-700 hover:border-gray-500"} ${step === "generating" ? "opacity-50 cursor-not-allowed" : ""}`}
+                            className={`flex-1 rounded-xl border p-4 text-left transition-colors group ${mode === "create" ? "border-nobody-mint bg-nobody-mint-soft/40" : "border-slate-200 hover:border-slate-300"} ${step === "generating" ? "opacity-50 cursor-not-allowed" : ""}`}
                         >
-                            <div className={`font-bold mb-1 ${mode === "create" ? "text-nobody-mint" : "text-gray-400 group-hover:text-white"}`}>[ 🆕 GENERATE NEW IDENTITY ]</div>
-                            <div className="text-xs text-gray-500">(Generate fresh ZK-keys)</div>
+                            <div className={`font-semibold mb-1 ${mode === "create" ? "text-nobody-mint" : "text-slate-600 group-hover:text-slate-900"}`}>🆕 Generate New Identity</div>
+                            <div className="text-xs text-slate-400">(Generate fresh ZK-keys)</div>
                         </button>
                     </div>
 
-                    <div className="border-t border-gray-800" />
+                    <div className="border-t border-slate-100" />
 
                     <div className={`space-y-6 ${step === "generating" ? "opacity-50 pointer-events-none" : ""}`}>
                         <div className="space-y-2">
-                            <div className="text-gray-400 text-xs font-bold">[ 👻 ASSIGN LOCAL ALIAS ]</div>
+                            <div className="text-slate-500 text-xs font-semibold">Assign Local Alias</div>
                             <input
                                 type="text"
                                 value={alias}
                                 onChange={(e) => setAlias(e.target.value)}
-                                placeholder="Name: [ The Clueless Fox_______ ]"
+                                placeholder="Name: The Clueless Fox"
                                 disabled={step === "generating"}
-                                className="w-full bg-black/50 border border-gray-700 p-3 text-white focus:border-nobody-mint focus:outline-none placeholder-gray-600 disabled:bg-gray-900 disabled:text-gray-500"
+                                className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-slate-900 focus:border-nobody-mint focus:outline-none focus:bg-white placeholder-slate-400 disabled:bg-slate-100 disabled:text-slate-400 transition-colors"
                             />
-                            <div className="text-[10px] text-gray-600 text-right">(Local only - Not leaked to Mesh)</div>
+                            <div className="text-[11px] text-slate-400 text-right">(Local only — not leaked to Mesh)</div>
                         </div>
 
                         <div className="space-y-2">
-                            <div className="text-gray-400 text-xs font-bold">[ 🛡️ SET MASTER PASSWORD ]</div>
+                            <div className="text-slate-500 text-xs font-semibold">Set Master Password</div>
                             <input
                                 type="password"
-                                placeholder="Pass: [ •••••••••••••••••• ]"
+                                placeholder="Password"
                                 disabled={step === "generating"}
-                                className="w-full bg-black/50 border border-gray-700 p-3 text-white focus:border-nobody-mint focus:outline-none placeholder-gray-600 disabled:bg-gray-900"
+                                className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-slate-900 focus:border-nobody-mint focus:outline-none focus:bg-white placeholder-slate-400 disabled:bg-slate-100 transition-colors"
                             />
                             <input
                                 type="text"
-                                placeholder="Hint: [ My first hardware... ]"
+                                placeholder="Hint: My first hardware..."
                                 disabled={step === "generating"}
-                                className="w-full bg-black/50 border border-gray-700 p-3 text-gray-400 focus:border-gray-500 focus:outline-none placeholder-gray-600 text-xs disabled:bg-gray-900"
+                                className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-slate-500 focus:border-slate-300 focus:outline-none placeholder-slate-400 text-xs disabled:bg-slate-100 transition-colors"
                             />
                         </div>
                     </div>
 
-                    <div className="border-t border-gray-800" />
+                    <div className="border-t border-slate-100" />
 
                     {/* Progression / Action */}
                     {step === "generating" ? (
                         <div className="space-y-4">
-                            <div className="text-nobody-mint font-bold animate-pulse">[ ⚙️ GENERATING CRYPTO ASSETS... ]</div>
-                            <ul className="text-xs space-y-2 text-gray-400">
+                            <div className="text-nobody-mint font-semibold animate-pulse">⚙️ Generating crypto assets...</div>
+                            <ul className="text-xs space-y-2 text-slate-500">
                                 <li className="flex items-center justify-between">
-                                    <span>- Creating Avalanche Keypair...</span>
-                                    <span className={progress > 30 ? "text-nobody-mint" : "text-gray-600"}>{progress > 30 ? "[ DONE ]" : "..."}</span>
+                                    <span>Creating Avalanche Keypair...</span>
+                                    <span className={progress > 30 ? "text-nobody-mint font-medium" : "text-slate-300"}>{progress > 30 ? "Done" : "..."}</span>
                                 </li>
                                 <li className="flex items-center justify-between">
-                                    <span>- Deriving Mesh PeerID...</span>
-                                    <span className={progress > 60 ? "text-nobody-mint" : "text-gray-600"}>{progress > 60 ? "[ DONE ]" : "..."}</span>
+                                    <span>Deriving Mesh PeerID...</span>
+                                    <span className={progress > 60 ? "text-nobody-mint font-medium" : "text-slate-300"}>{progress > 60 ? "Done" : "..."}</span>
                                 </li>
                                 <li className="flex items-center justify-between">
-                                    <span>- Setting AES-256 Vault...</span>
-                                    <span className={progress >= 100 ? "text-nobody-mint" : "text-gray-600"}>{progress >= 100 ? "[ DONE ]" : "..."}</span>
+                                    <span>Setting AES-256 Vault...</span>
+                                    <span className={progress >= 100 ? "text-nobody-mint font-medium" : "text-slate-300"}>{progress >= 100 ? "Done" : "..."}</span>
                                 </li>
                             </ul>
 
@@ -126,18 +126,18 @@ export const IdentityInitialization: React.FC<IdentityInitializationProps> = ({ 
                                 <motion.div
                                     initial={{ opacity: 0 }}
                                     animate={{ opacity: 1 }}
-                                    className="bg-nobody-mint/20 border border-nobody-mint p-3 text-xs text-nobody-mint italic mt-4"
+                                    className="bg-nobody-mint-soft/50 border border-nobody-mint/20 rounded-xl p-3 text-xs text-slate-600 mt-4"
                                 >
-                                    {">>"} AGENT: "Your local identity is ready. Remember: Master Pass is the ONLY way to unlock your ZK-Proofs."
+                                    <span className="text-nobody-mint font-semibold">Agent:</span> "Your local identity is ready. Remember: Master Pass is the ONLY way to unlock your ZK-Proofs."
                                 </motion.div>
                             )}
 
                             {progress >= 100 && (
                                 <button
                                     onClick={onComplete}
-                                    className="w-full bg-nobody-mint text-black font-bold py-3 hover:bg-white transition-colors uppercase tracking-wider mt-4"
+                                    className="w-full bg-nobody-mint text-white font-semibold py-3 rounded-xl hover:bg-emerald-700 transition-colors mt-4"
                                 >
-                                    [ 🚀 INITIALIZE & SHRED RAM ]
+                                    🚀 Initialize & Shred RAM
                                 </button>
                             )}
                         </div>
@@ -145,15 +145,15 @@ export const IdentityInitialization: React.FC<IdentityInitializationProps> = ({ 
                         <div className="flex gap-4">
                             <button
                                 onClick={handleCreate}
-                                className="flex-1 bg-white text-black font-bold py-3 hover:bg-gray-200 transition-colors uppercase tracking-wider"
+                                className="flex-1 bg-nobody-mint text-white font-semibold py-3 rounded-xl hover:bg-emerald-700 transition-colors"
                             >
-                                [ {mode === "create" ? "GENERATE IDENTITY" : "RESTORE FROM SEED"} ]
+                                {mode === "create" ? "Generate Identity" : "Restore from Seed"}
                             </button>
                             <button
                                 onClick={onBack}
-                                className="px-6 border border-gray-700 text-gray-400 hover:text-white hover:border-white transition-colors font-bold uppercase"
+                                className="px-6 rounded-xl border border-slate-200 text-slate-500 hover:text-slate-900 hover:border-slate-300 transition-colors font-semibold"
                             >
-                                [ 🔙 BACK ]
+                                ← Back
                             </button>
                         </div>
                     )}

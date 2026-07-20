@@ -338,19 +338,19 @@ function App() {
 // Helper Component for Menu Header
 const MenuButton = ({ label, onClick, color }: { label: string, onClick: () => void, active: boolean, color: string }) => {
     // Determine color classes
-    const colorClass = color === "nobody-mint" ? "text-nobody-mint border-nobody-mint/30 hover:bg-nobody-mint/10" :
-        color === "nobody-violet" ? "text-nobody-violet border-nobody-violet/30 hover:bg-nobody-violet/10" :
-            color === "yellow-500" ? "text-yellow-500 border-yellow-500/30 hover:bg-yellow-500/10" :
-                color === "purple-500" ? "text-purple-400 border-purple-500/30 hover:bg-purple-500/10" :
-                    color === "green-500" ? "text-green-400 border-green-500/30 hover:bg-green-500/10" :
-                        "text-gray-400 hover:text-white border-gray-700 hover:border-white";
+    const colorClass = color === "nobody-mint" ? "text-nobody-mint border-nobody-mint/30 hover:bg-nobody-mint-soft" :
+        color === "nobody-violet" ? "text-nobody-violet border-nobody-violet/30 hover:bg-nobody-violet-soft" :
+            color === "yellow-500" ? "text-amber-600 border-amber-300 hover:bg-amber-50" :
+                color === "purple-500" ? "text-nobody-violet border-nobody-violet/30 hover:bg-nobody-violet-soft" :
+                    color === "green-500" ? "text-nobody-mint border-nobody-mint/30 hover:bg-nobody-mint-soft" :
+                        "text-slate-500 hover:text-slate-900 border-slate-200 hover:border-slate-300";
 
     return (
         <button
             onClick={onClick}
-            className={`text-[10px] font-bold px-3 py-1.5 border transition-all uppercase tracking-wider ${colorClass}`}
+            className={`text-xs font-semibold px-3 py-1.5 border rounded-full transition-all tracking-wide bg-white shadow-card ${colorClass}`}
         >
-            [ {label} ]
+            {label}
         </button>
     );
 };

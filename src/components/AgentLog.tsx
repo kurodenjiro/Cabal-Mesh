@@ -12,15 +12,15 @@ export const AgentLog: React.FC<AgentLogProps> = ({ visible, logs }) => {
     return (
         <AnimatePresence>
             <motion.div
-                className="absolute inset-x-4 top-[15%] mx-auto w-[700px] z-50 font-mono text-sm"
+                className="absolute inset-x-4 top-[15%] mx-auto w-[700px] z-50 text-sm"
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -20 }}
             >
-                <div className="bg-nobody-dark border border-gray-600 shadow-2xl overflow-hidden rounded">
+                <div className="bg-white border border-slate-200 shadow-card-lg overflow-hidden rounded-2xl">
                     {/* Header */}
-                    <div className="bg-gray-800 border-b border-gray-600 p-3 text-center">
-                        <span className="text-white font-bold tracking-widest">[ LOCAL AGENT PROCESSING ]</span>
+                    <div className="bg-slate-50 border-b border-slate-200 p-3 text-center">
+                        <span className="text-slate-900 font-semibold tracking-wide text-xs uppercase">Local Agent Processing</span>
                     </div>
 
                     <div className="p-6 space-y-4">
@@ -32,13 +32,13 @@ export const AgentLog: React.FC<AgentLogProps> = ({ visible, logs }) => {
                                 animate={{ opacity: 1, x: 0 }}
                                 className="space-y-1"
                             >
-                                <div className="text-green-400 text-xs">
+                                <div className="text-slate-600 text-xs font-mono">
                                     {log}
                                 </div>
                                 {i === logs.length - 1 && (
-                                    <div className="mt-2 bg-gray-800 rounded h-2 overflow-hidden">
+                                    <div className="mt-2 bg-slate-100 rounded-full h-1.5 overflow-hidden">
                                         <motion.div
-                                            className="h-full bg-green-500"
+                                            className="h-full bg-nobody-mint rounded-full"
                                             initial={{ width: "0%" }}
                                             animate={{ width: "100%" }}
                                             transition={{ duration: 1.5 }}

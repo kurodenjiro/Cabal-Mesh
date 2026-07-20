@@ -93,7 +93,7 @@ export const WalletCabinet: React.FC<WalletCabinetProps> = ({ visible, onClose, 
     };
 
     const handleDelete = async () => {
-        if (confirm("⚠️ ARE YOU SURE? This will delete the local encrypted snapshot. You will need to sync again.")) {
+        if (confirm("⚠️ Are you sure? This will delete the local encrypted snapshot. You will need to sync again.")) {
             try {
                 await invoke("delete_wallet_snapshot");
                 setSnapshot(null);
@@ -109,7 +109,7 @@ export const WalletCabinet: React.FC<WalletCabinetProps> = ({ visible, onClose, 
     const handleShield = () => {
         // Real logic would require a confidential-compute SDK + keys
         // Since we are strictly "No Mock", we indicate the requirement
-        alert("🛡️ SHIELDING INITIATED:\n\nRequesting Confidential Compute integration...\n[Pending: Avalanche identity signing support]");
+        alert("🛡️ Shielding initiated:\n\nRequesting Confidential Compute integration...\n[Pending: Avalanche identity signing support]");
     };
 
     const handleDelegate = async () => {
@@ -123,81 +123,81 @@ export const WalletCabinet: React.FC<WalletCabinetProps> = ({ visible, onClose, 
 
     return (
         <motion.div
-            className="absolute inset-0 z-[60] flex items-center justify-center bg-black/95 font-mono text-sm"
+            className="absolute inset-0 z-[60] flex items-center justify-center bg-slate-900/40 backdrop-blur-sm text-sm"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
         >
-            <div className="w-[650px] border border-gray-700 bg-nobody-charcoal shadow-2xl relative flex flex-col">
+            <div className="w-[650px] max-h-[85vh] flex flex-col rounded-2xl border border-slate-200 bg-white shadow-card-lg overflow-hidden">
 
                 {/* Header */}
-                <div className="bg-gray-900 mx-1 mt-1 p-2 border-b border-gray-700 flex justify-between items-center text-xs tracking-wider">
-                    <span className="text-white font-bold">[ 👛 WALLET CABINET ]</span>
-                    <span className="text-gray-500">[ 🌐 MESH PEERS: {peerCount} ]</span>
+                <div className="bg-slate-50 px-5 py-3 border-b border-slate-200 flex justify-between items-center text-xs">
+                    <span className="text-slate-900 font-semibold tracking-wide">👛 Wallet Cabinet</span>
+                    <span className="text-slate-400">Mesh peers: {peerCount}</span>
                     <div className="flex items-center gap-3">
-                        <span className="text-nobody-mint">[ {bridgeStatus || "Instant Session Engine: Inactive"} ]</span>
-                        <button onClick={onOpenConfig} className="text-gray-500 hover:text-white">⚙️</button>
-                        <button onClick={onClose} className="text-gray-500 hover:text-white">Esc</button>
+                        <span className="text-nobody-mint font-medium">{bridgeStatus || "Instant Session Engine: Inactive"}</span>
+                        <button onClick={onOpenConfig} className="text-slate-400 hover:text-slate-700 transition-colors">⚙️</button>
+                        <button onClick={onClose} className="text-slate-400 hover:text-slate-700 transition-colors">✕</button>
                     </div>
                 </div>
 
-                <div className="p-6 space-y-4 max-h-[70vh] overflow-y-auto">
+                <div className="p-6 space-y-4 overflow-y-auto">
 
                     {/* List of Identities */}
                     <AnimatePresence>
                         {identities.map((id, index) => (
                             <div
                                 key={index}
-                                className={`p-4 border mb-2 ${selectedId === id.address || (selectedId === 'primary' && index === 0) ? 'border-nobody-mint bg-nobody-mint/5' : 'border-gray-700 hover:bg-gray-800'} transition-all cursor-pointer group`}
+                                className={`p-4 rounded-xl border mb-2 transition-all cursor-pointer group ${selectedId === id.address || (selectedId === 'primary' && index === 0) ? 'border-nobody-mint bg-nobody-mint-soft/40' : 'border-slate-200 hover:bg-slate-50'}`}
                                 onClick={() => setSelectedId(id.address)}
                             >
                                 <div className="flex justify-between items-start mb-2">
                                     <div className="flex items-center gap-2">
-                                        <div className={`w-3 h-3 rounded-full ${selectedId === id.address || (selectedId === 'primary' && index === 0) ? 'bg-nobody-mint' : 'bg-gray-600'}`} />
+                                        <div className={`w-2.5 h-2.5 rounded-full ${selectedId === id.address || (selectedId === 'primary' && index === 0) ? 'bg-nobody-mint' : 'bg-slate-300'}`} />
                                         <div className="flex flex-col">
-                                            <span className="text-white font-bold text-sm group-hover:text-nobody-mint transition-colors tracking-wide">
-                                                [ {id.emoji || "👻"} ] {id.alias}
+                                            <span className="text-slate-900 font-semibold text-sm group-hover:text-nobody-mint transition-colors">
+                                                {id.emoji || "👻"} {id.alias}
                                             </span>
-                                            <span className="text-[10px] text-gray-500 font-mono">
+                                            <span className="text-[11px] text-slate-400 font-mono">
                                                 {id.address.slice(0, 10)}...{id.address.slice(-8)}
                                             </span>
                                         </div>
                                     </div>
-                                    <span className="text-xs text-gray-500">
-                                        {index === 0 && snapshot ? `Last Sync: ${new Date(snapshot.timestamp).toLocaleTimeString()}` : ""}
+                                    <span className="text-xs text-slate-400">
+                                        {index === 0 && snapshot ? `Last sync: ${new Date(snapshot.timestamp).toLocaleTimeString()}` : ""}
                                     </span>
                                 </div>
 
                                 {index === 0 && ( // Only show details for primary for now
-                                    <div className="pl-5 space-y-1 text-xs text-gray-400 mt-2">
+                                    <div className="pl-[18px] space-y-1.5 text-xs text-slate-500 mt-2">
                                         <div className="flex justify-between">
-                                            <span>- Public AVAX (Gas):</span>
-                                            <span className="text-white font-bold">
+                                            <span>Public AVAX (Gas)</span>
+                                            <span className="text-slate-900 font-semibold">
                                                 {nativeBalance ? `${formatEther(nativeBalance.amount)} AVAX` : "0.00 AVAX"}
                                             </span>
                                         </div>
                                         <div className="flex justify-between items-center">
-                                            <span>- Shielded Assets:</span>
-                                            <div className="flex items-center gap-2">
+                                            <span>Shielded Assets</span>
+                                            <div className="flex items-center gap-3">
                                                 <button
                                                     onClick={(e) => {
                                                         e.stopPropagation(); // Prevent parent click
                                                         setRevealBalance(!revealBalance);
                                                     }}
-                                                    className="text-nobody-mint hover:underline font-bold"
+                                                    className="text-nobody-mint hover:underline font-semibold"
                                                 >
                                                     {revealBalance && selectedId === 'primary' ?
                                                         `${snapshot ? snapshot.assets.length : 0} Items`
-                                                        : "[👁️ Reveal]"}
+                                                        : "👁️ Reveal"}
                                                 </button>
                                                 <button
                                                     onClick={(e) => {
                                                         e.stopPropagation();
                                                         handleShield();
                                                     }}
-                                                    className="text-gray-500 hover:text-white"
+                                                    className="text-slate-400 hover:text-slate-700"
                                                 >
-                                                    [🛡️ Shield]
+                                                    🛡️ Shield
                                                 </button>
                                             </div>
                                         </div>
@@ -209,35 +209,35 @@ export const WalletCabinet: React.FC<WalletCabinetProps> = ({ visible, onClose, 
 
                     {/* Actions */}
                     <div className="space-y-2">
-                        <div className="text-gray-500 text-xs font-bold tracking-widest border-b border-gray-800 pb-2">
-                            [ ⚡ ACTIONS ]
+                        <div className="text-slate-400 text-xs font-semibold tracking-wide border-b border-slate-100 pb-2">
+                            Actions
                         </div>
                         <div className="flex gap-2">
-                            <ActionButton label="➕ GENERATE IDENTITY" onClick={onAddNew} />
-                            <ActionButton label={syncing ? "🔄 SYNCING..." : "🔄 SYNC ALL"} onClick={handleSync} />
+                            <ActionButton label="+ Generate Identity" onClick={onAddNew} />
+                            <ActionButton label={syncing ? "Syncing..." : "Sync All"} onClick={handleSync} />
                             {/* Authority Delegation */}
                             <ActionButton
-                                label="🛡️ DELEGATE AUTHORITY"
+                                label="Delegate Authority"
                                 onClick={handleDelegate}
                             />
-                            <ActionButton label="🗑️ FULL RESET" danger onClick={handleDelete} />
+                            <ActionButton label="Full Reset" danger onClick={handleDelete} />
                         </div>
                     </div>
 
                     {/* Agent Tip */}
-                    <div className="bg-black/40 border-l-2 border-nobody-mint p-3 text-xs italic text-gray-400">
-                        <span className="text-nobody-mint font-bold not-italic">{">>"} AGENT:</span> "Ready to trade. Your PeerID is rotating every 24h to keep your wallet address hidden from the Mesh nodes."
+                    <div className="bg-nobody-mint-soft/40 border border-nobody-mint/20 rounded-xl p-3 text-xs text-slate-600">
+                        <span className="text-nobody-mint font-semibold">Agent:</span> "Ready to trade. Your PeerID is rotating every 24h to keep your wallet address hidden from the Mesh nodes."
                     </div>
 
                 </div>
 
                 {/* Footer */}
-                <div className="bg-gray-900 mx-1 mb-1 p-3 border-t border-gray-700 flex justify-center items-center text-xs">
+                <div className="bg-slate-50 border-t border-slate-200 p-3 flex justify-center items-center text-xs">
                     <button
                         onClick={onClose}
-                        className="bg-transparent text-gray-400 font-bold px-6 py-2 hover:text-white transition-colors uppercase tracking-widest border border-gray-700 hover:border-gray-500"
+                        className="bg-white text-slate-500 font-semibold px-6 py-2 hover:text-slate-900 transition-colors rounded-full border border-slate-200 hover:border-slate-300 shadow-card"
                     >
-                        [ 🔙 BACK ]
+                        ← Back
                     </button>
                 </div>
             </div>
@@ -249,8 +249,8 @@ export const WalletCabinet: React.FC<WalletCabinetProps> = ({ visible, onClose, 
 const ActionButton = ({ label, danger = false, onClick }: { label: string, danger?: boolean, onClick?: () => void }) => (
     <button
         onClick={onClick}
-        className={`flex-1 border ${danger ? 'border-red-900/50 text-red-500 hover:bg-red-900/20' : 'border-gray-700 text-gray-400 hover:bg-gray-800 hover:text-white'} py-3 font-bold text-xs transition-colors`}
+        className={`flex-1 rounded-xl border py-3 font-semibold text-xs transition-colors ${danger ? 'border-red-200 text-red-500 hover:bg-red-50' : 'border-slate-200 text-slate-500 hover:bg-slate-50 hover:text-slate-900'}`}
     >
-        [ {label} ]
+        {label}
     </button>
 );
