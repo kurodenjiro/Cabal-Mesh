@@ -1,6 +1,7 @@
 import React from "react";
 import { motion } from "framer-motion";
 import { Peer } from "../types";
+import { CabalFigure } from "./icons/CabalFigure";
 
 interface MeshRadarProps {
     peers: Peer[];
@@ -14,16 +15,22 @@ export const MeshRadar: React.FC<MeshRadarProps> = ({ peers }) => {
 
                 {/* Central Pulse */}
                 <motion.div
-                    className="absolute w-32 h-32 rounded-full bg-nobody-violet/20 blur-xl"
+                    className="absolute w-32 h-32 rounded-full bg-nobody-mint/10 blur-xl"
                     animate={{ scale: [1, 1.5, 1], opacity: [0.3, 0.6, 0.3] }}
                     transition={{ duration: 4, repeat: Infinity, ease: "easeInOut" }}
                 />
 
-                <div className="absolute w-4 h-4 rounded-full bg-nobody-violet shadow-[0_0_20px_rgba(139,92,246,0.8)]" />
+                <motion.div
+                    className="absolute text-nobody-mint drop-shadow-[0_0_12px_rgba(52,211,153,0.6)]"
+                    animate={{ y: [0, -4, 0] }}
+                    transition={{ duration: 6, repeat: Infinity, ease: "easeInOut" }}
+                >
+                    <CabalFigure size={40} eyeColor="#0a0714" />
+                </motion.div>
 
                 {/* RELAY RIPPLE EFFECT (Mocked for Demo) */}
                 <motion.div
-                    className="absolute w-[800px] h-[800px] rounded-full border border-nobody-mint/30"
+                    className="absolute w-[800px] h-[800px] rounded-full border border-nobody-mint/20"
                     initial={{ scale: 0, opacity: 0 }}
                     animate={{ scale: 1.2, opacity: 0 }}
                     transition={{ duration: 4, repeat: Infinity, ease: "easeOut", delay: 2 }}
@@ -33,13 +40,13 @@ export const MeshRadar: React.FC<MeshRadarProps> = ({ peers }) => {
                 {[1, 2, 3, 4].map((ring) => (
                     <motion.div
                         key={ring}
-                        className="absolute rounded-full border border-nobody-violet/10"
+                        className="absolute rounded-full border border-slate-200"
                         style={{ width: `${ring * 200}px`, height: `${ring * 200}px` }}
                         animate={{ rotate: 360 }}
                         transition={{ duration: 60 + ring * 10, repeat: Infinity, ease: "linear" }}
                     >
                         {/* Radar Sweep Effect */}
-                        <div className="w-full h-full rounded-full border-t border-nobody-violet/30 opacity-50" />
+                        <div className="w-full h-full rounded-full border-t border-nobody-violet/30 opacity-60" />
                     </motion.div>
                 ))}
 
@@ -66,7 +73,7 @@ export const MeshRadar: React.FC<MeshRadarProps> = ({ peers }) => {
                             transition={{ type: "spring", stiffness: 100 }}
                         >
                             {/* Peer Dot */}
-                            <div className="w-3 h-3 rounded-full bg-nobody-violet shadow-[0_0_15px_rgba(139,92,246,0.6)]" />
+                            <div className="w-3 h-3 rounded-full bg-nobody-violet shadow-[0_0_15px_rgba(99,102,241,0.4)]" />
 
                             {/* Data Packet Hopping Animation */}
                             <motion.div
@@ -87,8 +94,8 @@ export const MeshRadar: React.FC<MeshRadarProps> = ({ peers }) => {
                                 animate={{ opacity: [0, 1, 0] }}
                                 transition={{ duration: 3, repeat: Infinity, delay: index * 0.5 + 1 }}
                             >
-                                <span className="text-[10px] font-mono text-nobody-mint/70 bg-black/50 px-1 rounded">
-                                    [ IP: STRIPPED ]
+                                <span className="text-[10px] font-mono text-nobody-mint bg-nobody-charcoal/90 border border-slate-200 px-1.5 py-0.5 rounded shadow-card">
+                                    IP: STRIPPED
                                 </span>
                             </motion.div>
                         </motion.div>

@@ -1,6 +1,6 @@
-# 🧪 Just Nobody - Testing Guide
+# 🧪 CabalMesh - Testing Guide
 
-Follow this guide to verify all 4 layers of the Just Nobody privacy stack.
+Follow this guide to verify all 4 layers of the CabalMesh privacy stack.
 
 ## 🚀 1. Start the Application
 

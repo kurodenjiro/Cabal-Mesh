@@ -17,34 +17,34 @@ struct BootstrapStatus {
 pub struct SystemBootstrap;
 
 impl SystemBootstrap {
-    /// 1. Phase 1 (Sync): Check internet & triggers Helius sync
+    /// 1. Phase 1 (Sync): Check internet & sync native AVAX balance via Avalanche RPC
     pub async fn phase_1_sync(bridge: &Arc<Mutex<BlockchainBridge>>, app: &AppHandle) {
         Self::emit(app, "PHASE_1_SYNC", "Checking connection...", 10);
-        
+
         if Self::check_connectivity().await {
-            Self::emit(app, "PHASE_1_SYNC", "Online. Syncing Helius DAS...", 20);
+            Self::emit(app, "PHASE_1_SYNC", "Online. Syncing Avalanche RPC balance...", 20);
             let bridge_lock = bridge.lock().await;
 
-            let pubkey = bridge_lock.get_primary_pubkey();
-            Self::emit(app, "PHASE_1_SYNC", &format!("Identity: {}", pubkey), 25);
+            let address = bridge_lock.get_primary_address();
+            Self::emit(app, "PHASE_1_SYNC", &format!("Identity: {}", address), 25);
 
             // Use the real identity (argument is ignored if identity exists)
             if let Err(e) = bridge_lock.sync_state("ignored_override").await {
                 eprintln!("Sync failed: {}", e);
                 Self::emit(app, "PHASE_1_ERROR", &format!("Sync Error: {}", e), 0);
             } else {
-                Self::emit(app, "PHASE_1_SYNC", "Snapshot Secured via Helius.", 30);
+                Self::emit(app, "PHASE_1_SYNC", "Snapshot Secured via Avalanche RPC.", 30);
             }
         } else {
              Self::emit(app, "PHASE_1_SYNC", "Offline Mode. Using local snapshot.", 30);
         }
     }
 
-    /// 2. Phase 2 (Delegate): MagicBlock Session
+    /// 2. Phase 2 (Delegate): Instant Session
     pub async fn phase_2_delegate(bridge: &Arc<Mutex<BlockchainBridge>>, app: &AppHandle) {
-        Self::emit(app, "PHASE_2_DELEGATE", "Initializing MagicBlock Session...", 40);
+        Self::emit(app, "PHASE_2_DELEGATE", "Initializing Instant Session...", 40);
         let mut bridge_lock = bridge.lock().await;
-        let session = bridge_lock.init_ephemeral_session();
+        let session = bridge_lock.init_instant_session();
         Self::emit(app, "PHASE_2_DELEGATE", &format!("Authority Delegated: {}", session.session_id), 60);
     }
 
@@ -94,8 +94,8 @@ pub async fn kill_switch(state: State<'_, Arc<Mutex<AppState>>>) -> Result<Strin
     // Shred local key
     bridge.delete_snapshot().map_err(|e| e.to_string())?;
     
-    // Revoke MagicBlock (Mock revocation logic since strict real implementation details are complex)
-    // In real world: call MagicBlock revocation RPC
+    // Revoke Instant Session (Mock revocation logic since strict real implementation details are complex)
+    // In real world: this would revoke the session key on-chain
     
     println!("🚨 KILL SWITCH ACTIVATED: Session Shredded.");
     Ok("SESSION_TERMINATED".to_string())

@@ -7,7 +7,7 @@ export interface Peer {
 export interface ThoughtLog {
     message: string;
     timestamp: number;
-    type: "noir" | "arcium" | "silentswap" | "mesh" | "agent";
+    type: "noir" | "confidential-compute" | "private-swap" | "mesh" | "agent";
 }
 
 export interface MeshEvent {
@@ -17,4 +17,19 @@ export interface MeshEvent {
     intent?: any;
 }
 
-export type ViewState = "nexus" | "negotiation" | "integrity" | "report" | "config";
+export type ViewState =
+    | "nexus"
+    | "negotiation"
+    | "integrity"
+    | "report"
+    | "config"
+    | "provider"
+    | "service-creator"
+    | "delegation"
+    | "wallet-cabinet"
+    | "identity-init"
+    | "wallet"
+    | "archives"
+    | "escrow"
+    | "compute"
+    | "notification";

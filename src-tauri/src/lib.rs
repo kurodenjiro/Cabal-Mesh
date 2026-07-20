@@ -60,7 +60,7 @@ async fn send_intent_to_mesh(
         payload: payload.clone(),
         encrypted: true,
         relay_path: vec!["origin_node".to_string()], // Initial hop
-        relay_fee: Some("0.005 SOL".to_string()),     // Default fee
+        relay_fee: Some("0.005 AVAX".to_string()),     // Default fee
     };
 
     if let Some(tx) = &state_lock.mesh_tx {
@@ -128,13 +128,59 @@ async fn sync_blockchain_state(
 }
 
 #[tauri::command]
-async fn enable_magicblock_trading(
+async fn enable_instant_session(
     state: State<'_, Arc<Mutex<AppState>>>,
 ) -> Result<String, String> {
     let state = state.lock().await;
     let mut bridge = state.bridge.lock().await;
-    let session = bridge.init_ephemeral_session();
+    let session = bridge.init_instant_session();
     Ok(format!("Session Created: {}", session.session_id))
+}
+
+#[tauri::command]
+async fn create_escrow(
+    payee: String,
+    amount_avax: String,
+    expiry_unix: Option<u64>,
+    state: State<'_, Arc<Mutex<AppState>>>,
+) -> Result<u64, String> {
+    let state = state.lock().await;
+    let bridge = state.bridge.lock().await;
+    let amount_wei = alloy::primitives::utils::parse_ether(&amount_avax).map_err(|e| e.to_string())?;
+    bridge
+        .create_escrow(&payee, amount_wei, expiry_unix.unwrap_or(0))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn release_escrow(
+    escrow_id: u64,
+    state: State<'_, Arc<Mutex<AppState>>>,
+) -> Result<String, String> {
+    let state = state.lock().await;
+    let bridge = state.bridge.lock().await;
+    bridge.release_escrow(escrow_id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn refund_escrow(
+    escrow_id: u64,
+    state: State<'_, Arc<Mutex<AppState>>>,
+) -> Result<String, String> {
+    let state = state.lock().await;
+    let bridge = state.bridge.lock().await;
+    bridge.refund_escrow(escrow_id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_escrow_status(
+    escrow_id: u64,
+    state: State<'_, Arc<Mutex<AppState>>>,
+) -> Result<serde_json::Value, String> {
+    let state = state.lock().await;
+    let bridge = state.bridge.lock().await;
+    bridge.get_escrow_status(escrow_id).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -248,9 +294,10 @@ pub fn run() {
                 // Shared Bridge Resource (Created here first)
                 // Shared Bridge Resource (Created here first)
                 dotenv::dotenv().ok(); // Load .env file
-                let api_key = std::env::var("HELIUS_API_KEY").unwrap_or_else(|_| "7f8b9c0d-1e2f-3a4b-5c6d-7e8f9a0b1c2d".to_string());
-                
-                let bridge = Arc::new(Mutex::new(BlockchainBridge::new(Some(api_key))));
+                let rpc_url = std::env::var("AVAX_RPC_URL")
+                    .unwrap_or_else(|_| blockchain_bridge::DEFAULT_AVAX_RPC_URL.to_string());
+
+                let bridge = Arc::new(Mutex::new(BlockchainBridge::new(Some(rpc_url))));
 
                 // 1. Phase 1
                 SystemBootstrap::phase_1_sync(&bridge, &app_handle).await;
@@ -311,9 +358,12 @@ pub fn run() {
             negotiate_with_shark,
             generate_zk_proof,
             sync_blockchain_state,
-            enable_magicblock_trading,
+            enable_instant_session,
+            create_escrow,
+            release_escrow,
+            refund_escrow,
+            get_escrow_status,
             get_bridge_status,
-            get_wallet_snapshot,
             get_wallet_snapshot,
             delete_wallet_snapshot,
             app_initializer::kill_switch,

@@ -2,7 +2,7 @@
 
 ## What Changed
 
-The **Just Nobody** app now **automatically manages Ollama** for you! No need to manually run `ollama serve` anymore.
+The **CabalMesh** app now **automatically manages Ollama** for you! No need to manually run `ollama serve` anymore.
 
 ## How It Works
 
@@ -125,4 +125,4 @@ OllamaManager::new(Some("llama3".to_string()))
 
 ---
 
-**Status**: ✅ Ollama is now fully integrated into Just Nobody!
+**Status**: ✅ Ollama is now fully integrated into CabalMesh!

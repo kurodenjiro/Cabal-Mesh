@@ -1,7 +1,6 @@
-import React, { useState, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { motion } from "framer-motion";
 import "./styles.css";
 
 // Components
@@ -14,7 +13,6 @@ import { IntegrityShield } from "./components/IntegrityShield";
 import { DailyReport } from "./components/DailyReport";
 import { NodeConfig } from "./components/NodeConfig";
 import { NotificationToast } from "./components/NotificationToast";
-import { Feed } from "./components/Feed";
 import { ProviderDashboard } from "./components/ProviderDashboard";
 import { ServiceCreator } from "./components/ServiceCreator";
 import { ShieldedWallet } from "./components/ShieldedWallet";
@@ -37,12 +35,13 @@ function App() {
     const [isProcessing, setIsProcessing] = useState(false);
 
     // UI State
-    const [view, setView] = useState<ViewState | "provider" | "service-creator" | "delegation">("nexus");
+    const [view, setView] = useState<ViewState>("nexus");
     const [showConfig, setShowConfig] = useState(false);
     const [logs, setLogs] = useState<string[]>([]);
     const [notification, setNotification] = useState<string | null>(null);
-    const [chatContext, setChatContext] = useState<any>(null);
+    const [chatContext] = useState<any>(null);
     const [isSender, setIsSender] = useState(false); // Track if this node sent the intent
+    const [escrowId, setEscrowId] = useState<number | null>(null);
 
     useEffect(() => {
         const unlisten = listen<MeshEvent>("mesh-event", (event) => {
@@ -156,18 +155,34 @@ function App() {
         }, 5000);
     };
 
-    const handleAcceptDeal = () => {
+    const handleAcceptDeal = async () => {
         console.log("🤝 Accepting deal and broadcasting to sender...");
         // Broadcast deal acceptance to the sender
         invoke("send_intent_to_mesh", {
             payload: JSON.stringify({
                 type: "DealAccepted",
                 deal: "Fox NFT #04",
-                price: "13.5 SOL"
+                price: "13.5 AVAX"
             })
         }).then(() => {
             console.log("✅ Deal acceptance broadcasted!");
         }).catch(console.error);
+
+        // Lock a small real Fuji-testnet amount in the on-chain Escrow contract.
+        // Note: the mesh protocol doesn't yet exchange peers' on-chain addresses,
+        // so this demo escrows to the buyer's own primary identity as payee.
+        try {
+            const identities = await invoke<{ address: string }[]>("get_identity");
+            const payee = identities[0]?.address;
+            if (payee) {
+                const id = await invoke<number>("create_escrow", { payee, amountAvax: "0.01" });
+                console.log("✅ On-chain escrow created:", id);
+                setEscrowId(id);
+            }
+        } catch (e) {
+            console.error("Failed to create on-chain escrow:", e);
+            setEscrowId(null);
+        }
 
         setView("escrow");
     };
@@ -183,7 +198,7 @@ function App() {
             payload: JSON.stringify({
                 type: "SettlementComplete",
                 deal: "Fox NFT #04",
-                amount: "13.5 SOL"
+                amount: "13.5 AVAX"
             })
         }).then(() => {
             console.log("✅ Settlement confirmation broadcasted!");
@@ -294,6 +309,7 @@ function App() {
 
                 <SmartEscrow // Added SmartEscrow component
                     visible={view === "escrow"}
+                    escrowId={escrowId}
                     onClose={() => setView("nexus")}
                     onRelease={handleReleaseFunds}
                 />
@@ -322,19 +338,19 @@ function App() {
 // Helper Component for Menu Header
 const MenuButton = ({ label, onClick, color }: { label: string, onClick: () => void, active: boolean, color: string }) => {
     // Determine color classes
-    const colorClass = color === "nobody-mint" ? "text-nobody-mint border-nobody-mint/30 hover:bg-nobody-mint/10" :
-        color === "nobody-violet" ? "text-nobody-violet border-nobody-violet/30 hover:bg-nobody-violet/10" :
-            color === "yellow-500" ? "text-yellow-500 border-yellow-500/30 hover:bg-yellow-500/10" :
-                color === "purple-500" ? "text-purple-400 border-purple-500/30 hover:bg-purple-500/10" :
-                    color === "green-500" ? "text-green-400 border-green-500/30 hover:bg-green-500/10" :
-                        "text-gray-400 hover:text-white border-gray-700 hover:border-white";
+    const colorClass = color === "nobody-mint" ? "text-nobody-mint border-nobody-mint/30 hover:bg-nobody-mint-soft" :
+        color === "nobody-violet" ? "text-nobody-violet border-nobody-violet/30 hover:bg-nobody-violet-soft" :
+            color === "yellow-500" ? "text-amber-400 border-amber-800/40 hover:bg-amber-950/40" :
+                color === "purple-500" ? "text-nobody-violet border-nobody-violet/30 hover:bg-nobody-violet-soft" :
+                    color === "green-500" ? "text-nobody-mint border-nobody-mint/30 hover:bg-nobody-mint-soft" :
+                        "text-slate-500 hover:text-slate-900 border-slate-200 hover:border-slate-300";
 
     return (
         <button
             onClick={onClick}
-            className={`text-[10px] font-bold px-3 py-1.5 border transition-all uppercase tracking-wider ${colorClass}`}
+            className={`text-xs font-semibold px-3 py-1.5 border rounded-full transition-all tracking-wide bg-nobody-charcoal shadow-card ${colorClass}`}
         >
-            [ {label} ]
+            {label}
         </button>
     );
 };

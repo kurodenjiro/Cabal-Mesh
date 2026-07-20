@@ -78,7 +78,7 @@ impl MeshNetwork {
         )?;
 
         // Create the Privacy Intent topic
-        let topic = gossipsub::IdentTopic::new("just-nobody-privacy-intents");
+        let topic = gossipsub::IdentTopic::new("cabalmesh-privacy-intents");
         gossipsub.subscribe(&topic)?;
 
         // Set up mDNS for local peer discovery (ShadowWire mesh)
@@ -251,7 +251,7 @@ impl MeshNetwork {
         }
 
         if let Some(fee) = &intent.relay_fee {
-            if !fee.contains("SOL") && !fee.contains("NEAR") {
+            if !fee.contains("AVAX") {
                  println!("⚠️  Warning: Unknown fee format: {}", fee);
                  // We don't fail validation here for now, just warn
             }

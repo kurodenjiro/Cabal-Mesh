@@ -90,7 +90,7 @@ impl ZKHandler {
 
 // Noir circuit template (to be saved as circuits/main.nr)
 pub const NOIR_CIRCUIT_TEMPLATE: &str = r#"
-// Just Nobody - Privacy-Preserving Bid Verification Circuit
+// CabalMesh - Privacy-Preserving Bid Verification Circuit
 // This proves: balance >= bid_amount AND bid_amount <= price_ceiling
 
 fn main(

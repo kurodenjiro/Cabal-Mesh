@@ -10,82 +10,82 @@ export const ShieldedWallet: React.FC<ShieldedWalletProps> = ({ visible, onClose
     const [revealBalance, setRevealBalance] = useState(false);
 
     // Mock Data
-    const balance = "142.5 SOL";
+    const balance = "142.5 AVAX";
     const pendingIntents = [
-        { id: "#042b", amount: "9.1 SOL", reason: "Reserved for ESP32 Trade" },
-        { id: "#042c", amount: "1.2 SOL", reason: "Reserved for Mesh Gas" },
+        { id: "#042b", amount: "9.1 AVAX", reason: "Reserved for ESP32 Trade" },
+        { id: "#042c", amount: "1.2 AVAX", reason: "Reserved for Mesh Gas" },
     ];
 
     if (!visible) return null;
 
     return (
         <motion.div
-            className="absolute inset-0 z-[60] flex items-center justify-center bg-black/90 backdrop-blur-md font-mono"
+            className="absolute inset-0 z-[60] flex items-center justify-center bg-black/70 backdrop-blur-sm"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
         >
-            <div className="w-[650px] border border-gray-700 bg-nobody-charcoal shadow-[0_0_40px_rgba(0,0,0,0.8)] rounded-sm overflow-hidden flex flex-col">
+            <div className="w-[650px] rounded-2xl border border-slate-200 bg-nobody-charcoal shadow-card-lg overflow-hidden flex flex-col">
 
                 {/* Header */}
-                <div className="bg-gray-900 p-3 border-b border-gray-700 flex justify-between items-center text-xs font-bold tracking-wider">
+                <div className="bg-slate-50 p-3 border-b border-slate-200 flex justify-between items-center text-xs font-semibold">
                     <div className="flex gap-4 text-nobody-mint">
-                        <span>[ 💰 SHIELDED WALLET ]</span>
-                        <span className="text-white">[ 🔒 ZK-COMPRESSION: ON ]</span>
+                        <span>💰 Shielded Wallet</span>
+                        <span className="text-slate-500">🔒 ZK-Compression: On</span>
                     </div>
-                    <span className="text-nobody-violet animate-pulse">[ ⚡ MESH READY ]</span>
+                    <span className="text-nobody-violet">⚡ Mesh Ready</span>
                 </div>
 
                 {/* Main Content */}
                 <div className="p-6 space-y-6">
 
                     {/* Balance Section */}
-                    <div className="border border-gray-600 bg-black/40 p-4 space-y-2">
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 space-y-2">
                         <div className="flex items-center justify-between">
-                            <span className="text-gray-400 text-sm uppercase">Available Balance:</span>
+                            <span className="text-slate-500 text-sm">Available Balance</span>
                             <div
                                 className="cursor-pointer"
                                 onMouseEnter={() => setRevealBalance(true)}
                                 onMouseLeave={() => setRevealBalance(false)}
                             >
                                 {revealBalance ? (
-                                    <span className="text-nobody-mint font-bold text-xl tracking-widest drop-shadow-[0_0_5px_rgba(45,212,191,0.8)]">
+                                    <span className="text-nobody-mint font-bold text-xl tracking-wide">
                                         {balance}
                                     </span>
                                 ) : (
-                                    <span className="text-gray-600 font-bold text-xl tracking-widest animate-pulse">
-                                        [ ████████ ]
+                                    <span className="text-slate-300 font-bold text-xl tracking-widest animate-pulse">
+                                        ████████
                                     </span>
                                 )}
                             </div>
                         </div>
-                        <div className="text-[10px] text-gray-500 italic flex items-center gap-2">
+                        <div className="text-[11px] text-slate-400 flex items-center gap-2">
                             (Hover to reveal)
-                            <span className="text-green-500">STATUS: All funds are ZK-Proven & Snapshot updated (2h ago)</span>
+                            <span className="text-nobody-mint">All funds are ZK-proven & snapshot updated (2h ago)</span>
                         </div>
                     </div>
 
                     {/* Proof Generator */}
                     <div className="space-y-2">
-                        <div className="text-gray-400 text-xs font-bold uppercase border-b border-gray-800 pb-1 w-max">
-                            [ 🛡️ PROOF GENERATOR ]
+                        <div className="text-slate-400 text-xs font-semibold border-b border-slate-100 pb-1 w-max">
+                            🛡️ Proof Generator
                         </div>
-                        <ul className="text-xs space-y-1 pl-2 text-gray-300">
-                            <li>- Valid for Mesh Trades: <span className="text-nobody-mint font-bold">YES</span></li>
-                            <li>- Last Integrity Check: <span className="text-nobody-mint font-bold">[ PASS ✅ ]</span></li>
+                        <ul className="text-xs space-y-1 text-slate-500">
+                            <li>Valid for Mesh Trades: <span className="text-nobody-mint font-semibold">Yes</span></li>
+                            <li>Last Integrity Check: <span className="text-nobody-mint font-semibold">Pass ✅</span></li>
                         </ul>
                     </div>
 
                     {/* Pending Intents */}
                     <div className="space-y-2">
-                        <div className="text-gray-400 text-xs font-bold uppercase border-b border-gray-800 pb-1 w-max">
-                            [ PENDING INTENTS (Locked Funds) ]
+                        <div className="text-slate-400 text-xs font-semibold border-b border-slate-100 pb-1 w-max">
+                            Pending Intents (Locked Funds)
                         </div>
-                        <ul className="text-xs space-y-2 pl-2 text-gray-400">
+                        <ul className="text-xs space-y-2 text-slate-500">
                             {pendingIntents.map((intent) => (
-                                <li key={intent.id} className="flex justify-between border-b border-gray-800/50 pb-1 last:border-0">
-                                    <span>- Intent <span className="text-white">{intent.id}</span>: {intent.amount}</span>
-                                    <span className="text-gray-600 italic">({intent.reason})</span>
+                                <li key={intent.id} className="flex justify-between border-b border-slate-100 pb-1 last:border-0">
+                                    <span>Intent <span className="text-slate-900 font-medium">{intent.id}</span>: {intent.amount}</span>
+                                    <span className="text-slate-400 italic">({intent.reason})</span>
                                 </li>
                             ))}
                         </ul>
@@ -93,20 +93,20 @@ export const ShieldedWallet: React.FC<ShieldedWalletProps> = ({ visible, onClose
                 </div>
 
                 {/* Footer Actions */}
-                <div className="bg-gray-900 border-t border-gray-700 p-4 flex justify-between items-center text-xs">
+                <div className="bg-slate-50 border-t border-slate-200 p-4 flex justify-between items-center text-xs">
                     <div className="flex gap-3">
-                        <button className="bg-gray-800 hover:bg-white hover:text-black text-white px-3 py-2 border border-gray-600 transition-colors font-bold">
-                            [ UPDATE SNAPSHOT ]
+                        <button className="bg-nobody-charcoal hover:bg-slate-100 text-slate-700 px-3 py-2 rounded-lg border border-slate-200 transition-colors font-semibold">
+                            Update Snapshot
                         </button>
-                        <button className="bg-nobody-mint/10 hover:bg-nobody-mint hover:text-black text-nobody-mint px-3 py-2 border border-nobody-mint/40 transition-colors font-bold">
-                            [ ADD FUNDS ]
+                        <button className="bg-nobody-mint-soft hover:bg-nobody-mint hover:text-white text-nobody-mint px-3 py-2 rounded-lg transition-colors font-semibold">
+                            Add Funds
                         </button>
                     </div>
                     <button
                         onClick={onClose}
-                        className="text-gray-500 hover:text-red-500 transition-colors font-bold flex items-center gap-1"
+                        className="text-slate-400 hover:text-red-500 transition-colors font-semibold flex items-center gap-1"
                     >
-                        [ 🗑️ SHRED PROOFS ]
+                        🗑️ Shred Proofs
                     </button>
                 </div>
 
