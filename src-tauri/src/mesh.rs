@@ -200,6 +200,19 @@ impl MeshNetwork {
                                                 let _ = tx.send(MeshEvent::ContentRequested { token_id });
                                             }
                                         }
+                                    } else if intent.intent_type == "presence" {
+                                        // A peer announcing its real AVAX wallet address (not just its
+                                        // ephemeral libp2p PeerID) so the mesh view can show who's who.
+                                        // `message.source` comes from gossipsub's signed authenticity,
+                                        // not from the payload itself, so it can't be spoofed by the sender.
+                                        if let (Some(source), Ok(payload)) = (message.source, serde_json::from_str::<serde_json::Value>(&intent.payload)) {
+                                            if let Some(address) = payload.get("address").and_then(|v| v.as_str()) {
+                                                let _ = tx.send(MeshEvent::PeerIdentity {
+                                                    peer_id: source.to_string(),
+                                                    address: address.to_string(),
+                                                });
+                                            }
+                                        }
                                     } else if intent.intent_type == "content_delivery" {
                                         // The seller is delivering the signed content for a purchased tokenId.
                                         if let Ok(payload) = serde_json::from_str::<serde_json::Value>(&intent.payload) {
@@ -321,4 +334,7 @@ pub enum MeshEvent {
     RelayConfirmed { queue_id: String, status: String, tx_hash: Option<String> },
     ContentRequested { token_id: u64 },
     ContentDelivered { token_id: u64, text: String, signature: String, signer_address: String },
+    /// A peer's real AVAX wallet address, learned from its "presence" broadcast
+    /// (not from mDNS discovery, which only knows the ephemeral libp2p PeerID).
+    PeerIdentity { peer_id: String, address: String },
 }

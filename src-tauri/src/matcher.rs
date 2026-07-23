@@ -93,13 +93,22 @@ Catalog:
             .await?;
 
         let ollama_response: OllamaResponse = response.json().await?;
+        let json_slice = crate::llm_json::extract_json_object(&ollama_response.response);
 
-        let parsed: serde_json::Value = serde_json::from_str(&ollama_response.response)
+        let parsed: serde_json::Value = serde_json::from_str(json_slice)
             .unwrap_or_else(|_| serde_json::json!({ "matched_id": null, "reason": "No match" }));
 
+        // The model frequently emits JSON-shaped-but-invalid output (e.g.
+        // `"matched_id": id 3` instead of `3`), which fails strict parsing
+        // above and silently looks like "no match" even though the model
+        // did pick something — recover the id with a looser scan before
+        // giving up.
         let matched_id = match parsed["matched_id"].as_u64() {
             Some(id) => id,
-            None => return Ok(None),
+            None => match crate::llm_json::recover_number_field(json_slice, "matched_id") {
+                Some(id) => id,
+                None => return Ok(None),
+            },
         };
 
         let listing = match listings.iter().find(|l| l.id == matched_id) {

@@ -218,7 +218,7 @@ export const SmartEscrow: React.FC<SmartEscrowProps> = ({ visible, escrowId, dea
                                 : "border border-slate-200 text-slate-500 hover:text-red-600 hover:border-red-300 disabled:opacity-50 disabled:cursor-not-allowed"
                                 }`}
                         >
-                            {refunded ? "✓ Refunded to your wallet" : refunding ? "Refunding..." : "Didn't get what you paid for? Refund"}
+                            {refunded ? "✓ Refunded to your wallet" : refunding ? "Refunding..." : "Refund"}
                         </button>
                     )}
                 </div>

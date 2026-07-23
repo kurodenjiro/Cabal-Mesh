@@ -8,7 +8,6 @@ import { PixelClassIcon } from "./icons/PixelClassIcon";
 interface WalletCabinetProps {
     visible: boolean;
     onClose: () => void;
-    onOpenConfig: () => void;
     onDelegate: () => void;
     peerCount?: number;
 }
@@ -32,11 +31,26 @@ interface IdentityView {
     address: string;
 }
 
-export const WalletCabinet: React.FC<WalletCabinetProps> = ({ visible, onClose, onOpenConfig, onDelegate, peerCount = 0 }) => {
+export const WalletCabinet: React.FC<WalletCabinetProps> = ({ visible, onClose, onDelegate, peerCount = 0 }) => {
     const [bridgeStatus, setBridgeStatus] = useState<string | null>(null);
     const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
     const [identity, setIdentity] = useState<IdentityView | null>(null);
     const [syncing, setSyncing] = useState(false);
+    const [copied, setCopied] = useState(false);
+    const [showImport, setShowImport] = useState(false);
+    const [importKey, setImportKey] = useState("");
+    const [importing, setImporting] = useState(false);
+
+    const handleCopyAddress = async () => {
+        if (!identity) return;
+        try {
+            await navigator.clipboard.writeText(identity.address);
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1500);
+        } catch (e) {
+            console.error("Failed to copy address:", e);
+        }
+    };
 
     const fetchSnapshot = async () => {
         try {
@@ -49,14 +63,25 @@ export const WalletCabinet: React.FC<WalletCabinetProps> = ({ visible, onClose, 
         }
     };
 
+    // get_wallet_snapshot only reads the last-saved local snapshot — it does not
+    // hit the chain. A real balance refresh needs to re-sync from RPC first.
+    const refreshBalanceFromChain = async () => {
+        try {
+            await invoke("sync_blockchain_state", { wallet: "" });
+        } catch (e) {
+            console.error("Failed to sync balance from chain:", e);
+        }
+        fetchSnapshot();
+    };
+
     useEffect(() => {
         if (!visible) return;
         invoke("get_bridge_status").then((status: any) => setBridgeStatus(status)).catch(console.error);
         fetchIdentity();
-        fetchSnapshot();
+        refreshBalanceFromChain();
 
         // Auto-refresh the balance while the cabinet is open, instead of only on manual click.
-        const interval = setInterval(fetchSnapshot, 15000);
+        const interval = setInterval(refreshBalanceFromChain, 15000);
         return () => clearInterval(interval);
     }, [visible]);
 
@@ -107,6 +132,38 @@ export const WalletCabinet: React.FC<WalletCabinetProps> = ({ visible, onClose, 
         }
     };
 
+    const handleLogout = async () => {
+        if (!confirm("Log out of this wallet and generate a brand-new one? Make sure you've saved this wallet's private key if you want to come back to it later.")) return;
+        try {
+            await invoke("logout_wallet");
+            setSnapshot(null);
+            await fetchIdentity();
+            refreshBalanceFromChain();
+        } catch (e) {
+            console.error("Logout failed:", e);
+            alert("Failed to log out: " + e);
+        }
+    };
+
+    const handleImport = async () => {
+        const key = importKey.trim();
+        if (!key) return;
+        setImporting(true);
+        try {
+            await invoke("import_wallet", { privateKeyHex: key, alias: "Imported Fox", emoji: "🦊" });
+            setImportKey("");
+            setShowImport(false);
+            setSnapshot(null);
+            await fetchIdentity();
+            refreshBalanceFromChain();
+        } catch (e) {
+            console.error("Import failed:", e);
+            alert("Failed to import wallet — check that the private key is valid: " + e);
+        } finally {
+            setImporting(false);
+        }
+    };
+
     const handleDelegate = async () => {
         // Trigger navigation to DelegationCenter
         onDelegate();
@@ -115,7 +172,7 @@ export const WalletCabinet: React.FC<WalletCabinetProps> = ({ visible, onClose, 
     if (!visible) return null;
 
     const nativeBalance = snapshot?.assets?.find((a) => a.symbol === "AVAX");
-    const balanceText = nativeBalance ? formatEther(nativeBalance.amount) : "0.00";
+    const balanceText = nativeBalance ? parseFloat(formatEther(nativeBalance.amount)).toFixed(2) : "0.00";
 
     return (
         <motion.div
@@ -133,7 +190,6 @@ export const WalletCabinet: React.FC<WalletCabinetProps> = ({ visible, onClose, 
                         <span className="text-nobody-primary font-medium">
                             {bridgeStatus?.includes("Active") ? "🟢 Agent Access: On" : "⚪ Agent Access: Off"}
                         </span>
-                        <button onClick={onOpenConfig} className="text-slate-400 hover:text-slate-700 transition-colors">⚙️</button>
                         <button onClick={onClose} className="text-slate-400 hover:text-slate-700 transition-colors">✕</button>
                     </div>
                 </div>
@@ -148,6 +204,13 @@ export const WalletCabinet: React.FC<WalletCabinetProps> = ({ visible, onClose, 
                             <div className="flex items-center justify-center gap-1.5 text-[11px] text-slate-400 font-mono mt-2">
                                 <PixelClassIcon address={identity.address} size={14} />
                                 {identity.emoji || "👻"} {identity.address.slice(0, 10)}...{identity.address.slice(-8)}
+                                <button
+                                    onClick={handleCopyAddress}
+                                    title="Copy full address"
+                                    className="text-slate-400 hover:text-nobody-primary transition-colors"
+                                >
+                                    {copied ? "✓" : "📋"}
+                                </button>
                             </div>
                         )}
                         <div className="flex justify-center gap-4 mt-3 text-xs">
@@ -166,13 +229,57 @@ export const WalletCabinet: React.FC<WalletCabinetProps> = ({ visible, onClose, 
                     </button>
 
                     {/* Danger zone — visually separated and de-emphasized so it's never confused with a normal action */}
-                    <div className="pt-2 border-t border-slate-100 flex justify-end">
-                        <button
-                            onClick={handleDelete}
-                            className="text-[11px] text-slate-400 hover:text-red-600 transition-colors"
-                        >
-                            Erase all local data
-                        </button>
+                    <div className="pt-2 border-t border-slate-100 space-y-2">
+                        {!showImport ? (
+                            <div className="flex justify-end gap-4 flex-wrap">
+                                <button
+                                    onClick={() => setShowImport(true)}
+                                    className="text-[11px] text-slate-400 hover:text-nobody-primary transition-colors"
+                                >
+                                    🔑 Import a different wallet
+                                </button>
+                                <button
+                                    onClick={handleLogout}
+                                    className="text-[11px] text-slate-400 hover:text-red-600 transition-colors"
+                                >
+                                    Log out this wallet
+                                </button>
+                                <button
+                                    onClick={handleDelete}
+                                    className="text-[11px] text-slate-400 hover:text-red-600 transition-colors"
+                                >
+                                    Erase all local data
+                                </button>
+                            </div>
+                        ) : (
+                            <div className="pixel-corners-sm bg-black/20 border border-nobody-primary/20 p-3 space-y-2">
+                                <div className="text-[11px] text-slate-400">
+                                    Paste a private key (0x...) to switch to that wallet. Your current wallet's key will be gone unless you saved it.
+                                </div>
+                                <input
+                                    type="password"
+                                    value={importKey}
+                                    onChange={(e) => setImportKey(e.target.value)}
+                                    placeholder="0x..."
+                                    className="w-full bg-nobody-charcoal border border-slate-600 pixel-corners-sm px-2 py-1.5 text-xs text-slate-200 font-mono"
+                                />
+                                <div className="flex justify-end gap-3 text-[11px]">
+                                    <button
+                                        onClick={() => { setShowImport(false); setImportKey(""); }}
+                                        className="text-slate-400 hover:text-slate-200"
+                                    >
+                                        Cancel
+                                    </button>
+                                    <button
+                                        onClick={handleImport}
+                                        disabled={importing || !importKey.trim()}
+                                        className="text-nobody-primary hover:underline font-semibold disabled:opacity-50"
+                                    >
+                                        {importing ? "Importing..." : "Import & Switch"}
+                                    </button>
+                                </div>
+                            </div>
+                        )}
                     </div>
 
                 </div>

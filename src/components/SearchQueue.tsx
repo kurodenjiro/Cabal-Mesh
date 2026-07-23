@@ -29,7 +29,7 @@ export const SearchQueue: React.FC<SearchQueueProps> = ({ jobs, onDismiss }) => 
                         initial={{ opacity: 0, y: 8 }}
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0, y: -8 }}
-                        className={`bg-nobody-charcoal border shadow-card pixel-corners-sm px-3 py-2 flex items-center gap-3 text-xs ${job.status === "matched" ? "border-nobody-primary" :
+                        className={`bg-nobody-charcoal/80 border shadow-card pixel-corners-sm px-3 py-2 flex items-center gap-3 text-xs opacity-85 ${job.status === "matched" ? "border-nobody-primary" :
                             job.status === "no-match" ? "border-slate-300" :
                                 job.status === "error" ? "border-red-300" :
                                     job.status === "queued" ? "border-nobody-gold" :
@@ -45,7 +45,7 @@ export const SearchQueue: React.FC<SearchQueueProps> = ({ jobs, onDismiss }) => 
                         {job.status === "queued" && <span className="shrink-0">📡</span>}
 
                         <div className="flex-1 min-w-0">
-                            <div className="text-slate-900 font-medium truncate">🗺️ Quest: "{job.intent}"</div>
+                            <div className="text-slate-700 font-medium truncate">🗺️ Quest: "{job.intent}"</div>
                             <div className="text-slate-400 text-[11px] truncate">{job.message}</div>
                         </div>
 

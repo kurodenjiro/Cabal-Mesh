@@ -1,39 +1,69 @@
 import React from "react";
+import scene from "../assets/background/scene.png";
+import circleIcon from "../assets/icons/icon_circle.png";
+import peerIcon from "../assets/icons/icon_peer.png";
+import zzzIcon from "../assets/icons/icon_zzz.png";
 
 interface StatusIndicatorProps {
     isOnline: boolean;
     peerCount: number;
     aiReady: boolean;
-    showConfig: () => void;
 }
 
-export const Nexus: React.FC<React.PropsWithChildren<StatusIndicatorProps>> = ({ children, isOnline, peerCount, aiReady, showConfig }) => {
+export const Nexus: React.FC<React.PropsWithChildren<StatusIndicatorProps>> = ({ children, isOnline, peerCount, aiReady }) => {
     return (
         <div className="h-screen w-screen bg-nobody-dark overflow-hidden flex flex-col relative font-sans text-slate-900 selection:bg-nobody-primary-soft selection:text-nobody-ink">
+            {/* Pixel-art RPG night-ruins backdrop, purely decorative. */}
+            <div
+                className="absolute inset-0 pointer-events-none"
+                style={{
+                    backgroundImage: `url(${scene})`,
+                    backgroundSize: "cover",
+                    backgroundPosition: "center",
+                    imageRendering: "pixelated",
+                }}
+            />
+
             <div className="absolute top-4 right-4 flex gap-2 z-30">
                 <StatusItem
-                    icon={isOnline ? "🟢" : "🔴"}
-                    label={isOnline ? "ONLINE" : "OFFLINE"}
-                    textColor={isOnline ? "text-nobody-primary" : "text-red-500"}
+                    icon={
+                        <img
+                            src={circleIcon}
+                            alt={isOnline ? "Online" : "Offline"}
+                            draggable={false}
+                            style={{
+                                width: 12,
+                                height: 12,
+                                imageRendering: "pixelated",
+                                filter: isOnline ? "brightness(1.15)" : "grayscale(1) brightness(0.55)",
+                            }}
+                        />
+                    }
+                    title={isOnline ? "Online" : "Offline"}
                 />
 
                 <StatusItem
-                    icon="👥"
-                    label={`${peerCount} PEERS`}
+                    icon={<img src={peerIcon} alt="Peers" draggable={false} style={{ width: 14, height: 12, imageRendering: "pixelated" }} />}
+                    label={`${peerCount}`}
+                    title={`${peerCount} peer${peerCount === 1 ? "" : "s"} connected`}
                 />
 
                 <StatusItem
-                    icon={aiReady ? "🤖" : "💤"}
-                    label={aiReady ? "AI READY" : "AI OFFLINE"}
-                    textColor={aiReady ? "text-nobody-primary" : "text-slate-400"}
+                    icon={
+                        <img
+                            src={zzzIcon}
+                            alt={aiReady ? "AI ready" : "AI offline"}
+                            draggable={false}
+                            style={{
+                                width: 14,
+                                height: 12,
+                                imageRendering: "pixelated",
+                                filter: aiReady ? "brightness(1.15)" : "grayscale(1) brightness(0.55)",
+                            }}
+                        />
+                    }
+                    title={aiReady ? "AI ready" : "AI offline"}
                 />
-
-                <button
-                    onClick={showConfig}
-                    className="h-8 bg-nobody-charcoal pixel-corners-sm px-4 border border-nobody-primary/30 text-slate-500 hover:text-nobody-primary hover:border-nobody-primary transition-all text-[10px] font-pixel tracking-wide"
-                >
-                    [CFG]
-                </button>
             </div>
 
             {/* Main Content Area */}
@@ -42,11 +72,9 @@ export const Nexus: React.FC<React.PropsWithChildren<StatusIndicatorProps>> = ({
     );
 };
 
-const StatusItem = ({ icon, label, textColor = "text-slate-500" }: { icon: string, label: string, textColor?: string }) => (
-    <div className="h-8 flex items-center gap-2 bg-nobody-charcoal pixel-corners-sm px-3 border border-nobody-primary/20 min-w-[110px] justify-center">
-        <span className="text-xs">{icon}</span>
-        <span className={`text-[10px] font-pixel tracking-wide ${textColor}`}>
-            {label}
-        </span>
+const StatusItem = ({ icon, label, title }: { icon: React.ReactNode, label?: string, title?: string }) => (
+    <div title={title} className="h-8 flex items-center gap-1 bg-nobody-charcoal pixel-corners-sm px-3 border border-nobody-primary/20 justify-center">
+        <span className="text-xs flex items-center">{icon}</span>
+        {label && <span className="text-[10px] font-pixel tracking-wide text-slate-500">{label}</span>}
     </div>
 );

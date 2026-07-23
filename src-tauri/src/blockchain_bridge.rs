@@ -14,16 +14,9 @@ use alloy::{
     signers::{local::PrivateKeySigner, SignerSync},
     sol,
 };
-use keyring::Entry;
-use aes_gcm::{
-    aead::{Aead, AeadCore, KeyInit, OsRng, rand_core::RngCore},
-    Aes256Gcm, Nonce, Key
-};
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use aes_gcm::aead::{OsRng, rand_core::RngCore};
 use tokio::time::{timeout, Duration};
 
-const KEYCHAIN_SERVICE: &str = "com.cabalmesh.wallet";
-const KEYCHAIN_USER: &str = "snapshot-encryption-key";
 pub const DEFAULT_AVAX_RPC_URL: &str = "https://api.avax-test.network/ext/bc/C/rpc";
 
 sol! {
@@ -93,6 +86,10 @@ pub struct VoucherView {
     pub voucher_type: String,
     pub description: String,
     pub owner: String,
+    /// The address that originally minted this voucher (proof-of-possession at
+    /// listing time) — lets the UI distinguish "I bought this from someone"
+    /// from "I minted this myself to sell and still hold it unsold".
+    pub minted_by: String,
 }
 
 /// A Marketplace deal (real on-chain state: Active/Released/Refunded) —
@@ -189,6 +186,7 @@ pub struct BlockchainBridge {
     pub relayed_history_path: PathBuf,
     pub content_store_path: PathBuf,
     pub received_content_path: PathBuf,
+    pub relay_boost_path: PathBuf,
     pub rpc_url: String,
     pub escrow_address: Option<Address>,
     pub marketplace_address: Option<Address>,
@@ -218,9 +216,14 @@ impl BlockchainBridge {
             .filter(|s| !s.is_empty())
             .and_then(|s| Address::from_str(&s).ok());
 
-        let app_dir = dirs::data_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("cabalmesh");
+        // CABALMESH_DATA_DIR lets multiple isolated instances run side by side on
+        // one machine (e.g. for a local 2-node mesh test) without sharing a wallet.
+        let app_dir = match std::env::var("CABALMESH_DATA_DIR") {
+            Ok(dir) if !dir.is_empty() => PathBuf::from(dir),
+            _ => dirs::data_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("cabalmesh"),
+        };
         let _ = fs::create_dir_all(&app_dir);
 
         let mut bridge = Self {
@@ -232,6 +235,7 @@ impl BlockchainBridge {
             relayed_history_path: app_dir.join("relayed_history.json"),
             content_store_path: app_dir.join("content_store.json"),
             received_content_path: app_dir.join("received_content.json"),
+            relay_boost_path: app_dir.join("relay_boost.json"),
             rpc_url,
             escrow_address,
             marketplace_address,
@@ -290,6 +294,39 @@ impl BlockchainBridge {
             });
         }
         Ok(views)
+    }
+
+    /// Discards the current wallet entirely and replaces it with a fresh
+    /// randomly-generated one. There's no multi-wallet slot concept anywhere
+    /// in this bridge (every signing path hard-codes `identities[0]`), so
+    /// "logout" means wiping the vec and generating a brand-new identity to
+    /// take its place, not just clearing state and leaving no signer at all.
+    pub fn logout_identity(&mut self) -> Result<Vec<IdentityView>, Box<dyn Error>> {
+        self.identities.clear();
+        let _ = self.delete_snapshot();
+        self.generate_new_identity("Genesis Fox".to_string(), "🦊".to_string())
+    }
+
+    /// Replaces the current wallet identity with one derived from a
+    /// user-supplied private key. The key is validated (it must actually
+    /// derive a signer) before anything is persisted to disk.
+    pub fn import_identity(
+        &mut self,
+        private_key_hex: String,
+        alias: String,
+        emoji: String,
+    ) -> Result<Vec<IdentityView>, Box<dyn Error>> {
+        let normalized = if private_key_hex.starts_with("0x") {
+            private_key_hex.trim().to_string()
+        } else {
+            format!("0x{}", private_key_hex.trim())
+        };
+        PrivateKeySigner::from_str(&normalized)?;
+
+        self.identities = vec![IdentityRecord { alias, emoji, private_key_hex: normalized }];
+        let _ = self.delete_snapshot();
+        self.save_identities()?;
+        self.get_identity_views()
     }
 
     pub fn get_primary_address(&self) -> String {
@@ -449,6 +486,24 @@ impl BlockchainBridge {
         Ok(())
     }
 
+    /// Multiplier applied to the (already-estimated, not real-payout) relay
+    /// earnings shown in Relay Mode — starts at 1.0 (no boost) and is
+    /// permanently increased by redeeming an "AI Compute Credit" or "Relay
+    /// Bandwidth Credit" item voucher. Persisted locally, same honesty level
+    /// as the rest of the relay-reward estimate (no real fund movement).
+    pub fn get_relay_boost_multiplier(&self) -> f64 {
+        fs::read_to_string(&self.relay_boost_path)
+            .ok()
+            .and_then(|s| s.trim().parse::<f64>().ok())
+            .unwrap_or(1.0)
+    }
+
+    pub fn apply_relay_boost(&self, additional: f64) -> Result<f64, Box<dyn Error>> {
+        let updated = self.get_relay_boost_multiplier() + additional;
+        fs::write(&self.relay_boost_path, updated.to_string())?;
+        Ok(updated)
+    }
+
     pub fn mark_relay_tx_status(&self, id: &str, status: &str, tx_hash: Option<String>) -> Result<(), Box<dyn Error>> {
         let mut pending = self.load_pending_relay_txs();
         if let Some(entry) = pending.iter_mut().find(|t| t.id == id) {
@@ -495,42 +550,17 @@ impl BlockchainBridge {
         Ok(snapshot)
     }
 
-    fn get_snapshot_key(&self) -> Result<Key<Aes256Gcm>, Box<dyn Error>> {
-        let entry = Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_USER)?;
-
-        match entry.get_password() {
-            Ok(pass) => {
-                let bytes = BASE64.decode(pass)?;
-                if bytes.len() != 32 { return Err("Invalid key length in keychain".into()); }
-                Ok(*Key::<Aes256Gcm>::from_slice(&bytes))
-            }
-            Err(_) => {
-                println!("🔐 Generating new encryption key in Keychain...");
-                let mut key_bytes = [0u8; 32];
-                OsRng.fill_bytes(&mut key_bytes);
-                let encoded = BASE64.encode(key_bytes);
-                entry.set_password(&encoded)?;
-                Ok(*Key::<Aes256Gcm>::from_slice(&key_bytes))
-            }
-        }
-    }
-
+    // This snapshot only ever holds the wallet's native AVAX balance — public
+    // on-chain data anyone can already read via RPC — so it's stored as plain
+    // JSON rather than wrapped in Keychain-backed AES-GCM. The previous
+    // Keychain-based scheme silently broke across dev rebuilds (each ad-hoc
+    // build gets a different signing identity, so `entry.get_password()` kept
+    // failing, generating a *new* key every read and making decryption of a
+    // snapshot written moments earlier fail every time) — real private keys
+    // live in `identity_path`, untouched by this.
     fn save_snapshot_encrypted(&self, snapshot: &Snapshot) -> Result<(), Box<dyn Error>> {
-        let json = serde_json::to_vec(&snapshot)?;
-
-        let key = self.get_snapshot_key()?;
-        let cipher = Aes256Gcm::new(&key);
-        let nonce = Aes256Gcm::generate_nonce(&mut OsRng); // 96-bits; unique per message
-
-        let ciphertext = cipher.encrypt(&nonce, json.as_ref())
-            .map_err(|_| "Encryption failed")?;
-
-        // Prepend nonce to ciphertext for storage
-        let mut final_data = nonce.to_vec();
-        final_data.extend_from_slice(&ciphertext);
-
-        fs::write(&self.storage_path, final_data)?;
-        println!("💾 [Bridge] Snapshot ENCRYPTED and saved via Keychain Key.");
+        fs::write(&self.storage_path, serde_json::to_vec(&snapshot)?)?;
+        println!("💾 [Bridge] Snapshot saved.");
         Ok(())
     }
 
@@ -539,18 +569,7 @@ impl BlockchainBridge {
             return Err("No snapshot found".into());
         }
         let file_data = fs::read(&self.storage_path)?;
-        if file_data.len() < 12 { return Err("Corrupted snapshot file".into()); }
-
-        let (nonce_bytes, ciphertext) = file_data.split_at(12);
-        let nonce = Nonce::from_slice(nonce_bytes);
-
-        let key = self.get_snapshot_key()?;
-        let cipher = Aes256Gcm::new(&key);
-
-        let plaintext = cipher.decrypt(nonce, ciphertext)
-            .map_err(|_| "Decryption failed - Invalid Key or Corrupted Data")?;
-
-        let snapshot: Snapshot = serde_json::from_slice(&plaintext)?;
+        let snapshot: Snapshot = serde_json::from_slice(&file_data)?;
         Ok(snapshot)
     }
 
@@ -801,10 +820,42 @@ impl BlockchainBridge {
 
         let unsigned_provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
         let unsigned_contract = IMarketplace::new(marketplace_address, unsigned_provider);
+
+        // The Marketplace contract itself doesn't block a seller from buying their
+        // own listing — enforce it client-side so a "completed sale" always means
+        // a real second party paid for it, not the seller round-tripping funds.
+        let listing = unsigned_contract.listings(U256::from(listing_id)).call().await?;
+        if listing.seller == signer.address() {
+            return Err("You can't buy your own listing".into());
+        }
+
+        // A listing can go stale if its voucher was burned outside a normal
+        // sale (e.g. the seller redeemed their own still-listed item) — the
+        // Marketplace contract has no way to know that and never flips
+        // `active` back off. Catch it here with a clear message instead of
+        // letting the on-chain buy() revert with a raw ERC721NonexistentToken.
+        if let Some(voucher_address) = self.voucher_address {
+            let voucher_provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+            let voucher_contract = IVoucher::new(voucher_address, voucher_provider);
+            if voucher_contract.ownerOf(listing.tokenId).call().await.is_err() {
+                return Err("This listing's item no longer exists — it was likely redeemed by the seller before anyone bought it".into());
+            }
+        }
+
         let calldata = unsigned_contract.buy(U256::from(listing_id)).calldata().clone();
 
         let provider = ProviderBuilder::new().wallet(signer).connect_http(self.rpc_url.parse()?);
         let contract = IMarketplace::new(marketplace_address, provider);
+
+        // TEMPORARY test hook: forces the offline-signing path without needing to
+        // actually break network connectivity (which would also hang the
+        // un-timeout-wrapped listings read used for AI matching). Remove after
+        // the offline-flow demo.
+        if std::env::var("CABALMESH_FORCE_OFFLINE_BUY").is_ok() {
+            println!("🧪 [Bridge] CABALMESH_FORCE_OFFLINE_BUY set — skipping online attempt.");
+            let queued = self.sign_offline(marketplace_address, calldata, price_wei, "Buy listing").await?;
+            return Ok(TxResult::Queued { queue_id: queued.id });
+        }
 
         // See create_escrow's comment above: map to String here to keep this future Send.
         let online_result = timeout(Duration::from_secs(6), async {
@@ -913,6 +964,7 @@ impl BlockchainBridge {
                     voucher_type: data.voucherType,
                     description: data.description,
                     owner: current_owner.to_string(),
+                    minted_by: data.mintedBy.to_string(),
                 });
             }
         }
@@ -1079,6 +1131,7 @@ mod offline_signing_tests {
             relayed_history_path: tmp_dir.join("relayed_history.json"),
             content_store_path: tmp_dir.join("content_store.json"),
             received_content_path: tmp_dir.join("received_content.json"),
+            relay_boost_path: tmp_dir.join("relay_boost.json"),
             // Deliberately unreachable — proves sign_offline never touches the network.
             rpc_url: "http://127.0.0.1:9".to_string(),
             escrow_address: None,
@@ -1137,6 +1190,7 @@ mod content_commitment_tests {
             relayed_history_path: tmp_dir.join("relayed_history.json"),
             content_store_path: tmp_dir.join("content_store.json"),
             received_content_path: tmp_dir.join("received_content.json"),
+            relay_boost_path: tmp_dir.join("relay_boost.json"),
             rpc_url: "http://127.0.0.1:9".to_string(),
             escrow_address: None,
             marketplace_address: None,

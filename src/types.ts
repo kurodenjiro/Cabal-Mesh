@@ -2,6 +2,9 @@ export interface Peer {
     id: string;
     address: string;
     timestamp: number;
+    /** The peer's real AVAX wallet address, learned from its "presence"
+     * broadcast — not known at discovery time, only once received. */
+    walletAddress?: string;
 }
 
 export interface ThoughtLog {
@@ -24,6 +27,9 @@ export interface VoucherView {
     voucher_type: string;
     description: string;
     owner: string;
+    /** Address that originally minted this voucher — used to distinguish
+     * "bought from someone else" from "minted it myself and still hold it". */
+    minted_by: string;
 }
 
 /** A Marketplace deal's real on-chain status — the "someone is currently
@@ -95,10 +101,8 @@ export interface ContentRecord {
 export type ViewState =
     | "nexus"
     | "config"
-    | "provider"
     | "service-creator"
     | "delegation"
     | "wallet-cabinet"
     | "escrow"
-    | "redeem"
-    | "notification";
+    | "redeem";

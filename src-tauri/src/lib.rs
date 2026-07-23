@@ -5,10 +5,11 @@ mod matcher;
 mod zk_handler;
 mod ollama_manager;
 mod blockchain_bridge;
+mod llm_json;
 
 use app_initializer::SystemBootstrap;
 use mesh::{MeshNetwork, PrivacyIntent};
-use agent::{SharkAgent, SharkNegotiation};
+use agent::{ContentAnalysis, SharkAgent};
 use matcher::{MatchAgent, MatchResult};
 use zk_handler::{ZKHandler, ProofRequest, ZKProof};
 use ollama_manager::OllamaManager;
@@ -47,6 +48,7 @@ async fn send_intent_to_mesh(
                 "RelayConfirmed" => "relay_confirmed",
                 "ContentRequest" => "content_request",
                 "ContentDelivery" => "content_delivery",
+                "Presence" => "presence",
                 _ => "settlement",
             };
             println!("📤 Sending {} message: {}", intent_type, payload);
@@ -84,18 +86,12 @@ async fn send_intent_to_mesh(
 }
 
 #[tauri::command]
-async fn negotiate_with_shark(
-    intent: String,
-    price_ceiling: f64,
-    market_price: f64,
+async fn analyze_pdf_content(
+    text: String,
     state: State<'_, Arc<Mutex<AppState>>>,
-) -> Result<SharkNegotiation, String> {
+) -> Result<ContentAnalysis, String> {
     let state = state.lock().await;
-    state
-        .agent
-        .negotiate(&intent, price_ceiling, market_price)
-        .await
-        .map_err(|e| e.to_string())
+    state.agent.analyze_content(&text).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -240,6 +236,27 @@ async fn get_identity(
 }
 
 #[tauri::command]
+async fn logout_wallet(
+    state: State<'_, Arc<Mutex<AppState>>>,
+) -> Result<Vec<IdentityView>, String> {
+    let state = state.lock().await;
+    let mut bridge = state.bridge.lock().await;
+    bridge.logout_identity().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn import_wallet(
+    private_key_hex: String,
+    alias: String,
+    emoji: String,
+    state: State<'_, Arc<Mutex<AppState>>>,
+) -> Result<Vec<IdentityView>, String> {
+    let state = state.lock().await;
+    let mut bridge = state.bridge.lock().await;
+    bridge.import_identity(private_key_hex, alias, emoji).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn mint_voucher(
     voucher_type: String,
     description: String,
@@ -344,6 +361,23 @@ async fn get_relayed_history(
     let state = state.lock().await;
     let bridge = state.bridge.lock().await;
     Ok(bridge.get_relayed_history())
+}
+
+#[tauri::command]
+async fn get_relay_boost(state: State<'_, Arc<Mutex<AppState>>>) -> Result<f64, String> {
+    let state = state.lock().await;
+    let bridge = state.bridge.lock().await;
+    Ok(bridge.get_relay_boost_multiplier())
+}
+
+#[tauri::command]
+async fn apply_relay_boost(
+    additional: f64,
+    state: State<'_, Arc<Mutex<AppState>>>,
+) -> Result<f64, String> {
+    let state = state.lock().await;
+    let bridge = state.bridge.lock().await;
+    bridge.apply_relay_boost(additional).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -622,7 +656,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             send_intent_to_mesh,
-            negotiate_with_shark,
+            analyze_pdf_content,
             generate_zk_proof,
             sync_blockchain_state,
             enable_instant_session,
@@ -635,6 +669,8 @@ pub fn run() {
             delete_wallet_snapshot,
             app_initializer::kill_switch,
             get_identity,
+            logout_wallet,
+            import_wallet,
             mint_voucher,
             approve_voucher,
             create_asset_listing,
@@ -647,6 +683,8 @@ pub fn run() {
             mark_relay_tx_status,
             record_relayed_tx,
             get_relayed_history,
+            get_relay_boost,
+            apply_relay_boost,
             redeem_voucher,
             get_voucher_owner,
             get_owned_vouchers,

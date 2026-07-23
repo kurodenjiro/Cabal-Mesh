@@ -16,12 +16,15 @@ pub struct OllamaResponse {
     pub done: bool,
 }
 
+/// Real local-LLM read of a PDF page's extracted text — classifies what kind
+/// of book/document content it looks like, and flags text that doesn't read
+/// like genuine document content (e.g. gibberish, placeholder text, garbled
+/// PDF-extraction noise) so a listing isn't created on top of it unchecked.
 #[derive(Debug, Serialize, Deserialize)]
-pub struct SharkNegotiation {
-    pub user_price_ceiling: f64,
-    pub current_market_price: f64,
-    pub recommended_bid: f64,
-    pub strategy: String,
+pub struct ContentAnalysis {
+    pub content_type: String,
+    pub is_real_document: bool,
+    pub reasoning: String,
 }
 
 pub struct SharkAgent {
@@ -37,39 +40,25 @@ impl SharkAgent {
         }
     }
 
-    pub async fn negotiate(
-        &self,
-        intent: &str,
-        price_ceiling: f64,
-        market_price: f64,
-    ) -> Result<SharkNegotiation, Box<dyn Error>> {
-        let system_prompt = format!(
-            r#"You are a "Shark Mode Agent" designed for aggressive, profit-maximizing negotiations in a privacy-first mesh network.
+    /// Asks the local LLM to actually read the extracted PDF text and judge
+    /// what kind of book/document content it is, as a real check that the
+    /// uploaded page is genuine content rather than noise/gibberish — not a
+    /// rubber-stamp, since the model can and does say `is_real_document: false`.
+    pub async fn analyze_content(&self, text: &str) -> Result<ContentAnalysis, Box<dyn Error>> {
+        let system_prompt = r#"You are a document classifier. You will be given the text extracted from page 1 of an uploaded PDF that is being listed for sale as a "book page" on a marketplace.
 
-RULES:
-1. The user's maximum acceptable price is ${:.2} (PRIVATE - never reveal this).
-2. The current market price is ${:.2}.
-3. Your goal is to negotiate the LOWEST possible price while ensuring transaction success.
-4. You must never bid above the user's price ceiling.
-5. Be strategic, aggressive, and protect the user's privacy at all costs.
-6. Respond ONLY with JSON in this exact format:
-{{
-  "recommended_bid": <number>,
-  "strategy": "<brief explanation>",
-  "confidence": <0-100>
-}}
+Judge honestly whether this reads like genuine book/document content (a real excerpt of prose, a technical page, a poem, etc.) versus meaningless noise (garbled extraction artifacts, random characters, an empty/near-empty page, or placeholder text).
 
-Intent: {}
-"#,
-            price_ceiling, market_price, intent
-        );
+Respond ONLY with JSON in this exact format:
+{
+  "content_type": "<short label, e.g. 'Fiction novel excerpt', 'Technical manual page', 'Unclear / not enough text'>",
+  "is_real_document": <true or false>,
+  "reasoning": "<one short sentence>"
+}"#.to_string();
 
         let request = OllamaRequest {
             model: "llama2".to_string(),
-            prompt: format!(
-                "Analyze this trading intent and provide your negotiation strategy: {}",
-                intent
-            ),
+            prompt: format!("Classify this page 1 text:\n\n{}", text),
             stream: false,
             system: Some(system_prompt),
         };
@@ -83,48 +72,22 @@ Intent: {}
 
         let ollama_response: OllamaResponse = response.json().await?;
 
-        // Parse the AI response (expected JSON)
-        let negotiation: serde_json::Value = serde_json::from_str(&ollama_response.response)
+        // llama2 often wraps its JSON in explanatory prose despite being told
+        // not to — parse just the {...} block, not the whole raw response.
+        let parsed: serde_json::Value = serde_json::from_str(crate::llm_json::extract_json_object(&ollama_response.response))
             .unwrap_or_else(|_| {
-                // Fallback if AI doesn't return proper JSON
                 serde_json::json!({
-                    "recommended_bid": market_price * 0.95,
-                    "strategy": "Conservative bid below market",
-                    "confidence": 70
+                    "content_type": "Unknown (model did not return valid JSON)",
+                    "is_real_document": false,
+                    "reasoning": "Local LLM response could not be parsed."
                 })
             });
 
-        Ok(SharkNegotiation {
-            user_price_ceiling: price_ceiling,
-            current_market_price: market_price,
-            recommended_bid: negotiation["recommended_bid"]
-                .as_f64()
-                .unwrap_or(market_price * 0.95),
-            strategy: negotiation["strategy"]
-                .as_str()
-                .unwrap_or("Default strategy")
-                .to_string(),
+        Ok(ContentAnalysis {
+            content_type: parsed["content_type"].as_str().unwrap_or("Unknown").to_string(),
+            is_real_document: parsed["is_real_document"].as_bool().unwrap_or(false),
+            reasoning: parsed["reasoning"].as_str().unwrap_or("").to_string(),
         })
     }
 
-    pub async fn verify_strategy(
-        &self,
-        negotiation: &SharkNegotiation,
-    ) -> Result<bool, Box<dyn Error>> {
-        // Verify the AI didn't cheat the owner
-        if negotiation.recommended_bid > negotiation.user_price_ceiling {
-            println!(
-                "⚠️  Agent violated price ceiling! Bid: {}, Ceiling: {}",
-                negotiation.recommended_bid, negotiation.user_price_ceiling
-            );
-            return Ok(false);
-        }
-
-        if negotiation.recommended_bid <= 0.0 {
-            println!("⚠️  Invalid bid amount: {}", negotiation.recommended_bid);
-            return Ok(false);
-        }
-
-        Ok(true)
-    }
 }

@@ -74,11 +74,6 @@ export const IntentComposer: React.FC<IntentComposerProps> = ({ intent, setInten
                     className="w-20 bg-slate-50 text-nobody-gold p-3 outline-none text-sm placeholder-slate-500 focus:bg-nobody-charcoal transition-colors font-mono text-center"
                 />
             </div>
-
-            {/* Instruction / Help Text */}
-            <div className="text-left text-slate-400 text-[10px] font-pixel tracking-wide">
-                PROTECTED BY CABALMESH PROTOCOL v1.0
-            </div>
         </div>
     );
 };

@@ -1,21 +1,25 @@
-import React from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Peer } from "../types";
-import { PixelKnight } from "./icons/PixelKnight";
+import { SpriteCharacter } from "./icons/SpriteCharacter";
 import { addressClass, CLASS_LABEL, CharacterClass } from "../lib/rpgFlavor";
 
 interface MeshCharacterFieldProps {
     peers: Peer[];
+    /** Your own real wallet address, used to pick your character sprite and
+     * to label your own avatar the same way peers are labeled. */
+    myAddress?: string | null;
 }
 
-/** Per-class tint/shape so each peer node reads as a distinct NPC — the class
- * itself is a deterministic hash of the peer's real id (see addressClass),
- * this map just decides how each of the 4 classes looks. */
-const CLASS_STYLE: Record<CharacterClass, { text: string; bg: string; glow: string; shape: string }> = {
-    knight: { text: "text-nobody-primary", bg: "bg-nobody-primary", glow: "rgba(57,255,143,0.55)", shape: "rotate-45" },
-    scout: { text: "text-nobody-gold", bg: "bg-nobody-gold", glow: "rgba(192,77,255,0.55)", shape: "rounded-full" },
-    mystic: { text: "text-nobody-accent", bg: "bg-nobody-accent", glow: "rgba(255,63,164,0.55)", shape: "rounded-none" },
-    forger: { text: "text-slate-400", bg: "bg-slate-400", glow: "rgba(148,163,184,0.55)", shape: "rounded-sm" },
+/** Per-class label tint + tether glow color — the class itself is a
+ * deterministic hash of the real address (see addressClass); the actual
+ * visual distinction between classes now comes from each having its own
+ * sprite character (see SpriteCharacter), not a colored shape. */
+const CLASS_STYLE: Record<CharacterClass, { text: string; glow: string }> = {
+    knight: { text: "text-nobody-primary", glow: "rgba(38,49,94,0.55)" },
+    scout: { text: "text-nobody-gold", glow: "rgba(184,134,15,0.55)" },
+    mystic: { text: "text-nobody-accent", glow: "rgba(156,79,110,0.55)" },
+    forger: { text: "text-slate-400", glow: "rgba(148,163,184,0.55)" },
 };
 
 const peerPosition = (peer: Peer, index: number, total: number) => {
@@ -29,7 +33,32 @@ const peerPosition = (peer: Peer, index: number, total: number) => {
     return { x, y, distance, lineAngle };
 };
 
-export const MeshCharacterField: React.FC<MeshCharacterFieldProps> = ({ peers }) => {
+// Matches the roam motion's transition below — used to pause the walk-cycle
+// animation (show idle) while the character is turned around at each end,
+// instead of always playing the walk frames non-stop. The roam cycle walks
+// for the first 40%, pauses turned around for 10%, walks back for 40%, then
+// pauses again for the final 10% before looping.
+const ROAM_DURATION_S = 10;
+const ROAM_PAUSE_1: [number, number] = [0.4, 0.5];
+const ROAM_PAUSE_2: [number, number] = [0.9, 1.0];
+
+export const MeshCharacterField: React.FC<MeshCharacterFieldProps> = ({ peers, myAddress }) => {
+    const myClass = addressClass(myAddress || "self");
+
+    const [roamWalking, setRoamWalking] = useState(true);
+    const roamStartRef = useRef(Date.now());
+
+    useEffect(() => {
+        const tick = () => {
+            const elapsed = ((Date.now() - roamStartRef.current) / 1000) % ROAM_DURATION_S;
+            const phase = elapsed / ROAM_DURATION_S;
+            const isPaused = (phase >= ROAM_PAUSE_1[0] && phase <= ROAM_PAUSE_1[1]) || phase >= ROAM_PAUSE_2[0];
+            setRoamWalking((prev) => (prev === !isPaused ? prev : !isPaused));
+        };
+        const id = setInterval(tick, 150);
+        return () => clearInterval(id);
+    }, []);
+
     return (
         <div className="absolute inset-0 flex items-center justify-center overflow-hidden pointer-events-none">
             {/* Perspective ground grid */}
@@ -37,15 +66,15 @@ export const MeshCharacterField: React.FC<MeshCharacterFieldProps> = ({ peers })
                 className="absolute left-0 right-0 bottom-[28%] h-[220px] opacity-20"
                 style={{
                     backgroundImage:
-                        "repeating-linear-gradient(90deg, rgba(57,255,143,0.5) 0px, rgba(57,255,143,0.5) 1px, transparent 1px, transparent 40px)," +
-                        "repeating-linear-gradient(0deg, rgba(57,255,143,0.5) 0px, rgba(57,255,143,0.5) 1px, transparent 1px, transparent 40px)",
+                        "repeating-linear-gradient(90deg, rgba(184,134,15,0.5) 0px, rgba(184,134,15,0.5) 1px, transparent 1px, transparent 40px)," +
+                        "repeating-linear-gradient(0deg, rgba(184,134,15,0.5) 0px, rgba(184,134,15,0.5) 1px, transparent 1px, transparent 40px)",
                     transform: "perspective(400px) rotateX(60deg)",
                     maskImage: "linear-gradient(to top, black, transparent)",
                 }}
             />
 
             {/* Ground line / mesh horizon */}
-            <div className="absolute left-[10%] right-[10%] bottom-[28%] h-px bg-nobody-primary/40" style={{ boxShadow: "0 0 12px rgba(57,255,143,0.4)" }} />
+            <div className="absolute left-[10%] right-[10%] bottom-[28%] h-px bg-nobody-gold/40" style={{ boxShadow: "0 0 12px rgba(184,134,15,0.4)" }} />
 
             {/* Central beacon (mesh hub) */}
             <motion.div
@@ -53,7 +82,7 @@ export const MeshCharacterField: React.FC<MeshCharacterFieldProps> = ({ peers })
                 animate={{ opacity: [0.6, 1, 0.6] }}
                 transition={{ duration: 2.5, repeat: Infinity, ease: "easeInOut" }}
             >
-                <div className="w-2 h-2 bg-nobody-primary pixel-corners-sm" style={{ boxShadow: "0 0 16px rgba(57,255,143,0.7)" }} />
+                <div className="w-2 h-2 bg-nobody-gold pixel-corners-sm" style={{ boxShadow: "0 0 16px rgba(184,134,15,0.7)" }} />
             </motion.div>
 
             {/* Tether lines from beacon to each peer */}
@@ -86,30 +115,48 @@ export const MeshCharacterField: React.FC<MeshCharacterFieldProps> = ({ peers })
                     return (
                         <motion.div
                             key={peer.id}
-                            className="absolute left-1/2 bottom-[28%] z-10"
+                            className="absolute left-1/2 bottom-[24%] z-10"
                             initial={{ scale: 0, opacity: 0, x, y }}
                             animate={{ scale: 1, opacity: 1, x, y }}
                             exit={{ scale: 0, opacity: 0 }}
                             transition={{ type: "spring", stiffness: 120 }}
                         >
-                            <div className={`w-2.5 h-2.5 ${color.shape} ${color.bg}`} style={{ boxShadow: `0 0 10px ${color.glow}` }} />
-                            <div className={`absolute -top-5 left-1/2 -translate-x-1/2 text-[9px] font-mono whitespace-nowrap uppercase ${color.text}`}>
-                                {CLASS_LABEL[cls]}
+                            <div className="relative -translate-x-1/2 flex flex-col items-center gap-0.5">
+                                <div className={`text-[11px] font-mono font-bold whitespace-nowrap bg-nobody-charcoal/80 px-1.5 py-0.5 pixel-corners-sm ${peer.walletAddress ? "normal-case" : "uppercase"} ${color.text}`}>
+                                    {peer.walletAddress
+                                        ? `${peer.walletAddress.slice(0, 6)}...${peer.walletAddress.slice(-4)}`
+                                        : CLASS_LABEL[cls]}
+                                </div>
+                                <SpriteCharacter characterClass={cls} height={38} walking />
                             </div>
                         </motion.div>
                     );
                 })}
             </AnimatePresence>
 
-            {/* Roaming pixel character */}
+            {/* Your own roaming character — walks right, turns around, walks left */}
             <motion.div
-                className="absolute bottom-[28%] text-nobody-primary z-20"
-                style={{ filter: "drop-shadow(0 0 10px rgba(57,255,143,0.6))" }}
-                animate={{ x: [-180, 180, -180] }}
-                transition={{ duration: 10, repeat: Infinity, ease: "easeInOut" }}
+                className="absolute bottom-[24%] z-20"
+                animate={{ x: [-180, 180, 180, -180, -180] }}
+                transition={{
+                    duration: ROAM_DURATION_S,
+                    repeat: Infinity,
+                    ease: "easeInOut",
+                    times: [0, ROAM_PAUSE_1[0], ROAM_PAUSE_1[1], ROAM_PAUSE_2[0], 1],
+                }}
             >
-                <div className="animate-walk">
-                    <PixelKnight size={40} eyeColor="#04140a" />
+                <div className="flex flex-col items-center gap-0.5">
+                    {myAddress && (
+                        <div className={`text-[11px] font-mono font-bold whitespace-nowrap normal-case bg-nobody-charcoal/80 px-1.5 py-0.5 pixel-corners-sm ${CLASS_STYLE[myClass].text}`}>
+                            {myAddress.slice(0, 6)}...{myAddress.slice(-4)}
+                        </div>
+                    )}
+                    <motion.div
+                        animate={{ scaleX: [1, 1, -1, -1, 1, 1] }}
+                        transition={{ duration: ROAM_DURATION_S, repeat: Infinity, times: [0, 0.45, 0.45, 0.95, 0.95, 1] }}
+                    >
+                        <SpriteCharacter characterClass={myClass} height={56} walking={roamWalking} />
+                    </motion.div>
                 </div>
             </motion.div>
         </div>

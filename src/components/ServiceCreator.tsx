@@ -2,6 +2,9 @@ import React, { useState } from "react";
 import { motion } from "framer-motion";
 import { invoke } from "@tauri-apps/api/core";
 import { ContentRecord } from "../types";
+import aiComputeIcon from "../assets/items/ai_compute_credit.png";
+import relayBandwidthIcon from "../assets/items/relay_bandwidth_credit.png";
+import bookPageIcon from "../assets/items/book_page.png";
 
 interface ServiceCreatorProps {
     onClose: () => void;
@@ -10,14 +13,19 @@ interface ServiceCreatorProps {
 
 const VOUCHER_TYPES = ["AI Compute Credit", "Relay Bandwidth Credit", "Book Page (PDF)", "Custom"];
 const PDF_TYPE = "Book Page (PDF)";
+const VOUCHER_TYPE_ICON: Partial<Record<string, string>> = {
+    "AI Compute Credit": aiComputeIcon,
+    "Relay Bandwidth Credit": relayBandwidthIcon,
+    "Book Page (PDF)": bookPageIcon,
+};
 
 type Step = "idle" | "extracting" | "minting" | "approving" | "listing" | "signing" | "done";
 
 const STEP_LABEL: Record<Step, string> = {
     idle: "",
     extracting: "Extracting page 1 text from the PDF...",
-    minting: "Minting voucher NFT (proof of possession)...",
-    approving: "Approving Marketplace to hold the voucher...",
+    minting: "Minting item NFT (proof of possession)...",
+    approving: "Approving Marketplace to hold the item...",
     listing: "Creating on-chain listing...",
     signing: "Signing the page content (real signature, not ZK)...",
     done: "Listed ✓",
@@ -122,7 +130,7 @@ export const ServiceCreator: React.FC<ServiceCreatorProps> = ({ onClose, onDeplo
 
                     {/* Voucher Type */}
                     <div className="space-y-2">
-                        <label className="text-slate-500 text-xs font-semibold">Voucher Type (mints a real NFT — proves you're the one offering it)</label>
+                        <label className="text-slate-500 text-xs font-semibold">Item Type (mints a real NFT — proves you're the one offering it)</label>
                         <div className="flex gap-2">
                             {VOUCHER_TYPES.map((t) => (
                                 <button
@@ -130,8 +138,11 @@ export const ServiceCreator: React.FC<ServiceCreatorProps> = ({ onClose, onDeplo
                                     type="button"
                                     onClick={() => setVoucherType(t)}
                                     disabled={isDeploying}
-                                    className={`flex-1 text-[11px] font-semibold py-2 px-1 pixel-corners-sm border transition-colors ${voucherType === t ? "border-nobody-primary bg-nobody-primary-soft text-nobody-primary" : "border-slate-200 text-slate-500 hover:border-slate-300"}`}
+                                    className={`flex-1 flex flex-col items-center gap-1 text-[11px] font-semibold py-2 px-1 pixel-corners-sm border transition-colors ${voucherType === t ? "border-nobody-primary bg-nobody-primary-soft text-nobody-primary" : "border-slate-200 text-slate-500 hover:border-slate-300"}`}
                                 >
+                                    {VOUCHER_TYPE_ICON[t] && (
+                                        <img src={VOUCHER_TYPE_ICON[t]} alt="" draggable={false} style={{ width: 20, height: 20, imageRendering: "pixelated" }} />
+                                    )}
                                     {t}
                                 </button>
                             ))}
@@ -142,7 +153,7 @@ export const ServiceCreator: React.FC<ServiceCreatorProps> = ({ onClose, onDeplo
                                 value={customType}
                                 onChange={(e) => setCustomType(e.target.value)}
                                 disabled={isDeploying}
-                                placeholder="Custom voucher type name"
+                                placeholder="Custom item type name"
                                 className="w-full bg-slate-50 border border-slate-200 pixel-corners-sm p-3 text-sm text-slate-900 focus:border-nobody-primary focus:bg-nobody-charcoal outline-none transition-colors"
                             />
                         )}
@@ -204,7 +215,7 @@ export const ServiceCreator: React.FC<ServiceCreatorProps> = ({ onClose, onDeplo
 
                     {hasContent && parseFloat(priceAvax) > 0 && step === "idle" && (
                         <div className="bg-nobody-gold-soft pixel-corners-sm p-3 text-center text-sm text-nobody-gold font-semibold">
-                            Preview: "{effectiveType}" — {priceAvax} AVAX
+                            Preview: "{effectiveType}" — {(parseFloat(priceAvax) || 0).toFixed(2)} AVAX
                         </div>
                     )}
 

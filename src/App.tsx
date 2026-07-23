@@ -1,26 +1,23 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { formatEther } from "ethers";
 import "./styles.css";
+import skullIcon from "./assets/icons/icon_skull.png";
 
 // Components
 import { Nexus } from "./components/Nexus";
 import { MeshCharacterField } from "./components/MeshCharacterField";
-import { RadiantHalo } from "./components/RadiantHalo";
 import { AmbientParticles } from "./components/AmbientParticles";
 import { RelayerStatusCompact } from "./components/RelayerStatusCompact";
-import { ActiveListingsCompact } from "./components/ActiveListingsCompact";
 import { WalletBalanceCompact } from "./components/WalletBalanceCompact";
 import { IntentComposer } from "./components/IntentComposer";
-import { AgentLog } from "./components/AgentLog";
 import { SearchQueue, SearchJob } from "./components/SearchQueue";
 import { OfflineQueue } from "./components/OfflineQueue";
 import { OnboardingHint } from "./components/OnboardingHint";
 import { RATE_PER_BYTE_AVAX } from "./hooks/useRelayStats";
 import { useOllamaStatus } from "./hooks/useOllamaStatus";
-import { NodeConfig } from "./components/NodeConfig";
 import { NotificationToast } from "./components/NotificationToast";
-import { ProviderDashboard } from "./components/ProviderDashboard";
 import { TradingPostPanel } from "./components/TradingPostPanel";
 import { QuestLogPanel } from "./components/QuestLogPanel";
 import { ServiceCreator } from "./components/ServiceCreator";
@@ -28,38 +25,15 @@ import { WalletCabinet } from "./components/WalletCabinet";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { SmartEscrow } from "./components/SmartEscrow";
 import { RedeemVoucher } from "./components/RedeemVoucher";
-import { DealNotification } from "./components/DealNotification";
 import { DelegationCenter } from "./components/DelegationCenter";
 
 // Types
-import { Peer, MeshEvent, ViewState, MatchResult, AssetListingView, TxResult, QueuedTx, ContentRecord } from "./types";
-
-interface SharkNegotiation {
-    user_price_ceiling: number;
-    current_market_price: number;
-    recommended_bid: number;
-    strategy: string;
-}
-
-/** Real average AVAX price across currently active on-chain listings — used as the
- * market-price input for the local Shark Agent negotiation, instead of a fake number. */
-async function getMarketPriceAvax(): Promise<number> {
-    try {
-        const listings = await invoke<AssetListingView[]>("get_active_asset_listings");
-        if (listings.length === 0) return 0;
-        const total = listings.reduce((sum, l) => sum + (parseFloat(l.price_avax) || 0), 0);
-        return total / listings.length;
-    } catch (e) {
-        console.error("Failed to compute market price from listings:", e);
-        return 0;
-    }
-}
+import { Peer, MeshEvent, ViewState, MatchResult, TxResult, QueuedTx, ContentRecord, DealView } from "./types";
 
 function App() {
     const [intent, setIntent] = useState("");
     const [peers, setPeers] = useState<Peer[]>([]);
     const [isOnline, setIsOnline] = useState(navigator.onLine);
-    const [isProcessing, setIsProcessing] = useState(false);
     const aiReady = useOllamaStatus();
     const [showHint, setShowHint] = useState(() => localStorage.getItem("cabalmesh_seen_intent_hint") !== "1");
     const dismissHint = () => {
@@ -69,8 +43,6 @@ function App() {
 
     // UI State
     const [view, setView] = useState<ViewState>("nexus");
-    const [showConfig, setShowConfig] = useState(false);
-    const [logs, setLogs] = useState<string[]>([]);
     const [notification, setNotification] = useState<string | null>(null);
     // Tracks whether this node currently has any of its own intents in flight, so the
     // mesh-event listener (registered once) can ignore its own broadcast echoing back.
@@ -86,8 +58,6 @@ function App() {
     const [dealItemLabel, setDealItemLabel] = useState("NFT #04");
     const [dealPriceLabel, setDealPriceLabel] = useState("13.5 AVAX");
     const [listingsRefreshKey, setListingsRefreshKey] = useState(0);
-    const [dealNegotiation, setDealNegotiation] = useState<SharkNegotiation | null>(null);
-    const [receivedIntentText, setReceivedIntentText] = useState("");
     const [dealSource, setDealSource] = useState<"arsenal" | "p2p">("p2p");
 
     // Content-delivery: which voucher tokenId + seller the currently open deal is
@@ -98,11 +68,60 @@ function App() {
     const dealSellerRef = useRef<string | null>(null);
     const [deliveredContent, setDeliveredContent] = useState<Record<number, ContentRecord>>({});
 
-    // Own real wallet address — fetched once, used only for cosmetic class-icon framing
-    // in SmartEscrow (which "class" avatar represents "you" in a deal).
+    // Own real wallet address — used for cosmetic class-icon framing in
+    // SmartEscrow (which "class" avatar represents "you" in a deal) and for
+    // announcing our real identity to mesh peers (see the presence broadcast
+    // below). Backend bootstrap (loading identities) runs async and can still
+    // be in progress when this component first mounts, so a single one-shot
+    // fetch can race it and come back empty forever — poll until it succeeds.
     const [myAddress, setMyAddress] = useState<string | null>(null);
     useEffect(() => {
-        invoke<{ address: string }[]>("get_identity").then((ids) => setMyAddress(ids[0]?.address ?? null)).catch(console.error);
+        let cancelled = false;
+        const tryFetch = () => {
+            invoke<{ address: string }[]>("get_identity")
+                .then((ids) => {
+                    if (cancelled) return;
+                    const address = ids[0]?.address;
+                    if (address) setMyAddress(address);
+                    else setTimeout(tryFetch, 1000);
+                })
+                .catch((e) => {
+                    console.error("Failed to fetch identity, retrying:", e);
+                    if (!cancelled) setTimeout(tryFetch, 1000);
+                });
+        };
+        tryFetch();
+        return () => { cancelled = true; };
+    }, []);
+
+    // Announce our real wallet address over the mesh whenever we have one and
+    // whenever a new peer joins — mDNS discovery alone only reveals ephemeral
+    // libp2p PeerIDs, not who's actually behind them.
+    useEffect(() => {
+        if (!myAddress) return;
+        invoke("send_intent_to_mesh", {
+            payload: JSON.stringify({ type: "Presence", address: myAddress }),
+        }).catch(console.error);
+    }, [myAddress, peers.length]);
+
+    // Real, periodically-refreshed AVAX balance — used to reject an intent whose
+    // max price already exceeds what the wallet actually holds, instead of letting
+    // it scan/match and only fail once it tries to actually buy.
+    const [myBalanceAvax, setMyBalanceAvax] = useState<number | null>(null);
+    useEffect(() => {
+        const refreshBalance = async () => {
+            try {
+                await invoke("sync_blockchain_state", { wallet: "" });
+                const snapshot = await invoke<{ assets: { symbol: string; amount: string }[] } | null>("get_wallet_snapshot");
+                const native = snapshot?.assets?.find((a) => a.symbol === "AVAX");
+                setMyBalanceAvax(native ? parseFloat(formatEther(native.amount)) : 0);
+            } catch (e) {
+                console.error("Failed to refresh balance:", e);
+            }
+        };
+        refreshBalance();
+        const interval = setInterval(refreshBalance, 15000);
+        return () => clearInterval(interval);
     }, []);
 
     // Offline-mesh-relay: transactions signed locally (no RPC reachable) and queued
@@ -115,6 +134,34 @@ function App() {
 
     useEffect(() => {
         invoke<QueuedTx[]>("get_pending_relay_txs").then(setOfflineQueue).catch(console.error);
+    }, []);
+
+    // A queued tx originally failed because the RPC timed out for ~6s — that's
+    // usually transient, not a real extended offline period. Previously the
+    // *only* way a queued tx ever got submitted was another peer relaying it
+    // (fire-and-forget over mesh, easy to miss if no one's listening at that
+    // exact moment). Retry our own queued txs directly too, since we likely
+    // have real connectivity again seconds later.
+    const offlineQueueRef = useRef<QueuedTx[]>([]);
+    useEffect(() => { offlineQueueRef.current = offlineQueue; }, [offlineQueue]);
+
+    useEffect(() => {
+        const retryQueued = async () => {
+            for (const item of offlineQueueRef.current) {
+                if (item.status !== "queued") continue;
+                try {
+                    const txHash = await invoke<string>("submit_raw_transaction", { rawTxHex: item.raw_tx_hex });
+                    console.log("✅ Self-submitted previously-queued tx:", item.id, txHash);
+                    await invoke("mark_relay_tx_status", { queueId: item.id, status: "confirmed", txHash });
+                    setOfflineQueue((prev) => prev.map((t) => (t.id === item.id ? { ...t, status: "confirmed", tx_hash: txHash } : t)));
+                    setListingsRefreshKey((k) => k + 1);
+                } catch (e) {
+                    console.log("Still can't submit queued tx (will retry):", item.id, e);
+                }
+            }
+        };
+        const interval = setInterval(retryQueued, 8000);
+        return () => clearInterval(interval);
     }, []);
 
     const handleDismissOfflineItem = (id: string) => {
@@ -133,51 +180,13 @@ function App() {
                     address: meshEvent.address || "",
                     timestamp: Date.now(),
                 }]);
-            } else if (meshEvent.type === "IntentReceived") {
-                console.log("✅ IntentReceived event detected!", meshEvent);
-                console.log("🔍 isSender:", isSenderRef.current);
-
-                // Only show deal notification if this node is NOT the sender
-                if (!isSenderRef.current) {
-                    console.log("📥 This node is the RECEIVER - showing deal notification");
-                    const incomingText: string = meshEvent.intent?.payload || "";
-                    setReceivedIntentText(incomingText);
-
-                    setIsProcessing(true);
-                    setLogs([]);
-                    addLog(`→ Encrypted intent received from peer`);
-                    addLog(`→ Consulting local Shark Agent (Ollama)...`);
-
-                    try {
-                        const marketPrice = await getMarketPriceAvax();
-                        const ceiling = parseFloat(priceCeiling) || 1;
-                        const negotiation = await invoke<SharkNegotiation>("negotiate_with_shark", {
-                            intent: incomingText,
-                            priceCeiling: ceiling,
-                            marketPrice: marketPrice || ceiling,
-                        });
-
-                        addLog(`→ Shark Agent strategy: "${negotiation.strategy}"`);
-                        addLog(`→ Recommended bid: ${negotiation.recommended_bid.toFixed(4)} AVAX`);
-
-                        setDealNegotiation(negotiation);
-                        setIsProcessing(false);
-                        setLogs([]);
-                        setNotification("📥 New deal opportunity!");
-                        setView("notification");
-                    } catch (e) {
-                        console.error("Shark negotiation failed:", e);
-                        addLog(`→ Negotiation failed: ${e}`);
-                        setIsProcessing(false);
-                    }
-                } else {
-                    console.log("📤 This node is the SENDER - ignoring own broadcast");
+            } else if (meshEvent.type === "PeerIdentity") {
+                // A peer announced its real AVAX wallet address over the mesh.
+                const peerId = meshEvent.peer_id;
+                const walletAddress = meshEvent.address;
+                if (peerId && walletAddress) {
+                    setPeers((prev) => prev.map((p) => (p.id === peerId ? { ...p, walletAddress } : p)));
                 }
-
-            } else if (meshEvent.type === "DealAccepted") {
-                console.log("✅ Deal accepted by peer!", meshEvent);
-                setNotification("🤝 Deal accepted! Waiting for settlement...");
-
             } else if (meshEvent.type === "SettlementComplete") {
                 console.log("✅ Settlement confirmation received!", meshEvent);
                 setNotification("✅ Funds released! Transaction complete.");
@@ -285,10 +294,6 @@ function App() {
         };
     }, []);
 
-    const addLog = (msg: string) => {
-        setLogs(prev => [...prev, msg]);
-    };
-
     const updateSearch = (id: number, patch: Partial<SearchJob>) => {
         setSearches(prev => prev.map(j => (j.id === id ? { ...j, ...patch } : j)));
     };
@@ -353,7 +358,7 @@ function App() {
                 setEscrowId(result.id);
                 setDealSource("arsenal");
                 setDealItemLabel(`🎫 #${match.token_id} — ${match.description}`);
-                setDealPriceLabel(`${match.price_avax} AVAX`);
+                setDealPriceLabel(`${(parseFloat(match.price_avax) || 0).toFixed(2)} AVAX`);
                 setDealTokenId(match.token_id);
                 dealTokenIdRef.current = match.token_id;
                 dealSellerRef.current = match.seller;
@@ -402,67 +407,30 @@ function App() {
         setIntent(""); // clear immediately so another intent can be typed right away
 
         const id = ++nextSearchIdRef.current;
+
+        // Reject up front if the max price already exceeds the real wallet balance —
+        // no point scanning/matching/broadcasting an intent that can never be paid for.
+        if (myBalanceAvax != null && ceiling > myBalanceAvax) {
+            setSearches(prev => [...prev, {
+                id,
+                intent: submittedIntent,
+                status: "error",
+                message: `Max price ${ceiling} AVAX exceeds your wallet balance (${myBalanceAvax} AVAX).`,
+            }]);
+            return;
+        }
+
         setSearches(prev => [...prev, { id, intent: submittedIntent, status: "scanning", message: "Broadcasting to mesh + scanning Arsenal listings..." }]);
         runSearch(id, submittedIntent, ceiling);
     };
 
-    const handleAcceptDeal = async () => {
-        console.log("🤝 Accepting deal and broadcasting to sender...");
-        const dealLabel = receivedIntentText || "Mesh intent";
-        const dealPrice = dealNegotiation ? `${dealNegotiation.recommended_bid.toFixed(4)} AVAX` : "0.01 AVAX";
-
-        // Broadcast deal acceptance to the sender
-        invoke("send_intent_to_mesh", {
-            payload: JSON.stringify({
-                type: "DealAccepted",
-                deal: dealLabel,
-                price: dealPrice
-            })
-        }).then(() => {
-            console.log("✅ Deal acceptance broadcasted!");
-        }).catch(console.error);
-
-        // Lock a small real Fuji-testnet amount in the on-chain Escrow contract.
-        // Note: the mesh protocol doesn't yet exchange peers' on-chain addresses,
-        // so this demo escrows to the buyer's own primary identity as payee. The
-        // AI-negotiated price is shown for context but never used as the locked
-        // amount, since we never trust the model directly on real fund amounts.
-        try {
-            const identities = await invoke<{ address: string }[]>("get_identity");
-            const payee = identities[0]?.address;
-            if (payee) {
-                const result = await invoke<TxResult>("create_escrow", { payee, amountAvax: "0.01" });
-                if (result.kind === "confirmed") {
-                    console.log("✅ On-chain escrow created:", result.id);
-                    setEscrowId(result.id);
-                    setDealSource("p2p");
-                    setDealItemLabel(dealLabel);
-                    setDealPriceLabel("0.01 AVAX");
-                    setView("escrow");
-                } else {
-                    console.log("📡 No network — escrow signed offline, queued for relay:", result.queueId);
-                    setOfflineQueue((prev) => [...prev, {
-                        id: result.queueId,
-                        raw_tx_hex: "",
-                        summary: `Escrow: ${dealLabel} (0.01 AVAX)`,
-                        created_at: new Date().toISOString(),
-                        status: "queued",
-                        tx_hash: null,
-                    }]);
-                }
-            }
-        } catch (e) {
-            console.error("Failed to create on-chain escrow:", e);
-            setEscrowId(null);
-            setView("escrow");
-        }
-    };
-
     const handleReleaseFunds = () => {
         console.log("💰 Releasing funds and broadcasting settlement...");
-        // Hide logs/processing UI
-        setIsProcessing(false);
-        setLogs([]);
+
+        // The voucher NFT only transfers to the buyer at release time (see
+        // Marketplace.sol's releaseDeal) — bump the shared refresh key so
+        // Inventory (and Trading Post) pick up the new ownership state.
+        setListingsRefreshKey((k) => k + 1);
 
         // Broadcast settlement confirmation back to the sender
         invoke("send_intent_to_mesh", {
@@ -476,7 +444,17 @@ function App() {
         }).catch(console.error);
     };
 
-    const handleSwitchToProvider = () => setView("provider");
+    // Reopens Smart Escrow for a deal that's still active — needed for deals that
+    // didn't route there live (e.g. one confirmed later by the offline-relay retry).
+    const handleOpenDeal = (deal: DealView) => {
+        setEscrowId(deal.deal_id);
+        setDealSource("arsenal");
+        setDealItemLabel(`🎫 #${deal.token_id}`);
+        setDealPriceLabel(`${(parseFloat(deal.amount_avax) || 0).toFixed(2)} AVAX`);
+        dealSellerRef.current = deal.seller;
+        setView("escrow");
+    };
+
     const handleCreateService = () => setView("service-creator");
     const handleDeployService = (listingId: number) => {
         console.log("✅ On-chain listing created:", listingId);
@@ -486,33 +464,31 @@ function App() {
 
     return (
         <ErrorBoundary>
-            <Nexus isOnline={isOnline} peerCount={peers.length} aiReady={aiReady} showConfig={() => setShowConfig(true)}>
+            <Nexus isOnline={isOnline} peerCount={peers.length} aiReady={aiReady}>
                 {/* Background mesh scene is always visible in Nexus mode */}
                 <AmbientParticles />
-                <RadiantHalo />
-                <MeshCharacterField peers={peers} />
+                <MeshCharacterField peers={peers} myAddress={myAddress} />
 
                 {/* Main Menu Bar */}
                 {view === "nexus" && (
                     <div className="absolute top-4 left-4 right-4 z-50 flex flex-wrap gap-2 items-start">
-                        <MenuButton label="INVENTORY" onClick={() => setView("wallet-cabinet")} active={false} color="nobody-primary" />
-                        <MenuButton label="CLAIM LOOT" onClick={() => setView("redeem")} active={false} color="nobody-gold" />
+                        <div className="h-8 flex items-center gap-1.5 bg-nobody-charcoal pixel-corners-sm px-3 border border-nobody-primary/20 shadow-card">
+                            <img src={skullIcon} alt="" draggable={false} style={{ width: 16, height: 14, imageRendering: "pixelated" }} />
+                            <span className="text-[10px] font-pixel tracking-wide text-slate-500">CABALMESH</span>
+                        </div>
+                        <MenuButton label="🎒" onClick={() => setView("redeem")} active={false} color="nobody-gold" />
                         <div className="w-px self-stretch bg-slate-300/60 mx-1 hidden sm:block" />
                         <RelayerStatusCompact isRelaying={isRelaying} onToggle={setIsRelaying} peerCount={peers.length} />
-                        <ActiveListingsCompact refreshKey={listingsRefreshKey} />
-                        <WalletBalanceCompact />
+                        <WalletBalanceCompact onOpenWallet={() => setView("wallet-cabinet")} />
                     </div>
                 )}
 
-                {/* Receiver-side processing (evaluating an incoming peer intent) */}
-                <AgentLog visible={(logs.length > 0 || isProcessing) && view === "nexus"} logs={logs} />
-
                 {/* Always-visible listings/deals — no need to open Arsenal Mode just to look */}
                 {view === "nexus" && (
-                    <TradingPostPanel refreshKey={listingsRefreshKey} onOpenArsenal={handleSwitchToProvider} onCreateListing={handleCreateService} />
+                    <TradingPostPanel refreshKey={listingsRefreshKey} onCreateListing={handleCreateService} />
                 )}
                 {view === "nexus" && (
-                    <QuestLogPanel refreshKey={listingsRefreshKey} onOpenArsenal={handleSwitchToProvider} />
+                    <QuestLogPanel refreshKey={listingsRefreshKey} onOpenDeal={handleOpenDeal} />
                 )}
 
                 {/* Sender-side queue of this node's own in-flight/finished intent searches */}
@@ -548,27 +524,10 @@ function App() {
                     onClose={() => setNotification(null)}
                 />
 
-                <NodeConfig
-                    visible={showConfig}
-                    onClose={() => setShowConfig(false)}
-                />
-
-                {/* Provider Components */}
-                {/* Provider Components */}
-                <ProviderDashboard
-                    visible={view === "provider"}
-                    onClose={() => setView("nexus")}
-                    isRelaying={isRelaying}
-                    onToggleRelay={setIsRelaying}
-                    refreshKey={listingsRefreshKey}
-                    peerCount={peers.length}
-                />
-
                 {/* Wallet Integration */}
                 <WalletCabinet
                     visible={view === "wallet-cabinet"}
                     onClose={() => setView("nexus")}
-                    onOpenConfig={() => setShowConfig(true)}
                     onDelegate={() => setView("delegation")}
                     peerCount={peers.length}
                 />
@@ -593,16 +552,6 @@ function App() {
                     sellerAddress={dealSellerRef.current ?? undefined}
                 />
 
-                <DealNotification
-                    visible={view === "notification"}
-                    onClose={() => setView("nexus")}
-                    onAccept={handleAcceptDeal}
-                    intentText={receivedIntentText}
-                    recommendedBid={dealNegotiation?.recommended_bid ?? 0}
-                    marketPrice={dealNegotiation?.current_market_price ?? 0}
-                    strategy={dealNegotiation?.strategy ?? ""}
-                />
-
                 <DelegationCenter
                     visible={view === "delegation"}
                     onComplete={() => setView("wallet-cabinet")}
@@ -611,7 +560,9 @@ function App() {
 
                 <RedeemVoucher
                     visible={view === "redeem"}
+                    refreshKey={listingsRefreshKey}
                     onClose={() => setView("nexus")}
+                    onListed={() => setListingsRefreshKey((k) => k + 1)}
                 />
             </Nexus>
         </ErrorBoundary>

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { invoke } from "@tauri-apps/api/core";
 import { useRelayStats } from "../hooks/useRelayStats";
+import relayIcon from "../assets/icons/icon_relay.png";
 
 interface RelayerStatusCompactProps {
     isRelaying: boolean;
@@ -43,7 +44,10 @@ export const RelayerStatusCompact: React.FC<RelayerStatusCompactProps> = ({ isRe
         <div className="relative">
             <div className="h-8 flex items-center gap-2 bg-nobody-charcoal pixel-corners-sm px-3 border border-nobody-primary/20 shadow-card">
                 <div className={`w-2 h-2 rounded-full ${isRelaying ? "bg-nobody-primary animate-pulse" : "bg-slate-300"}`} />
-                <span className="text-[10px] text-slate-500 font-medium">🛡️ RELAY</span>
+                <span className="text-[10px] text-slate-500 font-medium flex items-center gap-1">
+                    <img src={relayIcon} alt="" draggable={false} style={{ width: 12, height: 14, imageRendering: "pixelated" }} />
+                    RELAY
+                </span>
                 <button
                     onClick={() => onToggle(!isRelaying)}
                     className={`w-8 h-4 rounded-full p-0.5 transition-colors ${isRelaying ? "bg-nobody-primary" : "bg-slate-200"}`}

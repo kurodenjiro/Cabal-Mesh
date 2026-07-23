@@ -1,6 +1,6 @@
 import React from "react";
-import { PixelKnight } from "./PixelKnight";
-import { CharacterClass, CLASS_COLOR_CLASS, addressClass } from "../../lib/rpgFlavor";
+import { SpriteCharacter } from "./SpriteCharacter";
+import { CharacterClass, addressClass } from "../../lib/rpgFlavor";
 
 interface PixelClassIconProps {
     /** Either pass a real address to derive the class deterministically, or
@@ -11,11 +11,12 @@ interface PixelClassIconProps {
     className?: string;
 }
 
-/** Reuses the existing PixelKnight silhouette, recolored per class — same
- * proven pixel art, distinct identity cue per real counterparty address. */
+/** Small static (idle-pose) character sprite — same class-per-address
+ * mapping used in MeshCharacterField, for a consistent identity cue
+ * anywhere a counterparty's address shows up. */
 export const PixelClassIcon: React.FC<PixelClassIconProps> = ({ address, characterClass, size = 20, className = "" }) => {
     const cls = characterClass ?? (address ? addressClass(address) : "knight");
-    return <PixelKnight size={size} className={`${CLASS_COLOR_CLASS[cls]} ${className}`} />;
+    return <SpriteCharacter characterClass={cls} height={size} walking={false} className={className} />;
 };
 
 export default PixelClassIcon;

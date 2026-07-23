@@ -14,6 +14,16 @@ function formatBytes(bytes: number): string {
 /** Polls the real mesh relay byte counter (src-tauri/src/mesh.rs) while Relay Mode is on. */
 export function useRelayStats(isRelaying: boolean) {
     const [bytesProcessed, setBytesProcessed] = useState(0);
+    // Persisted multiplier (starts at 1.0) — permanently raised by redeeming an
+    // "AI Compute Credit" / "Relay Bandwidth Credit" item (see RedeemVoucher.tsx).
+    // Still just scales the same local estimate, not a real payout.
+    const [boostMultiplier, setBoostMultiplier] = useState(1);
+
+    useEffect(() => {
+        invoke<number>("get_relay_boost")
+            .then(setBoostMultiplier)
+            .catch((e) => console.error("Failed to fetch relay boost:", e));
+    }, []);
 
     useEffect(() => {
         if (!isRelaying) return;
@@ -31,7 +41,8 @@ export function useRelayStats(isRelaying: boolean) {
 
     return {
         traffic: formatBytes(bytesProcessed),
-        earnings: (bytesProcessed * RATE_PER_BYTE_AVAX).toFixed(4) + " AVAX",
+        earnings: (bytesProcessed * RATE_PER_BYTE_AVAX * boostMultiplier).toFixed(4) + " AVAX",
         bytesProcessed,
+        boostMultiplier,
     };
 }

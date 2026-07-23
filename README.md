@@ -203,6 +203,16 @@ npx hardhat test   # Runs against Hardhat's in-memory network, no real funds
 2. **Institutional Execution**: Hide market entry/exit from public order books
 3. **Private AI Labor**: Outsource tasks without revealing identities
 
+## 🗺️ Roadmap / Deferred Ideas
+
+### Buyer/seller LLM-to-LLM price negotiation
+Currently, buying only matches a buyer's intent against a listing's **fixed** price (`match_intent_to_listings` in `src-tauri/src/matcher.rs`) — there's no back-and-forth negotiation between the two sides' local agents. A real version of this would need:
+- A negotiation protocol over the mesh (offer → counter-offer → accept/reject message types, similar in spirit to the existing `relay_tx`/`content_request` intent types in `mesh.rs`).
+- Hard guardrails enforced in Rust (not trusted to the model): the buyer's agent must never bid above the user's price ceiling, the seller's agent must never accept below their floor.
+- A round limit, so two agents can't loop forever.
+
+**Known risk:** the local model (llama2 via Ollama) is not very reliable — see the JSON-parsing robustness fixes in `src-tauri/src/llm_json.rs`, needed because the model often doesn't follow "respond only with JSON" instructions. A multi-turn negotiation multiplies that risk (inconsistent replies between rounds, possible bad-price "agreement" from a parsing slip). Deferred until the single-shot matching flow is solid.
+
 ## 🤝 Contributing
 
 Contributions welcome!

@@ -74,6 +74,7 @@ contract Marketplace is ReentrancyGuard {
     function buy(uint256 listingId) external payable nonReentrant returns (uint256) {
         Listing storage l = listings[listingId];
         require(l.active, "Not active");
+        require(msg.sender != l.seller, "Cannot buy your own listing");
         require(msg.value == l.priceWei, "Wrong amount");
 
         l.active = false;

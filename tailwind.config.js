@@ -12,34 +12,36 @@ export default {
         pixel: ['"Press Start 2P"', '"JetBrains Mono"', 'ui-monospace', 'monospace'],
       },
       colors: {
-        // Neutral scale reskinned for the warm parchment theme — every
+        // Neutral scale reskinned for the dark ruins/night theme — every
         // component consistently uses `slate-*` for text/surfaces/borders,
         // so overriding the scale here flips the whole app in one place.
+        // Direction is inverted from the old light-parchment scale: low
+        // numbers are now dark (surfaces), high numbers are light (text).
         slate: {
-          50: '#f6f0e2',
-          100: '#efe6d1',
-          200: '#e2d4b3',
-          300: '#cbb98c',
-          400: '#8a7a5c',
-          500: '#6b5d45',
-          600: '#4d4230',
-          700: '#362e20',
-          800: '#251f15',
-          900: '#1a150d',
+          50: '#1c2118',
+          100: '#242a1e',
+          200: '#3a4030',
+          300: '#525a3f',
+          400: '#9a9c6e',
+          500: '#b3b47f',
+          600: '#c7c797',
+          700: '#d7d6ac',
+          800: '#e6e4c6',
+          900: '#f2f0dd',
         },
         // Primary accent — deep indigo/navy (dominant, ~70% of accent use)
-        'nobody-primary': '#26315e',
-        'nobody-primary-soft': '#dfe3f2',
+        'nobody-primary': '#7d8fd6',
+        'nobody-primary-soft': 'rgba(125, 143, 214, 0.15)',
         // Secondary accent — halo gold (used for highlights/rays, ~25%)
-        'nobody-gold': '#b8860f',
-        'nobody-gold-soft': '#f5e6bf',
+        'nobody-gold': '#c9a94f',
+        'nobody-gold-soft': 'rgba(201, 169, 79, 0.15)',
         // Rare tertiary accent — dusty rose, used sparingly for special/shark states
-        'nobody-accent': '#9c4f6e',
-        'nobody-accent-soft': '#f2dde6',
+        'nobody-accent': '#c97fa0',
+        'nobody-accent-soft': 'rgba(201, 127, 160, 0.15)',
         // Surfaces
-        'nobody-charcoal': '#fdfaf3',
-        'nobody-dark': '#f1e9d8',
-        'nobody-ink': '#fdfaf3',
+        'nobody-charcoal': '#12160f',
+        'nobody-dark': '#0a0d08',
+        'nobody-ink': '#12160f',
       },
       boxShadow: {
         card: '0 1px 2px 0 rgba(38, 49, 94, 0.06), 0 2px 8px -2px rgba(38, 49, 94, 0.08)',
