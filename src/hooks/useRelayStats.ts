@@ -41,7 +41,7 @@ export function useRelayStats(isRelaying: boolean) {
 
     return {
         traffic: formatBytes(bytesProcessed),
-        earnings: (bytesProcessed * RATE_PER_BYTE_AVAX * boostMultiplier).toFixed(4) + " AVAX",
+        earnings: (bytesProcessed * RATE_PER_BYTE_AVAX * boostMultiplier).toFixed(5) + " AVAX",
         bytesProcessed,
         boostMultiplier,
     };

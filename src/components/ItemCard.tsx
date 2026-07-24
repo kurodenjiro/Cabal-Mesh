@@ -37,7 +37,7 @@ export const ItemCard: React.FC<ItemCardProps> = ({ icon = "🎫", title, subtit
                 </div>
                 {subtitle && <div className="text-slate-400 text-[11px] truncate">{subtitle}</div>}
             </div>
-            <span className={`text-xs font-semibold shrink-0 ${accentClass}`}>{priceLabel ?? `${priceAvax} AVAX`}</span>
+            <span className={`text-xs font-semibold shrink-0 ${accentClass}`}>{priceLabel ?? `${priceAvax.toFixed(5)} AVAX`}</span>
         </Wrapper>
     );
 };

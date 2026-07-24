@@ -106,12 +106,12 @@ export const RelayerStatusCompact: React.FC<RelayerStatusCompactProps> = ({ isRe
                                 <>
                                     <div className="flex justify-between mb-2">
                                         <span className="text-slate-400">Est. reward earned</span>
-                                        <span className="text-nobody-gold font-mono font-semibold">{totalReward.toFixed(6)} AVAX</span>
+                                        <span className="text-nobody-gold font-mono font-semibold">{totalReward.toFixed(5)} AVAX</span>
                                     </div>
                                     <div className="space-y-1.5 max-h-32 overflow-y-auto">
                                         {history.slice(-5).reverse().map((h, i) => (
                                             <div key={i} className="text-[11px] text-slate-500 truncate" title={h.tx_hash}>
-                                                ✓ {h.summary} <span className="text-slate-400">({h.reward_avax} AVAX)</span>
+                                                ✓ {h.summary} <span className="text-slate-400">({(parseFloat(h.reward_avax) || 0).toFixed(5)} AVAX)</span>
                                             </div>
                                         ))}
                                     </div>

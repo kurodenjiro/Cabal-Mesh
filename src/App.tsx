@@ -259,7 +259,7 @@ function App() {
                     // Real, persisted credit for helping — reward is a deterministic estimate
                     // (bytes relayed × the same rate Relay Mode's own stats use), not an actual payout.
                     const byteCount = rawTxHex.replace(/^0x/, "").length / 2;
-                    const rewardAvax = (byteCount * RATE_PER_BYTE_AVAX).toFixed(6);
+                    const rewardAvax = (byteCount * RATE_PER_BYTE_AVAX).toFixed(5);
                     invoke("record_relayed_tx", { summary, txHash, rewardAvax }).catch(console.error);
                     invoke("record_relay_bytes", { bytes: byteCount }).catch(console.error);
 
@@ -433,7 +433,7 @@ function App() {
                 setEscrowId(result.id);
                 setDealSource("arsenal");
                 setDealItemLabel(`🎫 #${match.token_id} — ${match.description}`);
-                setDealPriceLabel(`${(parseFloat(match.price_avax) || 0).toFixed(2)} AVAX`);
+                setDealPriceLabel(`${(parseFloat(match.price_avax) || 0).toFixed(5)} AVAX`);
                 setDealTokenId(match.token_id);
                 dealTokenIdRef.current = match.token_id;
                 dealSellerRef.current = match.seller;
@@ -490,7 +490,7 @@ function App() {
                 id,
                 intent: submittedIntent,
                 status: "error",
-                message: `Max price ${ceiling} AVAX exceeds your wallet balance (${myBalanceAvax} AVAX).`,
+                message: `Max price ${ceiling} AVAX exceeds your wallet balance (${myBalanceAvax.toFixed(5)} AVAX).`,
             }]);
             return;
         }
@@ -525,7 +525,7 @@ function App() {
         setEscrowId(deal.deal_id);
         setDealSource("arsenal");
         setDealItemLabel(`🎫 #${deal.token_id}`);
-        setDealPriceLabel(`${(parseFloat(deal.amount_avax) || 0).toFixed(2)} AVAX`);
+        setDealPriceLabel(`${(parseFloat(deal.amount_avax) || 0).toFixed(5)} AVAX`);
         dealSellerRef.current = deal.seller;
         setView("escrow");
     };

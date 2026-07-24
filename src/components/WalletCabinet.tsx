@@ -165,7 +165,7 @@ export const WalletCabinet: React.FC<WalletCabinetProps> = ({ visible, onClose, 
     if (!visible) return null;
 
     const nativeBalance = snapshot?.assets?.find((a) => a.symbol === "AVAX");
-    const balanceText = nativeBalance ? parseFloat(formatEther(nativeBalance.amount)).toFixed(2) : "0.00";
+    const balanceText = nativeBalance ? parseFloat(formatEther(nativeBalance.amount)).toFixed(5) : "0.00000";
 
     return (
         <motion.div

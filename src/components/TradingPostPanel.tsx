@@ -106,7 +106,7 @@ export const TradingPostPanel: React.FC<TradingPostPanelProps> = ({ refreshKey, 
                         </div>
                         <div className="flex justify-between"><span className="text-slate-500">Seller</span><span className="text-slate-900 font-mono">{selectedListing.seller.slice(0, 8)}...{selectedListing.seller.slice(-6)}</span></div>
                         <div className="flex justify-between"><span className="text-slate-500">Item</span><span className="text-slate-900">🎫 #{selectedListing.token_id}</span></div>
-                        <div className="flex justify-between"><span className="text-slate-500">Price</span><span className="text-nobody-gold font-semibold">{(parseFloat(selectedListing.price_avax) || 0).toFixed(2)} AVAX</span></div>
+                        <div className="flex justify-between"><span className="text-slate-500">Price</span><span className="text-nobody-gold font-semibold">{(parseFloat(selectedListing.price_avax) || 0).toFixed(5)} AVAX</span></div>
                         <div className="text-slate-500 pt-1 border-t border-slate-200 mt-1">Description</div>
                         <div className="text-slate-700 whitespace-pre-wrap break-words max-h-40 overflow-y-auto">{selectedListing.description}</div>
                         <div className="text-slate-400 text-[10px] pt-1 border-t border-slate-200 mt-1">

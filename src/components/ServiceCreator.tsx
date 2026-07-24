@@ -215,7 +215,7 @@ export const ServiceCreator: React.FC<ServiceCreatorProps> = ({ onClose, onDeplo
 
                     {hasContent && parseFloat(priceAvax) > 0 && step === "idle" && (
                         <div className="bg-nobody-gold-soft pixel-corners-sm p-3 text-center text-sm text-nobody-gold font-semibold">
-                            Preview: "{effectiveType}" — {(parseFloat(priceAvax) || 0).toFixed(2)} AVAX
+                            Preview: "{effectiveType}" — {(parseFloat(priceAvax) || 0).toFixed(5)} AVAX
                         </div>
                     )}
 

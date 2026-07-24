@@ -75,7 +75,7 @@ export const QuestLogPanel: React.FC<QuestLogPanelProps> = ({ refreshKey, onOpen
                                     <span className="text-slate-900 truncate">
                                         {statusIcon(d.status)} {d.role === "seller" ? "💰 Sold" : "🛒 Bought"} 🎫 #{d.token_id}
                                     </span>
-                                    <span className="text-nobody-primary font-semibold shrink-0">{(parseFloat(d.amount_avax) || 0).toFixed(2)} AVAX</span>
+                                    <span className="text-nobody-primary font-semibold shrink-0">{(parseFloat(d.amount_avax) || 0).toFixed(5)} AVAX</span>
                                 </div>
                                 <div className="text-slate-400 text-[10px] font-mono truncate">
                                     {d.role === "seller" ? "Buyer" : "Seller"}: {counterparty.slice(0, 8)}...{counterparty.slice(-6)}
