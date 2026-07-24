@@ -336,6 +336,14 @@ impl BlockchainBridge {
         self.get_identity_views()
     }
 
+    /// The raw private key for the current wallet, so the user can save it
+    /// before logging out / importing a different one — this is the only
+    /// way to actually get back to a wallet after switching away from it,
+    /// since nothing else persists it anywhere recoverable.
+    pub fn get_primary_private_key(&self) -> Option<String> {
+        self.identities.first().map(|id| id.private_key_hex.clone())
+    }
+
     pub fn get_primary_address(&self) -> String {
         match self.identities.first() {
             Some(first) => match PrivateKeySigner::from_str(&first.private_key_hex) {

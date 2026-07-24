@@ -243,6 +243,15 @@ async fn get_identity(
 }
 
 #[tauri::command]
+async fn get_primary_private_key(
+    state: State<'_, Arc<Mutex<AppState>>>,
+) -> Result<Option<String>, String> {
+    let state = state.lock().await;
+    let bridge = state.bridge.lock().await;
+    Ok(bridge.get_primary_private_key())
+}
+
+#[tauri::command]
 async fn logout_wallet(
     state: State<'_, Arc<Mutex<AppState>>>,
 ) -> Result<Vec<IdentityView>, String> {
@@ -699,6 +708,7 @@ pub fn run() {
             delete_wallet_snapshot,
             app_initializer::kill_switch,
             get_identity,
+            get_primary_private_key,
             logout_wallet,
             import_wallet,
             mint_voucher,
