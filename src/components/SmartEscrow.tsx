@@ -30,6 +30,11 @@ export const SmartEscrow: React.FC<SmartEscrowProps> = ({ visible, escrowId, dea
     const [refunding, setRefunding] = useState(false);
     const [refunded, setRefunded] = useState(false);
     const [finality, setFinality] = useState<"pending" | "confirmed">("pending");
+    // Tauri's webview doesn't reliably surface window.confirm()/alert() as
+    // real, clickable dialogs — use in-app state instead so the Refund
+    // button never looks unresponsive and errors are actually visible.
+    const [confirmingRefund, setConfirmingRefund] = useState(false);
+    const [error, setError] = useState<string | null>(null);
 
     useEffect(() => {
         if (visible) {
@@ -57,8 +62,9 @@ export const SmartEscrow: React.FC<SmartEscrowProps> = ({ visible, escrowId, dea
     }, [visible, escrowId, dealSource]);
 
     const handleRelease = async () => {
+        setError(null);
         if (escrowId == null) {
-            alert("No on-chain escrow is associated with this deal.");
+            setError("No on-chain escrow is associated with this deal.");
             return;
         }
 
@@ -76,19 +82,17 @@ export const SmartEscrow: React.FC<SmartEscrowProps> = ({ visible, escrowId, dea
             }, 2000);
         } catch (e) {
             console.error("On-chain release failed:", e);
-            alert("On-chain release failed: " + e);
+            setError("On-chain release failed: " + e);
         } finally {
             setReleasing(false);
         }
     };
 
     const handleRefund = async () => {
+        setError(null);
+        setConfirmingRefund(false);
         if (escrowId == null) {
-            alert("No on-chain escrow is associated with this deal.");
-            return;
-        }
-
-        if (!confirm("Refund this escrow back to your wallet? Only do this if you did not receive what was promised.")) {
+            setError("No on-chain escrow is associated with this deal.");
             return;
         }
 
@@ -105,7 +109,7 @@ export const SmartEscrow: React.FC<SmartEscrowProps> = ({ visible, escrowId, dea
             }, 2000);
         } catch (e) {
             console.error("On-chain refund failed:", e);
-            alert("On-chain refund failed: " + e);
+            setError("On-chain refund failed: " + e);
         } finally {
             setRefunding(false);
         }
@@ -197,6 +201,10 @@ export const SmartEscrow: React.FC<SmartEscrowProps> = ({ visible, escrowId, dea
                     </div>
                 </div>
 
+                {error && (
+                    <div className="text-red-600 text-xs text-center mb-3">{error}</div>
+                )}
+
                 <div className="space-y-2">
                     <button
                         onClick={handleRelease}
@@ -209,9 +217,21 @@ export const SmartEscrow: React.FC<SmartEscrowProps> = ({ visible, escrowId, dea
                         {released ? "✓ Funds Released" : releasing ? "Releasing..." : "Release Funds"}
                     </button>
 
-                    {!released && (
+                    {!released && confirmingRefund && (
+                        <div className="pixel-corners-sm bg-red-50 border border-red-200 p-3 space-y-2">
+                            <div className="text-[11px] text-red-700">
+                                Refund this escrow back to your wallet? Only do this if you did not receive what was promised.
+                            </div>
+                            <div className="flex justify-end gap-3 text-[11px]">
+                                <button onClick={() => setConfirmingRefund(false)} className="text-slate-400 hover:text-slate-600">Cancel</button>
+                                <button onClick={handleRefund} className="text-red-600 font-semibold hover:underline">Yes, refund</button>
+                            </div>
+                        </div>
+                    )}
+
+                    {!released && !confirmingRefund && (
                         <button
-                            onClick={handleRefund}
+                            onClick={() => setConfirmingRefund(true)}
                             disabled={releasing || refunding || refunded || escrowId == null}
                             className={`w-full font-semibold py-2.5 pixel-corners-sm transition-colors text-xs ${refunded
                                 ? "bg-slate-100 text-slate-500 cursor-default"

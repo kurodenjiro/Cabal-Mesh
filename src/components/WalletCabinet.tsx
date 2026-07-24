@@ -38,6 +38,19 @@ export const WalletCabinet: React.FC<WalletCabinetProps> = ({ visible, onClose, 
     const [showImport, setShowImport] = useState(false);
     const [importKey, setImportKey] = useState("");
     const [importing, setImporting] = useState(false);
+    // Tauri's webview doesn't reliably surface window.confirm() as a real,
+    // clickable dialog — it can silently no-op, making these destructive
+    // buttons look unresponsive. Use an in-app two-step confirm instead.
+    const [confirming, setConfirming] = useState<"logout" | "delete" | null>(null);
+    const [actionMessage, setActionMessage] = useState<string | null>(null);
+    const [privateKey, setPrivateKey] = useState<string | null>(null);
+    const [revealingKey, setRevealingKey] = useState(false);
+    const [keyCopied, setKeyCopied] = useState(false);
+    useEffect(() => {
+        if (!actionMessage) return;
+        const timer = setTimeout(() => setActionMessage(null), 6000);
+        return () => clearTimeout(timer);
+    }, [actionMessage]);
 
     const handleCopyAddress = async () => {
         if (!identity) return;
@@ -117,29 +130,54 @@ export const WalletCabinet: React.FC<WalletCabinetProps> = ({ visible, onClose, 
     };
 
     const handleDelete = async () => {
-        if (confirm("⚠️ Are you sure? This will delete the local encrypted snapshot. You will need to sync again.")) {
-            try {
-                await invoke("delete_wallet_snapshot");
-                setSnapshot(null);
-                setBridgeStatus(null);
-                alert("Local data deleted.");
-            } catch (e) {
-                console.error("Delete failed:", e);
-                alert("Failed to delete local data.");
-            }
+        setConfirming(null);
+        try {
+            await invoke("delete_wallet_snapshot");
+            setSnapshot(null);
+            setBridgeStatus(null);
+            setActionMessage("Local data deleted.");
+        } catch (e) {
+            console.error("Delete failed:", e);
+            setActionMessage("Failed to delete local data: " + e);
         }
     };
 
     const handleLogout = async () => {
-        if (!confirm("Log out of this wallet and generate a brand-new one? Make sure you've saved this wallet's private key if you want to come back to it later.")) return;
+        setConfirming(null);
         try {
             await invoke("logout_wallet");
-            setSnapshot(null);
-            await fetchIdentity();
-            refreshBalanceFromChain();
+            setActionMessage("Logged out — reloading with your new wallet...");
+            // Every other screen (balance chip, mesh character label, Trading
+            // Post, etc.) independently caches the identity it fetched at its
+            // own mount time — a full reload is the only way to guarantee all
+            // of them pick up the new one instead of showing the old address.
+            setTimeout(() => window.location.reload(), 800);
         } catch (e) {
             console.error("Logout failed:", e);
-            alert("Failed to log out: " + e);
+            setActionMessage("Failed to log out: " + e);
+        }
+    };
+
+    const handleRevealKey = async () => {
+        setRevealingKey((v) => !v);
+        if (privateKey) return;
+        try {
+            const key = await invoke<string | null>("get_primary_private_key");
+            setPrivateKey(key);
+        } catch (e) {
+            console.error("Failed to fetch private key:", e);
+            setActionMessage("Failed to fetch private key: " + e);
+        }
+    };
+
+    const handleCopyKey = async () => {
+        if (!privateKey) return;
+        try {
+            await navigator.clipboard.writeText(privateKey);
+            setKeyCopied(true);
+            setTimeout(() => setKeyCopied(false), 1500);
+        } catch (e) {
+            console.error("Failed to copy private key:", e);
         }
     };
 
@@ -151,12 +189,13 @@ export const WalletCabinet: React.FC<WalletCabinetProps> = ({ visible, onClose, 
             await invoke("import_wallet", { privateKeyHex: key, alias: "Imported Fox", emoji: "🦊" });
             setImportKey("");
             setShowImport(false);
-            setSnapshot(null);
-            await fetchIdentity();
-            refreshBalanceFromChain();
+            setActionMessage("Wallet imported — reloading...");
+            // Same reasoning as logout: every screen needs a fresh fetch, not
+            // just this modal's own local state.
+            setTimeout(() => window.location.reload(), 800);
         } catch (e) {
             console.error("Import failed:", e);
-            alert("Failed to import wallet — check that the private key is valid: " + e);
+            setActionMessage("Failed to import wallet — check that the private key is valid: " + e);
         } finally {
             setImporting(false);
         }
@@ -210,12 +249,59 @@ export const WalletCabinet: React.FC<WalletCabinetProps> = ({ visible, onClose, 
                             <button onClick={handleSync} disabled={syncing} className="text-nobody-primary hover:underline font-semibold disabled:opacity-50">
                                 {syncing ? "Refreshing..." : "🔄 Refresh Balance"}
                             </button>
+                            <button onClick={handleRevealKey} className="text-slate-400 hover:text-nobody-primary font-semibold">
+                                {revealingKey ? "🔑 Hide private key" : "🔑 Show private key"}
+                            </button>
                         </div>
+                        {revealingKey && (
+                            <div className="mt-3 pixel-corners-sm bg-red-50 border border-red-200 p-3 text-left space-y-1.5">
+                                <div className="text-[10px] text-red-700">
+                                    ⚠️ Anyone with this key can spend this wallet's funds. Save it somewhere safe — it's the only way to get back to this wallet after logging out or importing another one.
+                                </div>
+                                {privateKey ? (
+                                    <div className="flex items-center gap-2">
+                                        <code className="flex-1 text-[10px] font-mono text-slate-700 bg-white border border-slate-200 pixel-corners-sm px-2 py-1.5 break-all">
+                                            {privateKey}
+                                        </code>
+                                        <button onClick={handleCopyKey} title="Copy private key" className="text-slate-400 hover:text-nobody-primary transition-colors shrink-0">
+                                            {keyCopied ? "✓" : "📋"}
+                                        </button>
+                                    </div>
+                                ) : (
+                                    <div className="text-[10px] text-slate-400 italic">Loading...</div>
+                                )}
+                            </div>
+                        )}
                     </div>
 
                     {/* Danger zone — visually separated and de-emphasized so it's never confused with a normal action */}
                     <div className="pt-2 border-t border-slate-100 space-y-2">
-                        {!showImport ? (
+                        {actionMessage && (
+                            <div className="text-[11px] text-nobody-primary text-right">{actionMessage}</div>
+                        )}
+                        {confirming === "logout" && (
+                            <div className="pixel-corners-sm bg-red-50 border border-red-200 p-3 space-y-2">
+                                <div className="text-[11px] text-red-700">
+                                    Log out of this wallet and generate a brand-new one? Make sure you've saved this wallet's private key if you want to come back to it later.
+                                </div>
+                                <div className="flex justify-end gap-3 text-[11px]">
+                                    <button onClick={() => setConfirming(null)} className="text-slate-400 hover:text-slate-600">Cancel</button>
+                                    <button onClick={handleLogout} className="text-red-600 font-semibold hover:underline">Yes, log out</button>
+                                </div>
+                            </div>
+                        )}
+                        {confirming === "delete" && (
+                            <div className="pixel-corners-sm bg-red-50 border border-red-200 p-3 space-y-2">
+                                <div className="text-[11px] text-red-700">
+                                    ⚠️ This deletes the local encrypted balance snapshot. You'll need to sync again. Continue?
+                                </div>
+                                <div className="flex justify-end gap-3 text-[11px]">
+                                    <button onClick={() => setConfirming(null)} className="text-slate-400 hover:text-slate-600">Cancel</button>
+                                    <button onClick={handleDelete} className="text-red-600 font-semibold hover:underline">Yes, delete</button>
+                                </div>
+                            </div>
+                        )}
+                        {!showImport && !confirming ? (
                             <div className="flex justify-end gap-4 flex-wrap">
                                 <button
                                     onClick={() => setShowImport(true)}
@@ -224,19 +310,19 @@ export const WalletCabinet: React.FC<WalletCabinetProps> = ({ visible, onClose, 
                                     🔑 Import a different wallet
                                 </button>
                                 <button
-                                    onClick={handleLogout}
+                                    onClick={() => setConfirming("logout")}
                                     className="text-[11px] text-slate-400 hover:text-red-600 transition-colors"
                                 >
                                     Log out this wallet
                                 </button>
                                 <button
-                                    onClick={handleDelete}
+                                    onClick={() => setConfirming("delete")}
                                     className="text-[11px] text-slate-400 hover:text-red-600 transition-colors"
                                 >
                                     Erase all local data
                                 </button>
                             </div>
-                        ) : (
+                        ) : !showImport ? null : (
                             <div className="pixel-corners-sm bg-black/20 border border-nobody-primary/20 p-3 space-y-2">
                                 <div className="text-[11px] text-slate-400">
                                     Paste a private key (0x...) to switch to that wallet. Your current wallet's key will be gone unless you saved it.
