@@ -1,3 +1,25 @@
+# This manifest is both the workspace root and the Tauri app package. Tauri
+# expects its package at src-tauri/, so the workspace lives here rather than at
+# the repo root.
+#
+# Extracted crates go in crates/ and must not depend on this package — the
+# dependency arrow points inward, toward the domain.
+[workspace]
+members = ["crates/*"]
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+correctness = { level = "deny", priority = -1 }
+suspicious = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+
 [package]
 name = "cabalmesh"
 version = "0.1.0"
@@ -18,10 +40,13 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+# The domain model. No I/O, no runtime — see crates/cabal-core/src/lib.rs.
+cabal-core = { path = "crates/cabal-core" }
+
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 # Mesh Networking (libp2p)
 libp2p = { version = "0.54", features = ["tcp", "mdns", "noise", "yamux", "gossipsub", "tokio"] }

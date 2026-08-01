@@ -135,6 +135,46 @@ keyword.
 
 ---
 
+## Domain crate — extracted and property-tested (2026-08-02, ticket 10)
+
+`src-tauri/crates/cabal-core`. 29 unit tests + 16 property tests, **0.07s**.
+
+The constraint that makes it worth having: `serde` and `thiserror`, nothing
+else. No `tauri`, `tokio`, `reqwest`, `alloy` or `libp2p`. That is why roughly
+four thousand generated cases run in fifty milliseconds instead of behind a
+multi-minute cross-compile and link. If something in there needs I/O, it
+belongs in a different crate.
+
+| Invariant | Why it matters |
+|---|---|
+| Terminal states never transition | A settled intent that could re-settle is money moving twice |
+| Nothing returns to `Draft` | Broadcasting is irreversible |
+| Only `Negotiating` may repeat | Every other self-loop is meaningless |
+| Every live state can be cancelled | Otherwise the UI shows a cancel button that does nothing |
+| Settlement requires routing | Settling from `Broadcast` means settling through a path never found |
+| Active and terminal are disjoint | The two predicates drive different affordances |
+| Amounts round-trip through display | A value the user typed and the app silently changed is a bug |
+| Separators never change value | Users paste back exactly what the UI showed |
+| Parsing arbitrary input never panics | Everything from the webview is hostile until parsed |
+| Addition overflows rather than wraps | A wrapped total is a plausible-looking wrong balance |
+| Mixing assets always fails | Adding AVAX to USDC is a bug, not a saturating op |
+| USD always renders two decimals | The brand's number rules are exact, never approximate |
+
+Two bugs the tests caught during writing:
+
+- `NodeId::truncated` guarded on **byte** length while slicing by character,
+  so a nine-character CJK identifier (27 bytes) was abbreviated when it should
+  have been left whole.
+- `prop_assert!` stringifies its expression into a format string, so an inline
+  struct literal's braces break compilation. Struct values must be bound to
+  locals first.
+
+Verified after extraction: full workspace tests green including the 23 IPC
+contract snapshots, clippy clean on the new crate, desktop app builds and
+reaches the mesh, and the workspace still cross-compiles for `aarch64-apple-ios`.
+
+---
+
 ## Android — not yet attempted (ticket 08)
 
 No Rust targets, no SDK, no NDK, and none of `JAVA_HOME` / `ANDROID_HOME` / `NDK_HOME` set. The iOS result is encouraging but does not transfer: Android is where the TLS backend actually matters, since it ships no system OpenSSL. That is why ticket 02 moved to rustls, but it is unproven until an Android build runs.
