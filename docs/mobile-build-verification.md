@@ -50,6 +50,55 @@ xcrun simctl io booted screenshot shot.png
 
 ---
 
+## Security baseline — enforced and proven (2026-08-02, ticket 06)
+
+The project shipped `csp: null` and `withGlobalTauri: true`, with the app's own
+commands outside the ACL entirely. All three are now closed.
+
+| Check | Result |
+|---|---|
+| Explicit CSP configured (`default-src 'self'`, no CDN sources) | ✅ |
+| Webview renders identically under CSP — fonts, images, sprites | ✅ |
+| `withGlobalTauri: false`; no `window.__TAURI__` usage anywhere in the frontend | ✅ |
+| `freezePrototype: true` | ✅ |
+| Shared `default.json` deleted; per-platform capabilities with explicit `platforms` | ✅ |
+| AppManifest declares all **50** current commands (audit said 47 — the codebase grew) | ✅ |
+| Desktop grants all 50; IPC works end to end | ✅ |
+| Mobile grants `core:default` only — no app command reachable | ✅ |
+
+`connect-src` is deliberately tight (`'self' ipc:`). The webview makes no
+external requests: `src/avalanche-settlement.ts` would need the RPC host
+allowlisted, but nothing imports it — it is dead code. Chain calls happen in
+Rust, outside the webview's CSP.
+
+### The ACL is genuinely enforced, not decorative
+
+Removing a single permission and rebuilding proves the boundary is live rather
+than nominally configured:
+
+| Build | Wallet address in UI |
+|---|---|
+| `allow-get-identity` granted | `0xC24c...0B2e` shown in balance pill and onboarding chip |
+| `allow-get-identity` removed | **absent from both**, everything else renders normally |
+| restored | shown again |
+
+One permission removed denied exactly one command and nothing else.
+
+### Mobile grants nothing on purpose
+
+An earlier pass granted mobile all 50 commands, reasoning that mobile still
+serves the desktop frontend so it needs them. That was wrong: it hands a
+surface with no screens the full command set — private-key export and raw
+transaction submission included — so that a placeholder UI does not look
+broken. Convenience during development is not a reason to widen an authority
+boundary.
+
+The mobile build's job is to prove the graph compiles, links, launches and
+renders. IPC-dependent fields coming up empty is correct behaviour, not a
+defect. The surface opens per screen from ticket 29 onward.
+
+---
+
 ## Android — not yet attempted (ticket 08)
 
 No Rust targets, no SDK, no NDK, and none of `JAVA_HOME` / `ANDROID_HOME` / `NDK_HOME` set. The iOS result is encouraging but does not transfer: Android is where the TLS backend actually matters, since it ships no system OpenSSL. That is why ticket 02 moved to rustls, but it is unproven until an Android build runs.

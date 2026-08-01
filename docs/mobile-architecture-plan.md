@@ -46,7 +46,7 @@ Rationale for `Unsupported` over deleting the handlers: Rust/TypeScript still sh
 | # | Problem | Evidence | Rust rule |
 |---|---|---|---|
 | S1 | **Plaintext private keys on disk.** `identities.json` stores `private_key_hex` unencrypted. | `blockchain_bridge.rs:285-289`, `save_identities` | — (security) |
-| S2 | **One global mutex serializes every command.** Every command does `state.lock().await` then `bridge.lock().await`, holding both across network I/O. Two concurrent RPC calls fully serialize. | `lib.rs` — all 47 commands | `anti-lock-across-await`, `own-rwlock-readers` |
+| S2 | **One global mutex serializes every command.** Every command does `state.lock().await` then `bridge.lock().await`, holding both across network I/O. Two concurrent RPC calls fully serialize. | `lib.rs` — all 50 commands | `anti-lock-across-await`, `own-rwlock-readers` |
 | S3 | **Stringly-typed everything.** `intent_type: String` matched against `"relay_tx"`/`"settlement"`/…; addresses, ids, amounts all `String`. | `lib.rs:44-56`, `mesh.rs:41-47` | `anti-stringly-typed`, `type-newtype-ids`, `type-enum-states` |
 | S4 | **Errors are `String` / `Box<dyn Error>`.** Frontend can't branch on failure kind; no source chain. | every command signature | `err-thiserror-lib`, `err-custom-type`, `err-source-chain` |
 | S5 | **`println!`/`eprintln!` as logging.** Invisible on a device — no `adb logcat` / Console.app structure, no levels, no filtering. | ~40 sites | `obs-tracing-over-log`, `obs-structured-fields` |
@@ -671,7 +671,7 @@ Libraries (`cabal-*`) emit only; the app crate installs the subscriber (`obs-lib
 
 ### 2.10 Keeping the frozen desktop UI alive
 
-"Freeze desktop, don't touch it" and "reshape 47 commands into 28" are in direct conflict: `src/App.tsx` invokes the current names with the current shapes, and every one of them changes — `Result<T, String>` becomes `Result<T, AppError>`, `String` ids become newtypes, `mint_voucher`/`create_asset_listing`/`store_content` lose their home. Doing nothing means the desktop app stops working the moment Phase 2 lands, which is not what "frozen" means.
+"Freeze desktop, don't touch it" and "reshape 50 commands into 28" are in direct conflict: `src/App.tsx` invokes the current names with the current shapes, and every one of them changes — `Result<T, String>` becomes `Result<T, AppError>`, `String` ids become newtypes, `mint_voucher`/`create_asset_listing`/`store_content` lose their home. Doing nothing means the desktop app stops working the moment Phase 2 lands, which is not what "frozen" means.
 
 So freezing is a **commitment to maintain a compatibility layer**, not the absence of work:
 
@@ -686,7 +686,7 @@ Rules for this crate:
 
 - **Signatures are frozen verbatim** — including `Result<T, String>`. The adapter calls the new service, then flattens `AppError` back to a string via `Display` at the very edge. The frozen UI never sees the new error union.
 - **It is the only place stringly-typed shapes are allowed** (`anti-stringly-typed` is deliberately suspended here, and nowhere else). Conversions live in `adapt.rs` as `From`/`TryFrom` impls (`api-from-not-into`, `conv-tryfrom-fallible`), so the boundary is one reviewable file rather than 47 scattered casts.
-- **Registered only on desktop.** `tauri::generate_handler!` gets two lists: the 28 new handlers always, plus the 47 legacy ones under `#[cfg(all(desktop, feature = "desktop-legacy"))]`. Mobile capabilities grant only the 25 handlers used by its webview (§5.2.1).
+- **Registered only on desktop.** `tauri::generate_handler!` gets two lists: the 28 new handlers always, plus the 50 legacy ones under `#[cfg(all(desktop, feature = "desktop-legacy"))]`. Mobile capabilities grant only the 25 handlers used by its webview (§5.2.1).
 - **Marketplace / voucher / content stay here.** They have no mobile screen; this is their home rather than deletion.
 - **Snapshot-tested, not unit-tested.** `insta` over each legacy command's serialized output, captured **before** the refactor starts (Phase 1, against today's code) and asserted after. That is the only mechanical guarantee that "frozen" held.
 
@@ -780,7 +780,7 @@ pub async fn generate_zk_bid_proof(req: ProofRequest, state: State<'_, AppState>
 }
 ```
 
-The typed name is deliberately `generate_zk_bid_proof`: the frozen 47-command legacy surface already owns `generate_zk_proof` with a different signature. Tauri cannot register two invoke handlers under one command name; the legacy wrapper keeps its name, while the new contract gets an unambiguous one.
+The typed name is deliberately `generate_zk_bid_proof`: the frozen 50-command legacy surface already owns `generate_zk_proof` with a different signature. Tauri cannot register two invoke handlers under one command name; the legacy wrapper keeps its name, while the new contract gets an unambiguous one.
 
 And a single probe so the frontend can hide affordances rather than discover failure by tapping:
 
@@ -954,9 +954,9 @@ The UI plan reasons about a "strict CSP" blocking CDN fetches. **There is no CSP
 - **HMR is development-only authority.** Production `csp` has no WebSocket source. `devCsp` adds `ws:` solely so the device can reach Vite HMR on 1421; never copy that source into production. Tauri documents `devCsp` as the policy injected during development. [CSP](https://v2.tauri.app/security/csp/) · [SecurityConfig](https://v2.tauri.app/reference/config/#securityconfig).
 - **Least privilege for the app's own commands — and mind the ordering trap.** `tauri_build::AppManifest::commands` generates `allow-*`/`deny-*` permissions, but a generated permission does nothing until a capability *references* it. Declaring a manifest without granting is how you lock yourself out.
 
-  The trap: Phase 0 runs against **today's 47 commands** (the legacy adapter does not exist until Phase 1), while the 28 new handlers do not exist yet. So Phase 0 must inventory and grant the **47 current commands** in `capabilities/desktop.json`, or the desktop app starts failing IPC the moment the manifest lands. Phase 6 adds all 28 handlers to the manifest, but grants mobile only the **25 commands its webview uses**; the three ZK/LLM handlers remain ungranted mobile stubs. Never grant future commands speculatively.
+  The trap: Phase 0 runs against **today's 50 commands** (the legacy adapter does not exist until Phase 1), while the 28 new handlers do not exist yet. So Phase 0 must inventory and grant the **50 current commands** in `capabilities/desktop.json`, or the desktop app starts failing IPC the moment the manifest lands. Phase 6 adds all 28 handlers to the manifest, but grants mobile only the **25 commands its webview uses**; the three ZK/LLM handlers remain ungranted mobile stubs. Never grant future commands speculatively.
 
-  Concretely: Phase 0 `desktop.json` grants the current 47; Phase 0 mobile launches only a static no-IPC probe page. After Phase 6, desktop grants the relevant new commands plus the 47 legacy commands, while mobile grants the exact 25-command UI surface. Nothing is granted on both unless a real screen calls it. This matters more after 2.11.1, not less — that release closed the "no AppManifest ⇒ no ACL for remote origins" hole, and relying on the old behaviour was never safe. Refs: [AppManifest 2.6.3](https://docs.rs/tauri-build/2.6.3/tauri_build/struct.AppManifest.html), [Permissions](https://v2.tauri.app/security/permissions/).
+  Concretely: Phase 0 `desktop.json` grants the current 47; Phase 0 mobile launches only a static no-IPC probe page. After Phase 6, desktop grants the relevant new commands plus the 50 legacy commands, while mobile grants the exact 25-command UI surface. Nothing is granted on both unless a real screen calls it. This matters more after 2.11.1, not less — that release closed the "no AppManifest ⇒ no ACL for remote origins" hole, and relying on the old behaviour was never safe. Refs: [AppManifest 2.6.3](https://docs.rs/tauri-build/2.6.3/tauri_build/struct.AppManifest.html), [Permissions](https://v2.tauri.app/security/permissions/).
 - **Validate every IPC input in Rust.** `IntentDraft`, `IntentId`, addresses and amounts parse into validated types at the boundary (`api-parse-dont-validate`); nothing downstream accepts a raw `String` from the webview.
 
 **Upgrade Tauri to the 2.11 line before `tauri android init`.** The repo is on 2.9.5. `tauri@2.11.1` (2026-05-06) carries two security fixes that both bear on this app:
@@ -1211,7 +1211,7 @@ So the invoke surface is two lists, not one:
 |---|---|---|
 | Screen/shared commands | 25 | all targets; granted to the mobile webview |
 | ZK/LLM feature commands | 3 | all targets; mobile Rust stubs exist, but mobile capability does not grant them |
-| Legacy compatibility commands | 47 | desktop + `desktop-legacy` feature |
+| Legacy compatibility commands | 50 | desktop + `desktop-legacy` feature |
 
 ---
 
@@ -1266,13 +1266,13 @@ CI starts with `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` 
 
 Each phase ends green — compiling, tests passing, desktop app still runnable. No phase leaves the tree broken.
 
-**Ordering correction.** An earlier draft put the legacy adapter at Phase 4b while Phase 2 already rewrote every command signature from `Result<T, String>` to `Result<T, AppError>`. That would have left the frozen desktop UI broken across Phases 2–4 — directly contradicting the guarantee above. **The adapter now lands at the end of Phase 1, before the first signature change.** Every refactor after it runs behind 47 intact handlers.
+**Ordering correction.** An earlier draft put the legacy adapter at Phase 4b while Phase 2 already rewrote every command signature from `Result<T, String>` to `Result<T, AppError>`. That would have left the frozen desktop UI broken across Phases 2–4 — directly contradicting the guarantee above. **The adapter now lands at the end of Phase 1, before the first signature change.** Every refactor after it runs behind 50 intact handlers.
 
 ### Phase 0 — Unblock the build + security baseline (3–3.5 days)
 - **Upgrade from Tauri core 2.9.5 to an exact compatible release set** before Android init and before regenerating iOS: pin each independently versioned component (`tauri`, `tauri-build`, JS API, npm CLI and official plugins) to the verified set in §5.4. Regenerate/reconcile `src-tauri/gen/apple` under that CLI instead of treating the 2.9.6 output as immutable.
 - **Configure security that the plans have been assuming exists**: explicit CSP, `withGlobalTauri: false`, `freezePrototype: true`.
 - **Capabilities: delete `default.json`**, add `desktop.json` + `mobile.json` with explicit identifiers named in config (auto-enable + permission union otherwise defeats the split — §5.2).
-- **AppManifest must grant today's 47 commands, not tomorrow's 28.** The legacy adapter does not exist until Phase 1; declaring a manifest without inventorying the current handlers locks the desktop app out of its own IPC (§5.2.1). Mobile uses a temporary static **no-IPC probe page** in this phase; do not grant current desktop commands merely to make that page launch.
+- **AppManifest must grant today's 50 commands, not tomorrow's 28.** The legacy adapter does not exist until Phase 1; declaring a manifest without inventorying the current handlers locks the desktop app out of its own IPC (§5.2.1). Mobile uses a temporary static **no-IPC probe page** in this phase; do not grant current desktop commands merely to make that page launch.
 - **Decide both Apple paths now.** This host must move from macOS 14.6.1/Xcode 15.4 to macOS 15.6+/Xcode 26 before release. Separately, request the managed multicast entitlement or lock the initial iOS product to relay-only (§5.3–5.4). External approval lead time is tracked outside engineering days.
 - **Run the lifecycle semantics gate on a physical iPhone.** A minimal Rust log probe records Tauri suspend/resume while opening/dismissing Control Center and Notification Center, handling an incoming-call/lock interruption, and truly backgrounding/foregrounding. The result chooses built-in events or the narrow symmetric UIKit bridge before either controls mesh/channel pausing (§2.7).
 - Remove `keyring`; unify `reqwest` to 0.12 + rustls; trim `alloy` features.
@@ -1286,12 +1286,12 @@ Each phase ends green — compiling, tests passing, desktop app still runnable. 
 
 ### Phase 1 — Workspace + domain + legacy adapter (4 days)
 - **First, before touching anything:** capture the frozen-desktop contract (§2.10).
-  **Snapshot the serialized shapes, not live output.** Many of the 47 commands need a live RPC, Ollama, `nargo` or a real mesh; snapshotting their runtime output is neither reproducible nor CI-safe. Instead: `insta` over each command's *serialized request/response types* driven by fixtures and mocked services. That is the contract the frozen UI actually depends on.
+  **Snapshot the serialized shapes, not live output.** Many of the 50 commands need a live RPC, Ollama, `nargo` or a real mesh; snapshotting their runtime output is neither reproducible nor CI-safe. Instead: `insta` over each command's *serialized request/response types* driven by fixtures and mocked services. That is the contract the frozen UI actually depends on.
 - Create the workspace; extract `cabal-core` with ids, `Action`, `ExecutionMode`, `Condition`, `PrivacyLevel`, `IntentStatus`, `TokenAmount`, `UsdPrice`.
 - Add Tauri-free `cabal-contract` and define the full serialized 25-command screen/shared DTO surface from §6 now—including `SessionStatus`, `SubscriptionId`/`LogLine`, mesh/intent/form/proof/vault/profile views, `PlatformCaps`, `RuntimeCaps`, `LocalAccessAction`, `NearbyNodesView` and node discovery/connection types. Types existing does not register handlers or relax Phase 0 ACL ordering.
 - Establish the `ts-rs` build step and emit core plus all screen DTOs to the canonical `src/types/bindings.ts`. UI Phases B–D consume this artifact; do not wait for command implementations in Phase 6.
 - Proptest the transition table and amount parsing.
-- **Build `cabal-legacy` now** (§2.10): 47 frozen signatures including `Result<T, String>`, `adapt.rs` conversions, `desktop-legacy` feature gating. At this point it is a pass-through — which is exactly why it is cheap to write here and expensive to write later.
+- **Build `cabal-legacy` now** (§2.10): 50 frozen signatures including `Result<T, String>`, `adapt.rs` conversions, `desktop-legacy` feature gating. At this point it is a pass-through — which is exactly why it is cheap to write here and expensive to write later.
 - **Done when:** `cargo test -p cabal-core -p cabal-contract` passes; the untouched desktop UI runs against the workspace build; legacy contract snapshots are committed and green; every UI fixture DTO exists in a deterministic `src/types/bindings.ts`.
 
 Everything from Phase 2 onward changes services *behind* this adapter. The snapshot suite is the regression gate on every subsequent phase.

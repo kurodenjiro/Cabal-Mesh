@@ -1,0 +1,15 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "mobile",
+  "description": "Main webview on iOS and Android. Grants core only: no app command is reachable from the mobile webview yet, because no mobile screen exists to call one. The mobile build is a compile/launch/render probe until ticket 26 splits the frontends; ticket 29 onward adds exactly the commands each screen uses. Never grant speculatively. See capabilities/README.md.",
+  "platforms": [
+    "iOS",
+    "android"
+  ],
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default"
+  ]
+}
