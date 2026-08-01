@@ -1,0 +1,16 @@
+---
+source: tests/ipc_contract.rs
+---
+{
+  "timestamp": "2026-05-18T14:32:00Z",
+  "assets": [
+    {
+      "id": "asset-1",
+      "amount": "1000000000000000000",
+      "symbol": "AVAX",
+      "owner": "0xfF8dd6dbB7B97b44044573cFE843dE1F463637a9",
+      "proof": null
+    }
+  ],
+  "signature": "0xdeadbeef"
+}

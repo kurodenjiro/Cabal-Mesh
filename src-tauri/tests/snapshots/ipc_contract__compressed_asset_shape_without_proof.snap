@@ -1,0 +1,10 @@
+---
+source: tests/ipc_contract.rs
+---
+{
+  "id": "asset-2",
+  "amount": "0",
+  "symbol": "USDC",
+  "owner": "0x0000000000000000000000000000000000000000",
+  "proof": null
+}

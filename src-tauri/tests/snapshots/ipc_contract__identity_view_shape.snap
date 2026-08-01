@@ -1,0 +1,8 @@
+---
+source: tests/ipc_contract.rs
+---
+{
+  "alias": "Genesis Fox",
+  "emoji": "🦊",
+  "address": "0xfF8dd6dbB7B97b44044573cFE843dE1F463637a9"
+}

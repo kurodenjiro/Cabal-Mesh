@@ -2,12 +2,16 @@ mod app_initializer;
 mod app_paths;
 mod platform;
 mod ollama_config;
-mod mesh;
-mod agent;
-mod matcher;
-mod zk_handler;
 mod ollama_manager;
-mod blockchain_bridge;
+
+// Public because their types *are* the IPC contract: everything below
+// serializes across the boundary to the webview, so the shapes are already
+// public API whether or not Rust says so. `tests/ipc_contract.rs` pins them.
+pub mod agent;
+pub mod blockchain_bridge;
+pub mod matcher;
+pub mod mesh;
+pub mod zk_handler;
 mod llm_json;
 
 use app_initializer::SystemBootstrap;

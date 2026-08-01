@@ -1,0 +1,10 @@
+---
+source: tests/ipc_contract.rs
+---
+{
+  "id": "asset-1",
+  "amount": "1240000000000000000000",
+  "symbol": "AVAX",
+  "owner": "0xfF8dd6dbB7B97b44044573cFE843dE1F463637a9",
+  "proof": "0xa4f2c9e1b70d5533"
+}

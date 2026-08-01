@@ -99,6 +99,42 @@ defect. The surface opens per screen from ticket 29 onward.
 
 ---
 
+## Frozen IPC contract — baselined (2026-08-02, ticket 09)
+
+`src-tauri/tests/ipc_contract.rs`, 23 snapshots, **0.02s**, no network, no
+external binaries, no device.
+
+Shapes rather than live output: most of the 50 commands need a reachable
+Avalanche RPC, a running Ollama, the `nargo` binary or a live mesh, so their
+runtime output is neither reproducible nor CI-safe. What the frozen UI depends
+on is the serialized shape — field names, casing, enum tagging, how
+optionality is represented — and that is what is pinned, from fixtures.
+
+Covered: identity and wallet, marketplace and vouchers, deals, transaction
+results, the relay queue, content, matching, ZK proofs, all 10 `MeshEvent`
+variants, the two hand-built `serde_json::Value` payloads that no type
+protects, and the 50-command inventory.
+
+**Verified that it actually catches breakage.** Adding a single
+`#[serde(rename)]` to one field failed exactly one snapshot; reverting went
+green again. It detects the class of change that otherwise produces
+`undefined` in the webview and no Rust error at all.
+
+### Two things the baseline exposed
+
+**Casing is inconsistent across the boundary.** `TxResult::Queued` serializes
+`queueId` in camelCase, while its sibling `QueuedTx` uses `raw_tx_hex` and
+`tx_hash` in snake_case. Both are now pinned. Whatever the reshaped API
+settles on, the compatibility adapter has to keep emitting these exact spellings
+for the frozen UI.
+
+**Five modules became `pub`.** `agent`, `blockchain_bridge`, `matcher`, `mesh`
+and `zk_handler` were private, which is a fiction: every type in them already
+serializes to the webview, so they were public API in everything but the
+keyword.
+
+---
+
 ## Android — not yet attempted (ticket 08)
 
 No Rust targets, no SDK, no NDK, and none of `JAVA_HOME` / `ANDROID_HOME` / `NDK_HOME` set. The iOS result is encouraging but does not transfer: Android is where the TLS backend actually matters, since it ships no system OpenSSL. That is why ticket 02 moved to rustls, but it is unproven until an Android build runs.

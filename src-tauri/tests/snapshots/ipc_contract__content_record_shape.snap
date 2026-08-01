@@ -1,0 +1,10 @@
+---
+source: tests/ipc_contract.rs
+---
+{
+  "token_id": 42,
+  "text": "the quick brown fox",
+  "fingerprint": "0xa4f2c9e1",
+  "signature": "0xdeadbeef",
+  "signer_address": "0xfF8dd6dbB7B97b44044573cFE843dE1F463637a9"
+}

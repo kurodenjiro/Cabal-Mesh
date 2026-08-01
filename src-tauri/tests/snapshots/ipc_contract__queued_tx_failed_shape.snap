@@ -1,0 +1,12 @@
+---
+source: tests/ipc_contract.rs
+---
+{
+  "id": "q-8a3f",
+  "raw_tx_hex": "0x02f8",
+  "summary": "Escrow release",
+  "created_at": "2026-05-18T14:32:00Z",
+  "status": "failed",
+  "tx_hash": "0xc70d",
+  "reason": "insufficient funds"
+}

@@ -1,0 +1,12 @@
+---
+source: tests/ipc_contract.rs
+---
+{
+  "intent_type": "trade",
+  "payload": "{\"action\":\"buy\"}",
+  "encrypted": true,
+  "relay_path": [
+    "origin_node"
+  ],
+  "relay_fee": "0.005 AVAX"
+}
