@@ -175,6 +175,48 @@ reaches the mesh, and the workspace still cross-compiles for `aarch64-apple-ios`
 
 ---
 
+## Legacy compatibility seam — in place (2026-08-02, ticket 11)
+
+`src-tauri/src/legacy/` holds the 50 frozen commands, gated on
+`cfg(all(desktop, feature = "desktop-legacy"))`. Handler registration is split
+by surface: desktop gets the legacy arm, mobile gets an empty one.
+
+| Check | Result |
+|---|---|
+| 50 commands moved with signatures byte-identical | ✅ |
+| 23 IPC contract snapshots still green | ✅ |
+| Builds with the feature on and off | ✅ |
+| Legacy symbols present with gate on (40) / absent with gate off (1) | ✅ |
+| Desktop builds, launches, completes bootstrap, reaches the mesh | ✅ |
+| iOS build excludes legacy entirely and still launches | ✅ |
+
+### A module, not a crate — and why
+
+The plan called for a `cabal-legacy` crate. Not viable yet: these commands take
+`State<'_, Arc<Mutex<AppState>>>` and return types that still live in the app
+crate. A separate crate would either depend on the app crate — a cycle — or
+need those types extracted first, which is tickets 17–24.
+
+A feature-gated module gives the same seam today: one place to review, one flag
+to disable, no leakage into the new surface. Extracting the crate becomes
+mechanical once the services move.
+
+### Desktop windows cannot be screenshotted from here
+
+`screencapture` returns only the wallpaper and menu bar for this app. Verified
+identical on the pre-ticket-11 baseline by stashing the change and recapturing,
+so it is **not a regression** — it is the signature of missing Screen Recording
+permission (macOS TCC). Simulator screenshots are unaffected because `simctl`
+does not go through that path.
+
+Consequence for every desktop-side ticket: visual verification is unavailable
+until Screen Recording is granted to the terminal. Desktop claims here rest on
+process liveness, bootstrap logs, the snapshot suite and symbol inspection —
+all mechanical, none visual. Where a ticket needs a human eye on the desktop
+window, that is called out rather than assumed.
+
+---
+
 ## Android — not yet attempted (ticket 08)
 
 No Rust targets, no SDK, no NDK, and none of `JAVA_HOME` / `ANDROID_HOME` / `NDK_HOME` set. The iOS result is encouraging but does not transfer: Android is where the TLS backend actually matters, since it ships no system OpenSSL. That is why ticket 02 moved to rustls, but it is unproven until an Android build runs.
