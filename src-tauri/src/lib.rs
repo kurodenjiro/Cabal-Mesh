@@ -664,8 +664,13 @@ pub fn run() {
             // Initialize System via Bootstrap Workflow
             tauri::async_runtime::spawn(async move {
                 // Shared Bridge Resource (Created here first)
-                // Shared Bridge Resource (Created here first)
-                dotenv::dotenv().ok(); // Load .env file
+                // Desktop only: there is no .env file in a mobile bundle, and no
+                // environment to read it into. Mobile falls through to the
+                // compiled-in default until ticket 24 replaces this with a
+                // per-network address table.
+                #[cfg(desktop)]
+                dotenv::dotenv().ok();
+
                 let rpc_url = std::env::var("AVAX_RPC_URL")
                     .unwrap_or_else(|_| blockchain_bridge::DEFAULT_AVAX_RPC_URL.to_string());
 
