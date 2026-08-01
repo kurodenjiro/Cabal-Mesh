@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "ios:clean-build": "rm -rf src-tauri/gen/apple/build/arm64-sim src-tauri/gen/apple/build/arm64 src-tauri/gen/apple/build/*.xcarchive",
+    "ios:sim": "npm run ios:clean-build && tauri ios build --debug --target aarch64-sim"
   },
   "dependencies": {
     "@tauri-apps/api": "2.11.1",
