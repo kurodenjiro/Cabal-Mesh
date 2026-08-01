@@ -16,3 +16,4 @@ contracts/.env
 
 # OS
 .DS_Store
+.scratch/

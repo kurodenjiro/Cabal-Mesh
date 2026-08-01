@@ -45,6 +45,17 @@ impl ZKHandler {
             return Err("Bid exceeds price ceiling".into());
         }
 
+        // Proving shells out to `nargo`, which mobile sandboxes cannot execute.
+        // Say so plainly instead of surfacing a spawn failure that reads like a
+        // missing install the user could go fix.
+        if !crate::platform::CAN_SPAWN_PROCESSES {
+            return Err(
+                "ZK proving is unavailable on this platform: it runs the `nargo` binary, \
+                 which iOS and Android sandboxes cannot execute."
+                    .into(),
+            );
+        }
+
         // Execute Noir build command in blocking task to avoid freezing async runtime
         // Note: This requires nargo (Noir compiler) to be installed
         let circuit_path = self.circuit_path.clone();

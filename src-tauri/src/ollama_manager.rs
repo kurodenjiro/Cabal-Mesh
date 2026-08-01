@@ -3,6 +3,18 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use crate::ollama_config;
+use crate::platform::CAN_SPAWN_PROCESSES;
+
+fn no_local_ollama() -> String {
+    format!(
+        "This platform cannot run a local Ollama server. Point the app at a remote one by \
+         setting {} or calling set_ollama_url (currently {}).",
+        ollama_config::ENV_VAR,
+        ollama_config::url()
+    )
+}
+
 pub struct OllamaManager {
     process: Arc<Mutex<Option<Child>>>,
     model_name: String,
@@ -18,6 +30,10 @@ impl OllamaManager {
 
     /// Check if Ollama is installed
     pub fn is_installed(&self) -> bool {
+        if !CAN_SPAWN_PROCESSES {
+            return false;
+        }
+
         Command::new("ollama")
             .arg("--version")
             .stdout(Stdio::null())
@@ -28,6 +44,10 @@ impl OllamaManager {
 
     /// Start Ollama service in the background
     pub fn start_service(&self) -> Result<(), String> {
+        if !CAN_SPAWN_PROCESSES {
+            return Err(no_local_ollama());
+        }
+
         if !self.is_installed() {
             return Err("Ollama is not installed. Please install it from https://ollama.ai".to_string());
         }
@@ -56,6 +76,10 @@ impl OllamaManager {
 
     /// Pull the AI model if not already available
     pub fn pull_model(&self) -> Result<(), String> {
+        if !CAN_SPAWN_PROCESSES {
+            return Err(no_local_ollama());
+        }
+
         println!("📥 Checking for model: {}", self.model_name);
 
         // Check if model exists
@@ -112,7 +136,7 @@ impl OllamaManager {
     pub async fn health_check(&self) -> bool {
         let client = reqwest::Client::new();
         match client
-            .get("http://localhost:11434/api/tags")
+            .get(format!("{}/api/tags", ollama_config::url()))
             .timeout(Duration::from_secs(2))
             .send()
             .await

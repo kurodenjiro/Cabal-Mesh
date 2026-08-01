@@ -1,4 +1,7 @@
 mod app_initializer;
+mod app_paths;
+mod platform;
+mod ollama_config;
 mod mesh;
 mod agent;
 mod matcher;
@@ -463,14 +466,34 @@ async fn get_my_deals(
     bridge.get_my_deals(&address).await.map_err(|e| e.to_string())
 }
 
-/// Real status of the local Ollama model the Shark Agent / matcher depend on —
-/// pings its local API rather than assuming it's ready just because it auto-started.
+/// Real status of the Ollama model the Shark Agent / matcher depend on —
+/// pings its API rather than assuming it's ready just because it auto-started.
 #[tauri::command]
 async fn get_ollama_status(
     state: State<'_, Arc<Mutex<AppState>>>,
 ) -> Result<bool, String> {
     let state = state.lock().await;
     Ok(state.ollama.health_check().await)
+}
+
+/// The Ollama server the app is currently pointed at.
+#[tauri::command]
+fn get_ollama_url() -> String {
+    ollama_config::url()
+}
+
+/// Point the app at a different Ollama server. Required on iOS, which has no
+/// local Ollama and cannot spawn one. Pass an empty string to reset to default.
+#[tauri::command]
+fn set_ollama_url(url: String) -> Result<String, String> {
+    ollama_config::set_url(&url)
+}
+
+/// Whether this build can run helper binaries (`ollama`, `nargo`) locally.
+/// False on iOS/Android, where those features need a remote service instead.
+#[tauri::command]
+fn can_spawn_processes() -> bool {
+    platform::CAN_SPAWN_PROCESSES
 }
 
 #[tauri::command]
@@ -592,6 +615,22 @@ pub fn run() {
             // Initialize Ollama in background
             tauri::async_runtime::spawn(async move {
                 let ollama = ollama_init;
+
+                // Mobile cannot spawn a local server, so there is nothing to
+                // install or start — just check whether the configured remote
+                // is reachable.
+                if !platform::CAN_SPAWN_PROCESSES {
+                    let url = ollama_config::url();
+                    println!("🔍 Checking remote Ollama at {}...", url);
+                    if ollama.health_check().await {
+                        println!("✅ Remote Ollama is healthy");
+                    } else {
+                        eprintln!("⚠️  No Ollama at {}", url);
+                        eprintln!("📝 Set one with the set_ollama_url command or ${}", ollama_config::ENV_VAR);
+                    }
+                    return;
+                }
+
                 println!("🔍 Checking Ollama installation...");
                 if !ollama.is_installed() {
                     eprintln!("⚠️  Ollama not found!");
@@ -731,6 +770,9 @@ pub fn run() {
             get_owned_vouchers,
             get_my_deals,
             get_ollama_status,
+            get_ollama_url,
+            set_ollama_url,
+            can_spawn_processes,
             extract_pdf_text,
             sign_content,
             store_content,

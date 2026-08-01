@@ -221,15 +221,7 @@ impl BlockchainBridge {
             .filter(|s| !s.is_empty())
             .and_then(|s| Address::from_str(&s).ok());
 
-        // CABALMESH_DATA_DIR lets multiple isolated instances run side by side on
-        // one machine (e.g. for a local 2-node mesh test) without sharing a wallet.
-        let app_dir = match std::env::var("CABALMESH_DATA_DIR") {
-            Ok(dir) if !dir.is_empty() => PathBuf::from(dir),
-            _ => dirs::data_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join("cabalmesh"),
-        };
-        let _ = fs::create_dir_all(&app_dir);
+        let app_dir = crate::app_paths::data_dir();
 
         let mut bridge = Self {
             identities: Vec::new(),
