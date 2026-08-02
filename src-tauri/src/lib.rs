@@ -18,6 +18,12 @@ mod telemetry;
 /// Managed application state. See src/state.rs.
 pub mod state;
 
+/// Lifecycle for live frontend streams. See src/subscriptions.rs.
+pub mod subscriptions;
+
+/// The reshaped command surface. See src/commands.rs.
+pub mod commands;
+
 /// The typed error union that crosses the IPC boundary. See src/error.rs.
 pub mod error;
 
@@ -197,6 +203,7 @@ pub fn run() {
             #[cfg(all(desktop, feature = "desktop-legacy"))]
             {
                 tauri::generate_handler![
+                    commands::unsubscribe,
                     app_initializer::kill_switch,
             legacy::send_intent_to_mesh,
             legacy::analyze_pdf_content,
@@ -251,7 +258,9 @@ pub fn run() {
             }
             #[cfg(not(all(desktop, feature = "desktop-legacy")))]
             {
-                tauri::generate_handler![]
+                // Mobile gets the reshaped surface only. Screen commands join
+                // it as their screens land.
+                tauri::generate_handler![commands::unsubscribe]
             }
         })
         .run(tauri::generate_context!())

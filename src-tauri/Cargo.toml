@@ -113,6 +113,7 @@ base64 = "0.22.1"
 dirs = "5"
 lopdf = "0.44"
 thiserror.workspace = true
+tokio-util = { version = "0.7.19", features = ["rt"] }
 
 # Desktop-only. A mobile bundle has no .env file to read and no environment to
 # read it into, so this must never enter the mobile dependency graph.
@@ -137,6 +138,7 @@ tracing-oslog = "0.3"
 tracing-android = "0.2"
 
 [dev-dependencies]
+cabal-core = { path = "crates/cabal-core" }
 insta = "1.48.0"
 tauri = { version = "2", features = ["test"] }
 

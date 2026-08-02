@@ -62,6 +62,7 @@
     "allow-set-ollama-url",
     "allow-can-spawn-processes",
     "allow-match-intent-to-listings",
-    "allow-generate-zk-proof"
+    "allow-generate-zk-proof",
+    "allow-unsubscribe"
   ]
 }

@@ -37,6 +37,7 @@ use crate::error::AppError;
 use crate::matcher::MatchAgent;
 use crate::mesh::PrivacyIntent;
 use crate::ollama_manager::OllamaManager;
+use crate::subscriptions::Registry;
 use crate::zk_handler::ZKHandler;
 use serde::Serialize;
 use std::sync::atomic::AtomicU64;
@@ -123,6 +124,10 @@ struct Inner {
     services: RwLock<Option<Services>>,
     runtime: RwLock<RuntimeCaps>,
     caps: PlatformCaps,
+    /// Live frontend streams. Exists from construction, not from bootstrap:
+    /// the connecting screen subscribes to the handshake log *before* services
+    /// are published, so the registry has to outlive that gap.
+    subscriptions: Registry,
 }
 
 /// Managed application state.
@@ -146,6 +151,7 @@ impl AppState {
                 services: RwLock::new(None),
                 runtime: RwLock::new(RuntimeCaps::default()),
                 caps: PlatformCaps::current(),
+                subscriptions: Registry::new(),
             }),
         }
     }
@@ -185,6 +191,16 @@ impl AppState {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .is_some()
+    }
+
+    /// Live frontend streams.
+    ///
+    /// Every stream-producing command registers here and every teardown
+    /// cancels through it, so a leak is observable as a non-empty registry
+    /// rather than as battery drain nobody attributes.
+    #[must_use]
+    pub fn subscriptions(&self) -> &Registry {
+        &self.inner.subscriptions
     }
 
     /// Compile-time capabilities.

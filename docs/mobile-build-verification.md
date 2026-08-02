@@ -371,6 +371,62 @@ Test count: **98**.
 
 ---
 
+## Stream lifecycle — leak-proof (2026-08-02, ticket 15)
+
+Tauri `Channel`s do not clean themselves up. A channel releases its frontend
+callback only when the producing side sends an end message; there is no
+unsubscribe in the JS API, and releasing a JS callback would not stop a Rust
+task regardless. Without explicit teardown, every visit to a streaming screen
+leaves a live producer, and a user tapping between tabs accumulates them.
+
+`src/subscriptions.rs` registers each stream against a cancellation token.
+`commands::unsubscribe` is the first command on the reshaped surface — returning
+`AppError`, not `String` — and is registered on **both** platform arms.
+
+**The headline check runs 100 subscribe/cancel cycles with real spawned
+producers** and asserts the registry is empty *and* no task is still alive.
+That loop is exactly what tab-switching performs.
+
+Cancellation is verified to stop *emission*, not just bookkeeping: removing a
+registry entry while the task kept producing would pass a length assertion and
+still drain the battery.
+
+### Cancel stops delivery, not the operation
+
+Enforced structurally rather than by discipline — a registered task is *only* a
+delivery loop, and the operation it reports on holds no token from here.
+
+| Stream | cancel stops | cancel does **not** stop |
+|---|---|---|
+| mesh log | delivery | nothing; delivery is all it does |
+| handshake | delivery | the mesh join |
+| settlement proof | delivery | **the settlement** |
+
+That last row is why this is structural. A UI navigation must never cancel a
+transaction.
+
+### Two cases that only show up in practice
+
+**Unmount before subscribe resolves.** Fast tab switching runs teardown before
+the registering invoke has returned. Cancelling an unknown handle is `Ok`, and
+the late registration is still cancellable.
+
+**Suspension.** `cancel_all` stops every stream at once, so a backgrounded app
+is not producing into a webview that cannot receive.
+
+The limit (32) is a tripwire, not a capacity plan: the UI needs one stream per
+visible screen, so hitting it means a screen is not tearing down. Exceeding it
+returns a typed error rather than evicting someone else's stream, which would
+surface as a screen that mysteriously stops updating.
+
+The registry lives on state from **construction**, not from bootstrap — the
+connecting screen subscribes to the handshake log before services are
+published.
+
+Test count: **113**.
+
+---
+
 ## Android — not yet attempted (ticket 08)
 
 No Rust targets, no SDK, no NDK, and none of `JAVA_HOME` / `ANDROID_HOME` / `NDK_HOME` set. The iOS result is encouraging but does not transfer: Android is where the TLS backend actually matters, since it ships no system OpenSSL. That is why ticket 02 moved to rustls, but it is unproven until an Android build runs.

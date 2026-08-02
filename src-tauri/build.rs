@@ -15,6 +15,8 @@
 /// calls. The reshaped screen commands get added as they are registered, not
 /// speculatively.
 const COMMANDS: &[&str] = &[
+    // reshaped surface (src/commands.rs) — registered on every platform
+    "unsubscribe",
     // mesh
     "send_intent_to_mesh",
     "get_relay_stats",
