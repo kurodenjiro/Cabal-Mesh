@@ -79,7 +79,7 @@ pub async fn send_intent_to_mesh(
                 _ => "settlement",
             };
             tracing::info!("📤 Sending {} message: {}", intent_type, payload);
-            if let Some(tx) = &state_lock.mesh_tx {
+            if let Some(mesh) = &state_lock.mesh {
                 let intent = PrivacyIntent {
                     intent_type: intent_type.to_string(),
                     payload: payload.clone(),
@@ -87,7 +87,10 @@ pub async fn send_intent_to_mesh(
                     relay_path: vec!["origin_node".to_string()],
                     relay_fee: None, // Settlements/relay messages don't carry relay fees
                 };
-                tx.send(intent).map_err(adapt::flatten_error)?;
+                // Awaits the actor's acknowledgement. The old unbounded send
+                // succeeded even against a dead receiver, so callers believed
+                // intents were broadcast when they were dropped.
+                mesh.publish(intent).await.map_err(adapt::flatten_error)?;
                 return Ok(format!("{} message broadcasted: {}", intent_type, payload));
             } else {
                 return Err("Mesh network not initialized".to_string());
@@ -104,8 +107,8 @@ pub async fn send_intent_to_mesh(
         relay_fee: Some("0.005 AVAX".to_string()),     // Default fee
     };
 
-    if let Some(tx) = &state_lock.mesh_tx {
-        tx.send(intent).map_err(adapt::flatten_error)?;
+    if let Some(mesh) = &state_lock.mesh {
+        mesh.publish(intent).await.map_err(adapt::flatten_error)?;
         Ok(format!("Intent broadcasted: {}", payload))
     } else {
         Err("Mesh network not initialized".to_string())

@@ -558,6 +558,38 @@ Test count: **150**.
 
 ---
 
+## Mesh actor — bounded and answerable (2026-08-02, ticket 19)
+
+`libp2p::Swarm` is not `Sync`, so it already lived in one task. What it lacked
+was a handle: requests went in on an **unbounded** channel with no reply.
+
+Two consequences, both fixed:
+
+**An unbounded send to a dead receiver succeeded silently.** Callers believed
+intents were broadcast when they had been dropped. `MeshHandle::publish` now
+awaits the actor's acknowledgement, and a stopped actor is
+`MeshError::ActorGone` rather than a false success.
+
+**A caller that outran the actor grew the queue until the process died.** On a
+2 GB phone that arrives quickly. The channel is bounded at 32 — a request
+queue, not a buffer — so the same situation becomes backpressure. Asserted by
+test: a full queue refuses rather than growing.
+
+`snapshot()` and `set_offline()` are answered from inside the event loop, so
+they reflect what the swarm is actually doing rather than state tracked
+alongside it. `set_offline` deliberately does **not** tear the swarm down:
+rebuilding on resume would drop every established connection and re-run
+discovery from nothing. It also refuses publishes while offline, honouring the
+switch's promise that nothing leaves the device at the actor rather than
+trusting each caller to check.
+
+Verified with two live nodes: mDNS discovery, presence broadcast on discovery,
+and the full frontend → `MeshHandle` → gossipsub path.
+
+Test count: **155**.
+
+---
+
 ## Android — not yet attempted (ticket 08)
 
 No Rust targets, no SDK, no NDK, and none of `JAVA_HOME` / `ANDROID_HOME` / `NDK_HOME` set. The iOS result is encouraging but does not transfer: Android is where the TLS backend actually matters, since it ships no system OpenSSL. That is why ticket 02 moved to rustls, but it is unproven until an Android build runs.

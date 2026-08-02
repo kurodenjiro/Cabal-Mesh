@@ -111,20 +111,55 @@ impl MeshNetwork {
     /// so device output is attributable to the node rather than floating free.
     #[tracing::instrument(skip_all, fields(peer_id = %self.swarm.local_peer_id()))]
     pub async fn start(
-        &mut self, 
+        &mut self,
         tx: mpsc::UnboundedSender<MeshEvent>,
-        mut intent_rx: mpsc::UnboundedReceiver<PrivacyIntent>
+        mut commands: tokio::sync::mpsc::Receiver<crate::mesh_handle::MeshCommand>,
     ) -> Result<(), Box<dyn Error>> {
+        use crate::mesh_handle::{MeshCommand, MeshError, MeshSnapshot};
+
         // Listen on all interfaces (offline-first mesh)
         self.swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
 
+        // Answered from the loop rather than tracked elsewhere, so a snapshot
+        // always reflects what the swarm is actually doing.
+        let mut listening_on: Vec<String> = Vec::new();
+        let mut offline = false;
+
         loop {
             tokio::select! {
-                // Handle incoming intents to broadcast
-                Some(intent) = intent_rx.recv() => {
-                    tracing::debug!(intent_type = %intent.intent_type, encrypted = intent.encrypted, "broadcasting intent");
-                    if let Err(e) = self.broadcast_intent(intent) {
-                        tracing::error!("❌ Failed to broadcast intent: {}", e);
+                Some(command) = commands.recv() => {
+                    match command {
+                        MeshCommand::Snapshot { reply } => {
+                            let _ = reply.send(MeshSnapshot {
+                                peer_count: self.swarm.connected_peers().count(),
+                                listening_on: listening_on.clone(),
+                                offline,
+                                relay_bytes: self.relay_bytes.load(std::sync::atomic::Ordering::Relaxed),
+                            });
+                            continue;
+                        }
+                        MeshCommand::SetOffline { offline: next, reply } => {
+                            // Deliberately does not tear the swarm down:
+                            // rebuilding on resume would drop every established
+                            // connection and re-run discovery from nothing.
+                            offline = next;
+                            tracing::info!(offline, "mesh participation toggled");
+                            let _ = reply.send(());
+                            continue;
+                        }
+                        MeshCommand::Publish { intent, reply } => {
+                            if offline {
+                                // The offline switch promises nothing leaves the
+                                // device. Honour it here rather than relying on
+                                // callers to check first.
+                                let _ = reply.send(Err(MeshError::Publish));
+                                continue;
+                            }
+                            let intent = *intent;
+                            let outcome = self.broadcast_intent(intent);
+                            let _ = reply.send(outcome.map_err(|_| MeshError::Publish));
+                            continue;
+                        }
                     }
                 }
 
@@ -133,6 +168,7 @@ impl MeshNetwork {
                     match event {
                         SwarmEvent::NewListenAddr { address, .. } => {
                             tracing::info!(address = %address, "listening");
+                            listening_on.push(address.to_string());
                             let _ = tx.send(MeshEvent::ListeningStarted { address: address.to_string() });
                         }
                         SwarmEvent::Behaviour(event) => match event {

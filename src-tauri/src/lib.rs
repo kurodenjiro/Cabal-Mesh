@@ -11,6 +11,9 @@ pub mod agent;
 pub mod blockchain_bridge;
 pub mod matcher;
 pub mod mesh;
+
+/// Request handle onto the mesh actor. See src/mesh_handle.rs.
+pub mod mesh_handle;
 pub mod zk_handler;
 mod llm_json;
 mod telemetry;
@@ -154,14 +157,14 @@ pub fn run() {
 
                 // 3. Phase 3 & Network Start
                 match SystemBootstrap::phase_3_network(&app_handle).await {
-                    Ok((mut mesh, intent_tx, mut event_rx, intent_rx, event_tx)) => {
+                    Ok((mut mesh, mesh_handle, mut event_rx, command_rx, event_tx)) => {
                         tracing::info!("✅ System Bootstrap Complete. Mesh Swarm Active.");
 
                         let relay_bytes = mesh.relay_bytes.clone();
 
                         // Start Mesh Loop (Background)
                         tokio::spawn(async move {
-                            if let Err(e) = mesh.start(event_tx, intent_rx).await {
+                            if let Err(e) = mesh.start(event_tx, command_rx).await {
                                 tracing::warn!("Mesh network error: {}", e);
                             }
                         });
@@ -175,7 +178,7 @@ pub fn run() {
                         });
 
                         state.set_services(state::Services {
-                            mesh_tx: Some(intent_tx),
+                            mesh: Some(mesh_handle),
                             agent: Arc::new(SharkAgent::new(None)),
                             matcher: Arc::new(MatchAgent::new(None)),
                             zk_handler: Arc::new(ZKHandler::new(None)),
@@ -191,7 +194,7 @@ pub fn run() {
                         // services unset would make every command NotReady
                         // forever, which reads as a hang rather than an error.
                         state.set_services(state::Services {
-                            mesh_tx: None,
+                            mesh: None,
                             agent: Arc::new(SharkAgent::new(None)),
                             matcher: Arc::new(MatchAgent::new(None)),
                             zk_handler: Arc::new(ZKHandler::new(None)),

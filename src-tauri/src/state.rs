@@ -35,14 +35,13 @@ use crate::agent::SharkAgent;
 use crate::blockchain_bridge::BlockchainBridge;
 use crate::error::AppError;
 use crate::matcher::MatchAgent;
-use crate::mesh::PrivacyIntent;
 use crate::ollama_manager::OllamaManager;
 use crate::subscriptions::Registry;
 use crate::zk_handler::ZKHandler;
 use serde::Serialize;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, RwLock};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::Mutex;
 
 /// The subsystems that exist only after bootstrap succeeds.
 ///
@@ -52,7 +51,10 @@ use tokio::sync::{mpsc, Mutex};
 /// about to make.
 #[derive(Clone)]
 pub struct Services {
-    pub mesh_tx: Option<mpsc::UnboundedSender<PrivacyIntent>>,
+    /// `None` when the swarm failed to boot. Chain and vault commands
+    /// still work without it, so the UI can say the mesh is down rather than
+    /// appearing wholly broken.
+    pub mesh: Option<crate::mesh_handle::MeshHandle>,
     pub agent: Arc<SharkAgent>,
     pub matcher: Arc<MatchAgent>,
     pub zk_handler: Arc<ZKHandler>,

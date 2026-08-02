@@ -1,5 +1,5 @@
 use crate::blockchain_bridge::BlockchainBridge;
-use crate::mesh::{MeshNetwork, MeshEvent, PrivacyIntent};
+use crate::mesh::{MeshEvent, MeshNetwork};
 use crate::state::AppState;
 use tauri::{AppHandle, Emitter, State};
 use std::sync::Arc;
@@ -49,16 +49,29 @@ impl SystemBootstrap {
 
     /// 3. Phase 3 (Network): Init Libp2p
     /// Returns the initialized MeshNetwork and channels
-    pub async fn phase_3_network(app: &AppHandle) -> Result<(MeshNetwork, mpsc::UnboundedSender<PrivacyIntent>, mpsc::UnboundedReceiver<MeshEvent>, mpsc::UnboundedReceiver<PrivacyIntent>, mpsc::UnboundedSender<MeshEvent>), String> {
+    pub async fn phase_3_network(
+        app: &AppHandle,
+    ) -> Result<
+        (
+            MeshNetwork,
+            crate::mesh_handle::MeshHandle,
+            mpsc::UnboundedReceiver<MeshEvent>,
+            tokio::sync::mpsc::Receiver<crate::mesh_handle::MeshCommand>,
+            mpsc::UnboundedSender<MeshEvent>,
+        ),
+        String,
+    > {
         Self::emit(app, "PHASE_3_NETWORK", "Booting Libp2p Swarm...", 70);
         
         let (event_tx, event_rx) = mpsc::unbounded_channel();
-        let (intent_tx, intent_rx) = mpsc::unbounded_channel();
+        // Bounded: a caller that outruns the actor waits rather than
+        // growing a queue until the process is killed.
+        let (mesh_handle, command_rx) = crate::mesh_handle::MeshHandle::channel();
 
         match MeshNetwork::new().await {
             Ok(mesh) => {
                  Self::emit(app, "PHASE_3_NETWORK", &format!("PeerID Generated: {}", mesh.swarm.local_peer_id()), 85);
-                 Ok((mesh, intent_tx, event_rx, intent_rx, event_tx))
+                 Ok((mesh, mesh_handle, event_rx, command_rx, event_tx))
             }
             Err(e) => {
                 Self::emit(app, "PHASE_3_ERROR", &format!("Mesh Failed: {}", e), 0);
