@@ -530,6 +530,34 @@ Test count: **145**.
 
 ---
 
+## Presentation contracts — generated, not hand-written (2026-08-02, ticket 16)
+
+`src-tauri/src/bindings.rs` → `src/types/bindings.ts`, via `npm run bindings`.
+`npm run bindings:check` fails on uncommitted drift. Regeneration is
+deterministic — verified by regenerating and diffing.
+
+**No colour crosses the boundary.** The prototype passed colours as data
+(`dot: BLUE`, `deltaColor: GREEN`), which hard-codes the palette into Rust and
+makes a design change a backend release. Rust now sends a semantic *tone* whose
+domain matches the design system's props exactly — `StatusTone`, `LogTone`,
+`DeltaTone`, `ToastTone` — and the hex mapping lives in the design system alone.
+
+Guarded by test: every presentation payload is asserted to contain no `#`, no
+palette hex, and no colour name.
+
+**Numbers are formatted once, in Rust.** The brand demands exact separated
+figures and forbids approximations, so `separated()` is the single
+implementation rather than one per screen.
+
+`StatTile::plain` omits the delta entirely rather than emitting `+0.0%` — a
+fabricated trend for an unmeasured figure would violate the same exactness
+rule. That is the honest rendering for the reputation score while ticket 03 is
+open.
+
+Test count: **150**.
+
+---
+
 ## Android — not yet attempted (ticket 08)
 
 No Rust targets, no SDK, no NDK, and none of `JAVA_HOME` / `ANDROID_HOME` / `NDK_HOME` set. The iOS result is encouraging but does not transfer: Android is where the TLS backend actually matters, since it ships no system OpenSSL. That is why ticket 02 moved to rustls, but it is unproven until an Android build runs.

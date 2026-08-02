@@ -25,6 +25,9 @@ pub mod subscriptions;
 /// The reshaped command surface. See src/commands.rs.
 pub mod commands;
 
+/// Presentation contracts shared with the frontend. See src/bindings.rs.
+pub mod bindings;
+
 /// The typed error union that crosses the IPC boundary. See src/error.rs.
 pub mod error;
 

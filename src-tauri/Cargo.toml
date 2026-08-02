@@ -52,6 +52,7 @@ default = ["desktop-legacy"]
 # The frozen desktop IPC surface: 50 commands with signatures held byte-identical
 # for the unmaintained desktop UI. See src/legacy/mod.rs.
 desktop-legacy = []
+ts-rs = ["dep:ts-rs"]
 
 [dependencies]
 # The domain model. No I/O, no runtime — see crates/cabal-core/src/lib.rs.
@@ -119,6 +120,7 @@ lopdf = "0.44"
 zeroize = "1"
 thiserror.workspace = true
 tokio-util = { version = "0.7.19", features = ["rt"] }
+ts-rs = { version = "12.0.1", optional = true }
 
 # Desktop-only. A mobile bundle has no .env file to read and no environment to
 # read it into, so this must never enter the mobile dependency graph.
