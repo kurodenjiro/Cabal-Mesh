@@ -14,6 +14,9 @@ pub mod mesh;
 
 /// Request handle onto the mesh actor. See src/mesh_handle.rs.
 pub mod mesh_handle;
+
+/// Bootstrap peer configuration. See src/bootstrap_config.rs.
+pub mod bootstrap_config;
 pub mod zk_handler;
 mod llm_json;
 mod telemetry;

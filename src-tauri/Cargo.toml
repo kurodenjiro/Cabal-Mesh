@@ -66,7 +66,25 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 
 # Mesh Networking (libp2p)
-libp2p = { version = "0.54", features = ["tcp", "mdns", "noise", "yamux", "gossipsub", "tokio"] }
+# QUIC alongside TCP: a phone changes networks constantly, and QUIC connection
+# migration survives a Wi-Fi to cellular handoff where a TCP socket does not.
+# identify/ping/relay/dcutr are what make off-LAN discovery possible at all —
+# mDNS alone is a room-sized mesh.
+libp2p = { version = "0.54", features = [
+    "tokio",
+    "tcp",
+    "quic",
+    "dns",
+    "noise",
+    "yamux",
+    "gossipsub",
+    "mdns",
+    "identify",
+    "ping",
+    "relay",
+    "dcutr",
+    "macros",
+] }
 libp2p-swarm = { version = "0.45", features = ["macros"] }
 tokio = { version = "1", features = ["full"] }
 

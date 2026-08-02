@@ -590,6 +590,56 @@ Test count: **155**.
 
 ---
 
+## Transport — mobile-viable (2026-08-02, ticket 20)
+
+TCP with mDNS is a room-sized mesh. Two users on different networks never meet,
+which for a mesh product is not a limitation but the absence of the product.
+
+**QUIC alongside TCP.** Verified listening on both:
+
+```
+listening address=/ip4/192.168.1.122/tcp/65118
+listening address=/ip4/192.168.1.122/udp/61023/quic-v1
+```
+
+QUIC earns its place on mobile specifically: connection migration survives a
+Wi-Fi→cellular handoff that kills a TCP socket, and 0-RTT resumption makes
+returning from background cheap. A network that blocks UDP degrades to TCP with
+a warning rather than failing.
+
+Added `identify` (a precondition for relay reservations and hole punching),
+`ping` (liveness, and keeps NAT bindings warm on cellular), `relay` client, and
+`dcutr` to upgrade a relayed connection to direct — so the relay carries
+handshakes rather than the whole mesh.
+
+**mDNS is now `Toggle`-wrapped.** Local discovery is a *permission* on both
+mobile platforms, not a capability. A node that failed to start because the user
+declined a prompt would be worse than one that quietly falls back to bootstrap
+peers.
+
+### No placeholder relay ships
+
+`BootstrapConfig::default_relays()` is deliberately **empty**, asserted by test.
+A fake address produces dial failures that read as bugs, and inventing one would
+be worse. Until ticket 23 deploys a relay, the app logs
+
+```
+no bootstrap relays configured — discovery is limited to this network
+```
+
+and says so honestly rather than appearing broken. A user override *replaces*
+the list rather than appending — pointing the app at your own relay usually
+means only that one. A missing config field still deserializes, because the
+relay address will move at some point and an older file must not become
+unloadable when it does.
+
+Verified: two nodes discover each other over mDNS with both transports live;
+iOS cross-compiles with QUIC, relay and dcutr.
+
+Test count: **160**.
+
+---
+
 ## Android — not yet attempted (ticket 08)
 
 No Rust targets, no SDK, no NDK, and none of `JAVA_HOME` / `ANDROID_HOME` / `NDK_HOME` set. The iOS result is encouraging but does not transfer: Android is where the TLS backend actually matters, since it ships no system OpenSSL. That is why ticket 02 moved to rustls, but it is unproven until an Android build runs.

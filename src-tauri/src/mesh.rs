@@ -1,6 +1,7 @@
 use futures::StreamExt;
+use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::{
-    gossipsub, mdns, noise,
+    dcutr, gossipsub, identify, mdns, noise, ping, relay,
     swarm::{NetworkBehaviour, SwarmEvent},
     tcp, yamux, Swarm, SwarmBuilder,
 };
@@ -16,19 +17,62 @@ use tokio::sync::mpsc;
 #[derive(NetworkBehaviour)]
 #[behaviour(to_swarm = "MeshBehaviourEvent")]
 pub struct MeshBehaviour {
-    pub mdns: mdns::tokio::Behaviour,
+    /// `Toggle` because local-network discovery is a **permission**, not a
+    /// capability. iOS and Android can both refuse it, and a node that failed
+    /// to start because the user declined a prompt would be worse than one
+    /// that quietly falls back to bootstrap peers.
+    pub mdns: Toggle<mdns::tokio::Behaviour>,
     pub gossipsub: gossipsub::Behaviour,
+    /// Tells peers our addresses and learns theirs — a precondition for relay
+    /// reservations and for hole punching.
+    pub identify: identify::Behaviour,
+    /// Liveness. Also keeps NAT bindings warm, which matters on cellular.
+    pub ping: ping::Behaviour,
+    /// Lets this node be reached through a relay when it cannot be dialled
+    /// directly, which on mobile is most of the time.
+    pub relay: relay::client::Behaviour,
+    /// Upgrades a relayed connection to a direct one when hole punching
+    /// succeeds, so the relay carries handshakes rather than the whole mesh.
+    pub dcutr: dcutr::Behaviour,
 }
 
 #[derive(Debug)]
 pub enum MeshBehaviourEvent {
     Mdns(mdns::Event),
     Gossipsub(gossipsub::Event),
+    Identify(identify::Event),
+    Ping(ping::Event),
+    Relay(relay::client::Event),
+    Dcutr(dcutr::Event),
 }
 
 impl From<mdns::Event> for MeshBehaviourEvent {
     fn from(event: mdns::Event) -> Self {
         MeshBehaviourEvent::Mdns(event)
+    }
+}
+
+impl From<identify::Event> for MeshBehaviourEvent {
+    fn from(event: identify::Event) -> Self {
+        MeshBehaviourEvent::Identify(event)
+    }
+}
+
+impl From<ping::Event> for MeshBehaviourEvent {
+    fn from(event: ping::Event) -> Self {
+        MeshBehaviourEvent::Ping(event)
+    }
+}
+
+impl From<relay::client::Event> for MeshBehaviourEvent {
+    fn from(event: relay::client::Event) -> Self {
+        MeshBehaviourEvent::Relay(event)
+    }
+}
+
+impl From<dcutr::Event> for MeshBehaviourEvent {
+    fn from(event: dcutr::Event) -> Self {
+        MeshBehaviourEvent::Dcutr(event)
     }
 }
 
@@ -87,12 +131,25 @@ impl MeshNetwork {
         let topic = gossipsub::IdentTopic::new("cabalmesh-privacy-intents");
         gossipsub.subscribe(&topic)?;
 
-        // Set up mDNS for local peer discovery (ShadowWire mesh)
-        let mdns = mdns::tokio::Behaviour::new(mdns::Config::default(), local_peer_id)?;
+        // Local discovery is a permission on both mobile platforms. A refusal
+        // disables it rather than failing to start: discovery then degrades to
+        // bootstrap peers instead of the node being dead.
+        let mdns = match mdns::tokio::Behaviour::new(mdns::Config::default(), local_peer_id) {
+            Ok(behaviour) => Toggle::from(Some(behaviour)),
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "local-network discovery unavailable; falling back to bootstrap peers"
+                );
+                Toggle::from(None)
+            }
+        };
 
-        let behaviour = MeshBehaviour { mdns, gossipsub };
+        let identify_config = identify::Config::new(
+            "/cabalmesh/1.0.0".to_string(),
+            local_key.public(),
+        );
 
-        // Build the Swarm with Noise encryption (ShadowWire philosophy)
         let swarm = SwarmBuilder::with_existing_identity(local_key)
             .with_tokio()
             .with_tcp(
@@ -100,7 +157,20 @@ impl MeshNetwork {
                 noise::Config::new,
                 yamux::Config::default,
             )?
-            .with_behaviour(|_| behaviour)?
+            // QUIC alongside TCP. Connection migration survives a Wi-Fi to
+            // cellular handoff, which a TCP socket does not, and 0-RTT
+            // resumption makes returning from background cheap.
+            .with_quic()
+            .with_dns()?
+            .with_relay_client(noise::Config::new, yamux::Config::default)?
+            .with_behaviour(|key, relay_behaviour| MeshBehaviour {
+                mdns,
+                gossipsub,
+                identify: identify::Behaviour::new(identify_config),
+                ping: ping::Behaviour::new(ping::Config::new()),
+                relay: relay_behaviour,
+                dcutr: dcutr::Behaviour::new(key.public().to_peer_id()),
+            })?
             .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(60)))
             .build();
 
@@ -117,8 +187,32 @@ impl MeshNetwork {
     ) -> Result<(), Box<dyn Error>> {
         use crate::mesh_handle::{MeshCommand, MeshError, MeshSnapshot};
 
-        // Listen on all interfaces (offline-first mesh)
+        // Listen on both transports. QUIC is preferred by peers that support
+        // it; TCP remains for those that do not and for networks that block
+        // UDP.
         self.swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
+        if let Err(error) = self.swarm.listen_on("/ip4/0.0.0.0/udp/0/quic-v1".parse()?) {
+            // Some networks block UDP outright. TCP alone still works, so this
+            // degrades rather than fails.
+            tracing::warn!(%error, "QUIC listener unavailable; continuing on TCP");
+        }
+
+        // Dial bootstrap peers so discovery is not limited to this network.
+        let bootstrap = crate::bootstrap_config::BootstrapConfig::load(
+            &cabal_store::JsonStore::new(crate::app_paths::in_data_dir("bootstrap.json")),
+        );
+        if bootstrap.has_relays() {
+            for address in bootstrap.parsed() {
+                match self.swarm.dial(address.clone()) {
+                    Ok(()) => tracing::info!(%address, "dialling bootstrap peer"),
+                    Err(error) => tracing::warn!(%address, %error, "bootstrap dial failed"),
+                }
+            }
+        } else {
+            tracing::info!(
+                "no bootstrap relays configured — discovery is limited to this network"
+            );
+        }
 
         // Answered from the loop rather than tracked elsewhere, so a snapshot
         // always reflects what the swarm is actually doing.
