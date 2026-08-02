@@ -482,6 +482,54 @@ Test count: **124**.
 
 ---
 
+## Vault — private keys encrypted at rest (2026-08-02, ticket 18)
+
+Private keys were **plaintext hex in a JSON file**. Anything that could read
+the app's data directory — another process, a backup, a synced folder, a
+support bundle — had the wallet. Meanwhile the vault screen's own copy promises
+*"HELD LOCALLY. NEVER SYNCED"*.
+
+`crates/cabal-vault`: AES-256-GCM, fresh random nonce per write, key supplied by
+a pluggable `KeyProvider`.
+
+Verified on the real wallet:
+
+| Check | Result |
+|---|---|
+| `identities.json` removed, `vault.enc` written | ✅ |
+| Private key absent from the ciphertext (grep = 0) | ✅ |
+| Key file mode `-rw-------` | ✅ |
+| Restart loads the same address `0xfF8dd6db…` | ✅ |
+| Wrong key / tampered byte → refused, not garbage | ✅ (GCM authenticates) |
+| Identical plaintext → different ciphertext | ✅ (nonce reuse would break GCM) |
+
+**Migration verifies before it destroys.** It writes the vault, decrypts it
+back, compares, and only then unlinks the plaintext. A failure leaves the old
+file exactly where it was — proven by a test using a provider that always fails.
+After ticket 17's near-miss, the ordering here is not incidental.
+
+Two paths now fail loudly rather than helpfully: a vault that exists but will
+not decrypt, and a corrupt key file. Both previously would have fallen through
+to "generate a fresh wallet", which turns a recoverable problem into permanent
+loss of funds.
+
+`Secret` redacts in both `Debug` and `Display`, so the real accident — logging a
+*struct* that happens to contain a key, not the key itself — is prevented by
+type rather than by memory.
+
+### What is not done
+
+**The device key store is not wired.** iOS Keychain and Android Keystore need
+the native plugin. Until then mobile uses the same file-backed key inside the
+app sandbox — meaningfully protected (no other app can read it) but not
+hardware-backed, and it warns at startup. Desktop has no uniform key store since
+`keyring` was removed, so it uses the same mechanism: a real improvement over
+plaintext, and honest about being weaker than a keychain.
+
+Test count: **145**.
+
+---
+
 ## Android — not yet attempted (ticket 08)
 
 No Rust targets, no SDK, no NDK, and none of `JAVA_HOME` / `ANDROID_HOME` / `NDK_HOME` set. The iOS result is encouraging but does not transfer: Android is where the TLS backend actually matters, since it ships no system OpenSSL. That is why ticket 02 moved to rustls, but it is unproven until an Android build runs.

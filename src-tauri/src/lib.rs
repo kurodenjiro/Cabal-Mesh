@@ -14,6 +14,7 @@ pub mod mesh;
 pub mod zk_handler;
 mod llm_json;
 mod telemetry;
+mod vault_key;
 
 /// Managed application state. See src/state.rs.
 pub mod state;

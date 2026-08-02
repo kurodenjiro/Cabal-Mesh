@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use cabal_store::JsonStore;
+use cabal_vault::{Secret, Vault};
 use std::fs;
 use std::path::PathBuf;
 use std::error::Error;
@@ -39,11 +40,17 @@ sol! {
     "abi/CabalMeshVoucher.abi.json"
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct IdentityRecord {
     pub alias: String,
     pub emoji: String,
-    pub private_key_hex: String, // 0x-prefixed secp256k1 private key
+    /// 0x-prefixed secp256k1 private key.
+    ///
+    /// `Secret`, not `String`: this struct derives `Debug`, and any `{:?}` of
+    /// it — a `dbg!`, a tracing field, an error formatting its context — would
+    /// otherwise print the wallet. Encryption at rest protects the file;
+    /// this protects the logs.
+    pub private_key_hex: Secret,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -185,7 +192,9 @@ pub struct InstantSession {
 
 pub struct BlockchainBridge {
     pub identities: Vec<IdentityRecord>,
-    pub identity_path: PathBuf,
+    /// Encrypted store for identities. Replaces the plaintext
+    /// `identities.json`, which held private keys in the clear.
+    pub identity_vault: Vault<crate::vault_key::FileKeyProvider>,
     pub storage_path: PathBuf,
     pub chain_cache_path: PathBuf,
     pub pending_relay_path: PathBuf,
@@ -226,7 +235,10 @@ impl BlockchainBridge {
 
         let mut bridge = Self {
             identities: Vec::new(),
-            identity_path: app_dir.join("identities.json"),
+            identity_vault: Vault::new(
+                app_dir.join("vault.enc"),
+                crate::vault_key::platform_provider(app_dir.join("vault.key")),
+            ),
             storage_path: app_dir.join("snapshot.enc"),
             chain_cache_path: app_dir.join("chain_cache.json"),
             pending_relay_path: app_dir.join("pending_relay_txs.json"),
@@ -245,16 +257,32 @@ impl BlockchainBridge {
     }
 
     fn save_identities(&self) -> Result<(), Box<dyn Error>> {
-        JsonStore::new(&self.identity_path).save(&self.identities)?;
+        self.identity_vault.save(&self.identities)?;
         Ok(())
     }
 
     pub fn load_identities(&mut self) -> Result<Vec<IdentityView>, Box<dyn Error>> {
-        if self.identity_path.exists() {
-            tracing::info!("🔑 Loading Identities from {:?}", self.identity_path);
-            let content = fs::read_to_string(&self.identity_path)?;
+        // Adopt any pre-encryption wallet first. This verifies a full decrypt
+        // round trip before removing the plaintext, so a failure here leaves
+        // the old file exactly where it was.
+        let plaintext = JsonStore::new(self.plaintext_identity_path());
+        match self
+            .identity_vault
+            .migrate_plaintext::<Vec<IdentityRecord>>(&plaintext)
+        {
+            Ok(true) => tracing::info!("🔐 Identities migrated into the encrypted vault"),
+            Ok(false) => {}
+            Err(error) => {
+                // Do not fall through to generating a fresh wallet: that is
+                // how a recoverable problem becomes permanent loss.
+                tracing::error!(%error, "identity migration failed; plaintext left intact");
+                return Err(Box::new(error));
+            }
+        }
 
-            match serde_json::from_str::<Vec<IdentityRecord>>(&content) {
+        if self.identity_vault.exists() {
+            tracing::info!("🔑 Loading identities from the encrypted vault");
+            match self.identity_vault.load::<Vec<IdentityRecord>>() {
                 Ok(records) => {
                     self.identities = records;
                     if self.identities.is_empty() {
@@ -262,21 +290,30 @@ impl BlockchainBridge {
                     }
                     self.get_identity_views()
                 }
-                Err(_) => {
-                    tracing::warn!("⚠️ Failed to parse identity list, creating new...");
-                    return self.generate_new_identity("Glitch Fox".to_string(), "👾".to_string());
+                Err(error) => {
+                    // A vault that exists but will not open means the key is
+                    // wrong or the file was tampered with. Generating a new
+                    // wallet over it would discard the user's funds, so this
+                    // fails loudly instead.
+                    tracing::error!(%error, "vault exists but cannot be decrypted");
+                    Err(Box::new(error))
                 }
             }
         } else {
-            return self.generate_new_identity("Genesis Fox".to_string(), "🦊".to_string());
+            self.generate_new_identity("Genesis Fox".to_string(), "🦊".to_string())
         }
+    }
+
+    /// Where the pre-encryption wallet lived. Only used to migrate away from.
+    fn plaintext_identity_path(&self) -> PathBuf {
+        crate::app_paths::in_data_dir("identities.json")
     }
 
     pub fn generate_new_identity(&mut self, alias: String, emoji: String) -> Result<Vec<IdentityView>, Box<dyn Error>> {
         tracing::info!("🆕 Generating NEW Identity '{}' [{}]...", alias, emoji);
         let signer = PrivateKeySigner::random();
         let private_key_hex = format!("0x{}", hex::encode(signer.to_bytes()));
-        self.identities.push(IdentityRecord { alias, emoji, private_key_hex });
+        self.identities.push(IdentityRecord { alias, emoji, private_key_hex: private_key_hex.into() });
         self.save_identities()?;
         self.get_identity_views()
     }
@@ -284,7 +321,7 @@ impl BlockchainBridge {
     pub fn get_identity_views(&self) -> Result<Vec<IdentityView>, Box<dyn Error>> {
         let mut views = Vec::new();
         for id in &self.identities {
-            let signer = PrivateKeySigner::from_str(&id.private_key_hex)?;
+            let signer = PrivateKeySigner::from_str(id.private_key_hex.expose())?;
             views.push(IdentityView {
                 alias: id.alias.clone(),
                 emoji: id.emoji.clone(),
@@ -322,7 +359,7 @@ impl BlockchainBridge {
         };
         PrivateKeySigner::from_str(&normalized)?;
 
-        self.identities = vec![IdentityRecord { alias, emoji, private_key_hex: normalized }];
+        self.identities = vec![IdentityRecord { alias, emoji, private_key_hex: normalized.into() }];
         let _ = self.delete_snapshot();
         let _ = fs::remove_file(&self.relay_boost_path);
         self.save_identities()?;
@@ -334,12 +371,12 @@ impl BlockchainBridge {
     /// way to actually get back to a wallet after switching away from it,
     /// since nothing else persists it anywhere recoverable.
     pub fn get_primary_private_key(&self) -> Option<String> {
-        self.identities.first().map(|id| id.private_key_hex.clone())
+        self.identities.first().map(|id| id.private_key_hex.expose().to_owned())
     }
 
     pub fn get_primary_address(&self) -> String {
         match self.identities.first() {
-            Some(first) => match PrivateKeySigner::from_str(&first.private_key_hex) {
+            Some(first) => match PrivateKeySigner::from_str(first.private_key_hex.expose()) {
                 Ok(signer) => signer.address().to_string(),
                 Err(_) => "unknown".to_string(),
             },
@@ -349,7 +386,7 @@ impl BlockchainBridge {
 
     fn primary_signer(&self) -> Result<PrivateKeySigner, Box<dyn Error>> {
         let first = self.identities.first().ok_or("No identity available")?;
-        Ok(PrivateKeySigner::from_str(&first.private_key_hex)?)
+        Ok(PrivateKeySigner::from_str(first.private_key_hex.expose())?)
     }
 
     // ---- Offline signing + mesh-relay queue -------------------------------
@@ -613,7 +650,7 @@ impl BlockchainBridge {
     // build gets a different signing identity, so `entry.get_password()` kept
     // failing, generating a *new* key every read and making decryption of a
     // snapshot written moments earlier fail every time) — real private keys
-    // live in `identity_path`, untouched by this.
+    // live in the encrypted vault, untouched by this.
     fn save_snapshot_encrypted(&self, snapshot: &Snapshot) -> Result<(), Box<dyn Error>> {
         JsonStore::compact(&self.storage_path).save(&snapshot)?;
         tracing::info!("💾 [Bridge] Snapshot saved.");
@@ -637,9 +674,10 @@ impl BlockchainBridge {
     }
 
     pub fn delete_identity(&self) -> Result<(), Box<dyn Error>> {
-        if self.identity_path.exists() {
-            fs::remove_file(&self.identity_path)?;
-        }
+        // Removes the encrypted vault. The key file is deliberately left: it
+        // is useless without a vault, and deleting it would break any backup
+        // the user made of vault.enc.
+        JsonStore::new(crate::app_paths::in_data_dir("vault.enc")).delete()?;
         Ok(())
     }
 
@@ -1183,7 +1221,10 @@ mod offline_signing_tests {
 
         let mut bridge = BlockchainBridge {
             identities: Vec::new(),
-            identity_path: tmp_dir.join("identities.json"),
+            identity_vault: Vault::new(
+                tmp_dir.join("vault.enc"),
+                crate::vault_key::platform_provider(tmp_dir.join("vault.key")),
+            ),
             storage_path: tmp_dir.join("snapshot.enc"),
             chain_cache_path: tmp_dir.join("chain_cache.json"),
             pending_relay_path: tmp_dir.join("pending_relay_txs.json"),
@@ -1242,7 +1283,10 @@ mod content_commitment_tests {
     fn test_bridge(tmp_dir: &PathBuf) -> BlockchainBridge {
         BlockchainBridge {
             identities: Vec::new(),
-            identity_path: tmp_dir.join("identities.json"),
+            identity_vault: Vault::new(
+                tmp_dir.join("vault.enc"),
+                crate::vault_key::platform_provider(tmp_dir.join("vault.key")),
+            ),
             storage_path: tmp_dir.join("snapshot.enc"),
             chain_cache_path: tmp_dir.join("chain_cache.json"),
             pending_relay_path: tmp_dir.join("pending_relay_txs.json"),
