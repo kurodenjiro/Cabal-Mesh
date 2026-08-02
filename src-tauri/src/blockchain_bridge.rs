@@ -250,7 +250,7 @@ impl BlockchainBridge {
 
     pub fn load_identities(&mut self) -> Result<Vec<IdentityView>, Box<dyn Error>> {
         if self.identity_path.exists() {
-            println!("🔑 Loading Identities from {:?}", self.identity_path);
+            tracing::info!("🔑 Loading Identities from {:?}", self.identity_path);
             let content = fs::read_to_string(&self.identity_path)?;
 
             match serde_json::from_str::<Vec<IdentityRecord>>(&content) {
@@ -262,7 +262,7 @@ impl BlockchainBridge {
                     self.get_identity_views()
                 }
                 Err(_) => {
-                    println!("⚠️ Failed to parse identity list, creating new...");
+                    tracing::warn!("⚠️ Failed to parse identity list, creating new...");
                     return self.generate_new_identity("Glitch Fox".to_string(), "👾".to_string());
                 }
             }
@@ -272,7 +272,7 @@ impl BlockchainBridge {
     }
 
     pub fn generate_new_identity(&mut self, alias: String, emoji: String) -> Result<Vec<IdentityView>, Box<dyn Error>> {
-        println!("🆕 Generating NEW Identity '{}' [{}]...", alias, emoji);
+        tracing::info!("🆕 Generating NEW Identity '{}' [{}]...", alias, emoji);
         let signer = PrivateKeySigner::random();
         let private_key_hex = format!("0x{}", hex::encode(signer.to_bytes()));
         self.identities.push(IdentityRecord { alias, emoji, private_key_hex });
@@ -444,7 +444,7 @@ impl BlockchainBridge {
         pending.push(queued.clone());
         self.save_pending_relay_txs(&pending)?;
 
-        println!("📡 [Bridge] Signed offline, queued for mesh relay: {} ({})", queued.id, summary);
+        tracing::info!("📡 [Bridge] Signed offline, queued for mesh relay: {} ({})", queued.id, summary);
         Ok(queued)
     }
 
@@ -457,7 +457,7 @@ impl BlockchainBridge {
         let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
         let receipt = provider.send_raw_transaction(&raw_bytes).await?.get_receipt().await?;
 
-        println!("✅ [Bridge] Relayed transaction confirmed. Tx: {:?}", receipt.transaction_hash);
+        tracing::info!("✅ [Bridge] Relayed transaction confirmed. Tx: {:?}", receipt.transaction_hash);
         Ok(format!("{:?}", receipt.transaction_hash))
     }
 
@@ -567,22 +567,25 @@ impl BlockchainBridge {
         matches!(timeout(Duration::from_secs(4), provider.get_block_number()).await, Ok(Ok(_)))
     }
 
+    /// Spanned so the RPC round trip and everything it logs is attributable to
+    /// one sync, which matters when several run concurrently after a reconnect.
+    #[tracing::instrument(skip(self), fields(rpc = %self.rpc_url))]
     pub async fn sync_state(&self, wallet_address_override: &str) -> Result<Snapshot, Box<dyn Error>> {
         let primary = self.get_primary_address();
         let target = if primary != "unknown" { primary } else { wallet_address_override.to_string() };
         let address = Address::from_str(&target)?;
 
-        println!("🔄 [Bridge] Fetching native AVAX balance from {}", self.rpc_url);
+        tracing::info!("🔄 [Bridge] Fetching native AVAX balance from {}", self.rpc_url);
 
         let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
         let balance_wei: U256 = provider.get_balance(address).await?;
 
-        println!("✅ [Bridge] Fetched balance for {}", target);
+        tracing::info!("✅ [Bridge] Fetched balance for {}", target);
 
         // Best-effort: refresh the offline-signing cache while we know we're online.
         // Never let this fail the whole sync if the RPC is flaky for just this call.
         if let Err(e) = self.refresh_chain_cache(address).await {
-            eprintln!("⚠️  Failed to refresh chain state cache: {}", e);
+            tracing::warn!("⚠️  Failed to refresh chain state cache: {}", e);
         }
 
         let snapshot = Snapshot {
@@ -612,7 +615,7 @@ impl BlockchainBridge {
     // live in `identity_path`, untouched by this.
     fn save_snapshot_encrypted(&self, snapshot: &Snapshot) -> Result<(), Box<dyn Error>> {
         fs::write(&self.storage_path, serde_json::to_vec(&snapshot)?)?;
-        println!("💾 [Bridge] Snapshot saved.");
+        tracing::info!("💾 [Bridge] Snapshot saved.");
         Ok(())
     }
 
@@ -668,6 +671,9 @@ impl BlockchainBridge {
     /// Creates an on-chain escrow deal, locking `amount_wei` for `payee`.
     /// If the RPC can't be reached within a few seconds, falls back to
     /// signing the transaction offline and queuing it for mesh relay.
+    /// `skip(self)` keeps the bridge — which holds signers — out of the span,
+    /// while the escrow parameters stay visible.
+    #[tracing::instrument(skip(self), fields(payee = %payee, expiry = expiry_unix))]
     pub async fn create_escrow(&self, payee: &str, amount_wei: U256, expiry_unix: u64) -> Result<TxResult, Box<dyn Error>> {
         let signer = self.primary_signer()?;
         let escrow_address = self.escrow_address.ok_or("ESCROW_CONTRACT_ADDRESS not configured")?;
@@ -700,7 +706,7 @@ impl BlockchainBridge {
             Ok(Ok(receipt)) => receipt,
             Ok(Err(e)) => return Err(e.into()),
             Err(_timed_out) => {
-                println!("⚠️  [Bridge] RPC unreachable — signing create_escrow offline for mesh relay.");
+                tracing::warn!("⚠️  [Bridge] RPC unreachable — signing create_escrow offline for mesh relay.");
                 let queued = self.sign_offline(escrow_address, calldata, amount_wei, "Create escrow").await?;
                 return Ok(TxResult::Queued { queue_id: queued.id });
             }
@@ -713,7 +719,7 @@ impl BlockchainBridge {
             .map(|l| l.inner.data.escrowId.to::<u64>())
             .ok_or("EscrowCreated event not found in receipt")?;
 
-        println!("✅ [Bridge] Escrow {} created. Tx: {:?}", escrow_id, receipt.transaction_hash);
+        tracing::info!("✅ [Bridge] Escrow {} created. Tx: {:?}", escrow_id, receipt.transaction_hash);
         Ok(TxResult::Confirmed { id: escrow_id })
     }
 
@@ -725,7 +731,7 @@ impl BlockchainBridge {
         let contract = IEscrow::new(escrow_address, provider);
 
         let receipt = contract.release(U256::from(escrow_id)).send().await?.get_receipt().await?;
-        println!("✅ [Bridge] Escrow {} released. Tx: {:?}", escrow_id, receipt.transaction_hash);
+        tracing::info!("✅ [Bridge] Escrow {} released. Tx: {:?}", escrow_id, receipt.transaction_hash);
         Ok(format!("{:?}", receipt.transaction_hash))
     }
 
@@ -737,7 +743,7 @@ impl BlockchainBridge {
         let contract = IEscrow::new(escrow_address, provider);
 
         let receipt = contract.refund(U256::from(escrow_id)).send().await?.get_receipt().await?;
-        println!("✅ [Bridge] Escrow {} refunded. Tx: {:?}", escrow_id, receipt.transaction_hash);
+        tracing::info!("✅ [Bridge] Escrow {} refunded. Tx: {:?}", escrow_id, receipt.transaction_hash);
         Ok(format!("{:?}", receipt.transaction_hash))
     }
 
@@ -782,7 +788,7 @@ impl BlockchainBridge {
             .map(|l| l.inner.data.tokenId.to::<u64>())
             .ok_or("VoucherMinted event not found in receipt")?;
 
-        println!("✅ [Bridge] Voucher {} minted. Tx: {:?}", token_id, receipt.transaction_hash);
+        tracing::info!("✅ [Bridge] Voucher {} minted. Tx: {:?}", token_id, receipt.transaction_hash);
         Ok(token_id)
     }
 
@@ -803,7 +809,7 @@ impl BlockchainBridge {
             .get_receipt()
             .await?;
 
-        println!("✅ [Bridge] Voucher {} approved for Marketplace. Tx: {:?}", token_id, receipt.transaction_hash);
+        tracing::info!("✅ [Bridge] Voucher {} approved for Marketplace. Tx: {:?}", token_id, receipt.transaction_hash);
         Ok(format!("{:?}", receipt.transaction_hash))
     }
 
@@ -833,7 +839,7 @@ impl BlockchainBridge {
             .map(|l| l.inner.data.id.to::<u64>())
             .ok_or("ListingCreated event not found in receipt")?;
 
-        println!("✅ [Bridge] Listing {} created. Tx: {:?}", listing_id, receipt.transaction_hash);
+        tracing::info!("✅ [Bridge] Listing {} created. Tx: {:?}", listing_id, receipt.transaction_hash);
         Ok(listing_id)
     }
 
@@ -904,7 +910,7 @@ impl BlockchainBridge {
         // un-timeout-wrapped listings read used for AI matching). Remove after
         // the offline-flow demo.
         if std::env::var("CABALMESH_FORCE_OFFLINE_BUY").is_ok() {
-            println!("🧪 [Bridge] CABALMESH_FORCE_OFFLINE_BUY set — skipping online attempt.");
+            tracing::info!("🧪 [Bridge] CABALMESH_FORCE_OFFLINE_BUY set — skipping online attempt.");
             let queued = self.sign_offline(marketplace_address, calldata, price_wei, "Buy listing").await?;
             return Ok(TxResult::Queued { queue_id: queued.id });
         }
@@ -924,7 +930,7 @@ impl BlockchainBridge {
             Ok(Ok(receipt)) => receipt,
             Ok(Err(e)) => return Err(e.into()),
             Err(_timed_out) => {
-                println!("⚠️  [Bridge] RPC unreachable — signing buy_listing offline for mesh relay.");
+                tracing::warn!("⚠️  [Bridge] RPC unreachable — signing buy_listing offline for mesh relay.");
                 let queued = self.sign_offline(marketplace_address, calldata, price_wei, "Buy listing").await?;
                 return Ok(TxResult::Queued { queue_id: queued.id });
             }
@@ -937,7 +943,7 @@ impl BlockchainBridge {
             .map(|l| l.inner.data.dealId.to::<u64>())
             .ok_or("DealCreated event not found in receipt")?;
 
-        println!("✅ [Bridge] Deal {} created (voucher + AVAX locked). Tx: {:?}", deal_id, receipt.transaction_hash);
+        tracing::info!("✅ [Bridge] Deal {} created (voucher + AVAX locked). Tx: {:?}", deal_id, receipt.transaction_hash);
         Ok(TxResult::Confirmed { id: deal_id })
     }
 
@@ -950,7 +956,7 @@ impl BlockchainBridge {
         let contract = IMarketplace::new(marketplace_address, provider);
 
         let receipt = contract.releaseDeal(U256::from(deal_id)).send().await?.get_receipt().await?;
-        println!("✅ [Bridge] Deal {} released. Tx: {:?}", deal_id, receipt.transaction_hash);
+        tracing::info!("✅ [Bridge] Deal {} released. Tx: {:?}", deal_id, receipt.transaction_hash);
         Ok(format!("{:?}", receipt.transaction_hash))
     }
 
@@ -963,7 +969,7 @@ impl BlockchainBridge {
         let contract = IMarketplace::new(marketplace_address, provider);
 
         let receipt = contract.refundDeal(U256::from(deal_id)).send().await?.get_receipt().await?;
-        println!("✅ [Bridge] Deal {} refunded. Tx: {:?}", deal_id, receipt.transaction_hash);
+        tracing::info!("✅ [Bridge] Deal {} refunded. Tx: {:?}", deal_id, receipt.transaction_hash);
         Ok(format!("{:?}", receipt.transaction_hash))
     }
 
@@ -977,7 +983,7 @@ impl BlockchainBridge {
         let contract = IVoucher::new(voucher_address, provider);
 
         let receipt = contract.redeemVoucher(U256::from(token_id)).send().await?.get_receipt().await?;
-        println!("✅ [Bridge] Voucher {} redeemed. Tx: {:?}", token_id, receipt.transaction_hash);
+        tracing::info!("✅ [Bridge] Voucher {} redeemed. Tx: {:?}", token_id, receipt.transaction_hash);
         Ok(format!("{:?}", receipt.transaction_hash))
     }
 
@@ -1138,7 +1144,7 @@ impl BlockchainBridge {
         let expected = Address::from_str(expected_seller)?;
 
         if recovered != expected {
-            println!("⚠️  Content delivery rejected: signature recovered {} but expected seller {}", recovered, expected);
+            tracing::warn!("⚠️  Content delivery rejected: signature recovered {} but expected seller {}", recovered, expected);
             return Ok(false);
         }
 

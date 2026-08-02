@@ -30,7 +30,7 @@ impl SystemBootstrap {
 
             // Use the real identity (argument is ignored if identity exists)
             if let Err(e) = bridge_lock.sync_state("ignored_override").await {
-                eprintln!("Sync failed: {}", e);
+                tracing::warn!("Sync failed: {}", e);
                 Self::emit(app, "PHASE_1_ERROR", &format!("Sync Error: {}", e), 0);
             } else {
                 Self::emit(app, "PHASE_1_SYNC", "Snapshot Secured via Avalanche RPC.", 30);
@@ -81,7 +81,7 @@ impl SystemBootstrap {
             message: msg.to_string(),
             progress,
         });
-        println!("[Bootstrap] [{}] {} ({}%)", phase, msg, progress);
+        tracing::info!(target: "cabalmesh::bootstrap", phase, progress, "{msg}");
     }
 }
 
@@ -97,6 +97,6 @@ pub async fn kill_switch(state: State<'_, Arc<Mutex<AppState>>>) -> Result<Strin
     // Revoke Instant Session (Mock revocation logic since strict real implementation details are complex)
     // In real world: this would revoke the session key on-chain
     
-    println!("🚨 KILL SWITCH ACTIVATED: Session Shredded.");
+    tracing::warn!("🚨 KILL SWITCH ACTIVATED: Session Shredded.");
     Ok("SESSION_TERMINATED".to_string())
 }

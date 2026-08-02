@@ -13,6 +13,7 @@ pub mod matcher;
 pub mod mesh;
 pub mod zk_handler;
 mod llm_json;
+mod telemetry;
 
 /// The typed error union that crosses the IPC boundary. See src/error.rs.
 pub mod error;
@@ -48,6 +49,11 @@ pub struct AppState {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // First thing, before anything can emit: on a device this is the only
+    // channel that reaches a developer, so nothing useful is logged until it
+    // is installed.
+    telemetry::init();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
@@ -66,38 +72,38 @@ pub fn run() {
                 // is reachable.
                 if !platform::CAN_SPAWN_PROCESSES {
                     let url = ollama_config::url();
-                    println!("🔍 Checking remote Ollama at {}...", url);
+                    tracing::info!("🔍 Checking remote Ollama at {}...", url);
                     if ollama.health_check().await {
-                        println!("✅ Remote Ollama is healthy");
+                        tracing::info!("✅ Remote Ollama is healthy");
                     } else {
-                        eprintln!("⚠️  No Ollama at {}", url);
-                        eprintln!("📝 Set one with the set_ollama_url command or ${}", ollama_config::ENV_VAR);
+                        tracing::warn!("⚠️  No Ollama at {}", url);
+                        tracing::warn!("📝 Set one with the set_ollama_url command or ${}", ollama_config::ENV_VAR);
                     }
                     return;
                 }
 
-                println!("🔍 Checking Ollama installation...");
+                tracing::info!("🔍 Checking Ollama installation...");
                 if !ollama.is_installed() {
-                    eprintln!("⚠️  Ollama not found!");
-                    eprintln!("📝 Please install from: https://ollama.ai");
-                    eprintln!("   Or run: brew install ollama");
+                    tracing::warn!("⚠️  Ollama not found!");
+                    tracing::warn!("📝 Please install from: https://ollama.ai");
+                    tracing::warn!("   Or run: brew install ollama");
                 } else {
                     match ollama.initialize().await {
                         Ok(_) => {
-                            println!("✅ Ollama ready!");
+                            tracing::info!("✅ Ollama ready!");
                             for i in 1..=10 {
                                 if ollama.health_check().await {
-                                    println!("✅ Ollama service is healthy");
+                                    tracing::info!("✅ Ollama service is healthy");
                                     break;
                                 }
                                 if i == 10 {
-                                    eprintln!("⚠️  Ollama service not responding");
+                                    tracing::warn!("⚠️  Ollama service not responding");
                                 }
                                 tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                             }
                         }
                         Err(e) => {
-                            eprintln!("❌ Failed to initialize Ollama: {}", e);
+                            tracing::error!("❌ Failed to initialize Ollama: {}", e);
                         }
                     }
                 }
@@ -130,14 +136,14 @@ pub fn run() {
                 // 3. Phase 3 & Network Start
                 match SystemBootstrap::phase_3_network(&app_handle).await {
                     Ok((mut mesh, intent_tx, mut event_rx, intent_rx, event_tx)) => {
-                        println!("✅ System Bootstrap Complete. Mesh Swarm Active.");
+                        tracing::info!("✅ System Bootstrap Complete. Mesh Swarm Active.");
 
                         let relay_bytes = mesh.relay_bytes.clone();
 
                         // Start Mesh Loop (Background)
                         tokio::spawn(async move {
                             if let Err(e) = mesh.start(event_tx, intent_rx).await {
-                                eprintln!("Mesh network error: {}", e);
+                                tracing::warn!("Mesh network error: {}", e);
                             }
                         });
 
@@ -163,7 +169,7 @@ pub fn run() {
                         app_handle.manage(state);
                     }
                     Err(e) => {
-                        eprintln!("❌ Bootstrap Failed: {}", e);
+                        tracing::error!("❌ Bootstrap Failed: {}", e);
                         // Initialize state even on failure
                         let state = Arc::new(Mutex::new(AppState {
                             mesh_tx: None,

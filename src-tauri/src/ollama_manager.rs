@@ -52,7 +52,7 @@ impl OllamaManager {
             return Err("Ollama is not installed. Please install it from https://ollama.ai".to_string());
         }
 
-        println!("🤖 Starting Ollama service...");
+        tracing::info!("🤖 Starting Ollama service...");
 
         // Start ollama serve as a background process
         match Command::new("ollama")
@@ -63,7 +63,7 @@ impl OllamaManager {
         {
             Ok(child) => {
                 *self.process.lock().unwrap() = Some(child);
-                println!("✅ Ollama service started");
+                tracing::info!("✅ Ollama service started");
                 
                 // Give it time to start
                 thread::sleep(Duration::from_secs(2));
@@ -80,7 +80,7 @@ impl OllamaManager {
             return Err(no_local_ollama());
         }
 
-        println!("📥 Checking for model: {}", self.model_name);
+        tracing::info!("📥 Checking for model: {}", self.model_name);
 
         // Check if model exists
         let list_output = Command::new("ollama")
@@ -91,12 +91,12 @@ impl OllamaManager {
         let list_str = String::from_utf8_lossy(&list_output.stdout);
         
         if list_str.contains(&self.model_name) {
-            println!("✅ Model {} already available", self.model_name);
+            tracing::info!("✅ Model {} already available", self.model_name);
             return Ok(());
         }
 
         // Pull the model
-        println!("📥 Pulling model {} (this may take a few minutes)...", self.model_name);
+        tracing::info!("📥 Pulling model {} (this may take a few minutes)...", self.model_name);
         
         let output = Command::new("ollama")
             .arg("pull")
@@ -105,7 +105,7 @@ impl OllamaManager {
             .map_err(|e| format!("Failed to pull model: {}", e))?;
 
         if output.status.success() {
-            println!("✅ Model {} downloaded successfully", self.model_name);
+            tracing::info!("✅ Model {} downloaded successfully", self.model_name);
             Ok(())
         } else {
             Err(format!(
@@ -125,7 +125,7 @@ impl OllamaManager {
         tokio::task::spawn_blocking(move || {
             let manager = OllamaManager::new(Some(model_name));
             if let Err(e) = manager.pull_model() {
-                eprintln!("⚠️  Warning: {}", e);
+                tracing::warn!("⚠️  Warning: {}", e);
             }
         });
 
@@ -149,7 +149,7 @@ impl OllamaManager {
     /// Stop the Ollama service
     pub fn stop_service(&self) {
         if let Some(mut child) = self.process.lock().unwrap().take() {
-            println!("🛑 Stopping Ollama service...");
+            tracing::info!("🛑 Stopping Ollama service...");
             let _ = child.kill();
             let _ = child.wait();
         }

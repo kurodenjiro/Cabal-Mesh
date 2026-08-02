@@ -62,7 +62,7 @@ impl MeshNetwork {
         let local_key = libp2p::identity::Keypair::generate_ed25519();
         let local_peer_id = local_key.public().to_peer_id();
         
-        println!("🔐 Ephemeral PeerID generated: {}", local_peer_id);
+        tracing::info!(peer_id = %local_peer_id, "ephemeral peer id generated");
 
         // Configure Gossipsub for Privacy Intent broadcasting
         let message_id_fn = |message: &gossipsub::Message| {
@@ -107,6 +107,9 @@ impl MeshNetwork {
         Ok(MeshNetwork { swarm, topic, relay_bytes: Arc::new(AtomicU64::new(0)) })
     }
 
+    /// The swarm event loop. Everything the mesh logs happens inside this span,
+    /// so device output is attributable to the node rather than floating free.
+    #[tracing::instrument(skip_all, fields(peer_id = %self.swarm.local_peer_id()))]
     pub async fn start(
         &mut self, 
         tx: mpsc::UnboundedSender<MeshEvent>,
@@ -119,9 +122,9 @@ impl MeshNetwork {
             tokio::select! {
                 // Handle incoming intents to broadcast
                 Some(intent) = intent_rx.recv() => {
-                    println!("📤 Broadcasting intent to mesh: {:?}", intent);
+                    tracing::debug!(intent_type = %intent.intent_type, encrypted = intent.encrypted, "broadcasting intent");
                     if let Err(e) = self.broadcast_intent(intent) {
-                        eprintln!("❌ Failed to broadcast intent: {}", e);
+                        tracing::error!("❌ Failed to broadcast intent: {}", e);
                     }
                 }
 
@@ -129,13 +132,13 @@ impl MeshNetwork {
                 event = self.swarm.select_next_some() => {
                     match event {
                         SwarmEvent::NewListenAddr { address, .. } => {
-                            println!("📡 Listening on {}", address);
+                            tracing::info!(address = %address, "listening");
                             let _ = tx.send(MeshEvent::ListeningStarted { address: address.to_string() });
                         }
                         SwarmEvent::Behaviour(event) => match event {
                             MeshBehaviourEvent::Mdns(mdns::Event::Discovered(list)) => {
                                 for (peer_id, multiaddr) in list {
-                                    println!("🔍 Peer discovered: {} at {}", peer_id, multiaddr);
+                                    tracing::info!(peer_id = %peer_id, address = %multiaddr, "peer discovered");
                                     self.swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
                                     let _ = tx.send(MeshEvent::PeerDiscovered {
                                         peer_id: peer_id.to_string(),
@@ -145,7 +148,7 @@ impl MeshNetwork {
                             }
                             MeshBehaviourEvent::Mdns(mdns::Event::Expired(list)) => {
                                 for (peer_id, _) in list {
-                                    println!("👻 Peer expired: {}", peer_id);
+                                    tracing::info!("👻 Peer expired: {}", peer_id);
                                     self.swarm.behaviour_mut().gossipsub.remove_explicit_peer(&peer_id);
                                 }
                             }
@@ -160,12 +163,12 @@ impl MeshNetwork {
                                             let msg_type = settlement.get("type").and_then(|v| v.as_str());
 
                                             if msg_type == Some("SettlementComplete") {
-                                                println!("✅ Received Settlement Confirmation: {:?}", settlement);
+                                                tracing::info!("✅ Received Settlement Confirmation: {:?}", settlement);
                                                 let _ = tx.send(MeshEvent::SettlementComplete {
                                                     details: settlement.to_string()
                                                 });
                                             } else if msg_type == Some("DealAccepted") {
-                                                println!("🤝 Received Deal Acceptance: {:?}", settlement);
+                                                tracing::info!("🤝 Received Deal Acceptance: {:?}", settlement);
                                                 let _ = tx.send(MeshEvent::DealAccepted {
                                                     details: settlement.to_string()
                                                 });
@@ -179,7 +182,7 @@ impl MeshNetwork {
                                             let queue_id = payload.get("queue_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
                                             let raw_tx_hex = payload.get("raw_tx_hex").and_then(|v| v.as_str()).unwrap_or("").to_string();
                                             let summary = payload.get("summary").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                                            println!("📡 Received relay_tx request: {} ({})", queue_id, summary);
+                                            tracing::info!("📡 Received relay_tx request: {} ({})", queue_id, summary);
                                             let _ = tx.send(MeshEvent::RelayTxReceived { queue_id, raw_tx_hex, summary });
                                         }
                                     } else if intent.intent_type == "relay_confirmed" {
@@ -188,14 +191,14 @@ impl MeshNetwork {
                                             let queue_id = payload.get("queue_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
                                             let status = payload.get("status").and_then(|v| v.as_str()).unwrap_or("failed").to_string();
                                             let tx_hash = payload.get("tx_hash").and_then(|v| v.as_str()).map(|s| s.to_string());
-                                            println!("📨 Received relay_confirmed: {} -> {}", queue_id, status);
+                                            tracing::info!("📨 Received relay_confirmed: {} -> {}", queue_id, status);
                                             let _ = tx.send(MeshEvent::RelayConfirmed { queue_id, status, tx_hash });
                                         }
                                     } else if intent.intent_type == "content_request" {
                                         // A buyer is asking whoever sold this tokenId to deliver the content.
                                         if let Ok(payload) = serde_json::from_str::<serde_json::Value>(&intent.payload) {
                                             if let Some(token_id) = payload.get("token_id").and_then(|v| v.as_u64()) {
-                                                println!("📨 Received content_request for token #{}", token_id);
+                                                tracing::info!("📨 Received content_request for token #{}", token_id);
                                                 let _ = tx.send(MeshEvent::ContentRequested { token_id });
                                             }
                                         }
@@ -219,12 +222,12 @@ impl MeshNetwork {
                                             let text = payload.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
                                             let signature = payload.get("signature").and_then(|v| v.as_str()).unwrap_or("").to_string();
                                             let signer_address = payload.get("signer_address").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                                            println!("📬 Received content_delivery for token #{}", token_id);
+                                            tracing::info!("📬 Received content_delivery for token #{}", token_id);
                                             let _ = tx.send(MeshEvent::ContentDelivered { token_id, text, signature, signer_address });
                                         }
                                     } else {
                                         // Regular trade intent
-                                        println!("📬 Received Intent: {:?}", intent);
+                                        tracing::info!("📬 Received Intent: {:?}", intent);
                                         let _ = tx.send(MeshEvent::IntentReceived { intent });
                                     }
                                 } else {
@@ -234,12 +237,12 @@ impl MeshNetwork {
                                         let msg_type = settlement.get("type").and_then(|v| v.as_str());
                                         
                                         if msg_type == Some("SettlementComplete") {
-                                            println!("✅ Received Settlement Confirmation: {:?}", settlement);
+                                            tracing::info!("✅ Received Settlement Confirmation: {:?}", settlement);
                                             let _ = tx.send(MeshEvent::SettlementComplete { 
                                                 details: settlement.to_string() 
                                             });
                                         } else if msg_type == Some("DealAccepted") {
-                                            println!("🤝 Received Deal Acceptance: {:?}", settlement);
+                                            tracing::info!("🤝 Received Deal Acceptance: {:?}", settlement);
                                             let _ = tx.send(MeshEvent::DealAccepted { 
                                                 details: settlement.to_string() 
                                             });
@@ -268,11 +271,11 @@ impl MeshNetwork {
             .publish(self.topic.clone(), payload)
         {
             Ok(_) => {
-                println!("📤 Intent broadcasted to mesh (Relay Hop: {})", intent.relay_path.len());
+                tracing::info!(hops = intent.relay_path.len(), intent_type = %intent.intent_type, "intent broadcast");
                 Ok(())
             }
             Err(gossipsub::PublishError::InsufficientPeers) => {
-                println!("⚠️  Note: No peers connected (Single-Node Mode). Intent processed locally.");
+                tracing::warn!("⚠️  Note: No peers connected (Single-Node Mode). Intent processed locally.");
                 Ok(())
             }
             Err(e) => Err(Box::new(e))
@@ -287,11 +290,11 @@ impl MeshNetwork {
             .publish(self.topic.clone(), payload) 
         {
             Ok(_) => {
-                println!("📤 Raw message broadcasted to mesh");
+                tracing::info!("📤 Raw message broadcasted to mesh");
                 Ok(())
             }
             Err(gossipsub::PublishError::InsufficientPeers) => {
-                println!("⚠️  Note: No peers connected (Single-Node Mode).");
+                tracing::warn!("⚠️  Note: No peers connected (Single-Node Mode).");
                 Ok(())
             }
             Err(e) => Err(Box::new(e))
@@ -303,13 +306,13 @@ impl MeshNetwork {
         // 2. Relay fee should be formatted correctly (simple check for now)
         
         if intent.relay_path.is_empty() {
-            println!("❌ Integrity Check Failed: Empty relay path");
+            tracing::error!("❌ Integrity Check Failed: Empty relay path");
             return false;
         }
 
         if let Some(fee) = &intent.relay_fee {
             if !fee.contains("AVAX") {
-                 println!("⚠️  Warning: Unknown fee format: {}", fee);
+                 tracing::warn!("⚠️  Warning: Unknown fee format: {}", fee);
                  // We don't fail validation here for now, just warn
             }
         }

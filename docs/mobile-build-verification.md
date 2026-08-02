@@ -249,6 +249,61 @@ Test count across the workspace: **84**.
 
 ---
 
+## Diagnostics on device — working (2026-08-02, ticket 13)
+
+79 `println!`/`eprintln!` calls became `tracing`. On a desktop terminal those
+were merely untidy; on a device they were **invisible** — nothing written to
+stdout from an iOS app reaches Console.app.
+
+**Proven on the iOS simulator**, not merely configured:
+
+```
+CabalMesh: [com.cabalmesh.app:default] diagnostics initialised  subsystem="com.cabalmesh.app"
+CabalMesh: [com.cabalmesh.app:default] Checking connection...  phase="PHASE_1_SYNC" progress=10
+CabalMesh: [com.cabalmesh.app:default] ephemeral peer id generated  peer_id=12D3KooWEtgdSP1H…
+CabalMesh: [com.cabalmesh.app:default] listening  address=/ip4/192.168.2.111/tcp/59365
+```
+
+Read it with:
+
+```sh
+xcrun simctl spawn booted log stream --predicate 'subsystem == "com.cabalmesh.app"'
+```
+
+| Platform | Destination |
+|---|---|
+| iOS | unified log — Console.app or `simctl … log stream` |
+| macOS | unified log **and** stderr (a Finder-launched bundle has no visible stderr) |
+| Android | logcat, `adb logcat -s cabalmesh` — untested until ticket 08 |
+| Linux / Windows | stderr |
+
+Severity was preserved rather than flattened: the codebase used emoji as
+severity markers, so ❌ became `error`, ⚠️/🚨 became `warn`, bare `eprintln!`
+became `warn`, and the rest `info`.
+
+Spans on `sync_state`, `create_escrow` and the mesh event loop mean every line
+inside them is attributable:
+
+```
+INFO sync_state{wallet_address_override="…" rpc=https://…}: fetching native AVAX balance
+```
+
+`skip(self)` keeps the bridge — which holds signers — out of span fields.
+
+Default filter is `cabalmesh=info,…,warn`: libp2p and alloy at debug scroll a
+device log faster than it can be read, which is the same as no log.
+`RUST_LOG` overrides.
+
+`AppError::internal` now records the full `source()` chain as
+`outer: middle: root`, since the root cause is the useful part and is exactly
+what `Display` on the outermost error discards. **Logs may contain paths and
+URLs; return values may not** — that asymmetry is the design, not an
+oversight.
+
+Test count: **85**.
+
+---
+
 ## Android — not yet attempted (ticket 08)
 
 No Rust targets, no SDK, no NDK, and none of `JAVA_HOME` / `ANDROID_HOME` / `NDK_HOME` set. The iOS result is encouraging but does not transfer: Android is where the TLS backend actually matters, since it ships no system OpenSSL. That is why ticket 02 moved to rustls, but it is unproven until an Android build runs.

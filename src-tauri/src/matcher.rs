@@ -127,7 +127,7 @@ Catalog:
         // Never trust the model on money — verify the price ceiling ourselves.
         let price: f64 = listing.price_avax.parse().unwrap_or(f64::MAX);
         if price > price_ceiling {
-            println!(
+            tracing::info!(
                 "⚠️  Match rejected: listing {} price {} AVAX exceeds ceiling {} AVAX",
                 matched_id, price, price_ceiling
             );

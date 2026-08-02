@@ -116,15 +116,29 @@ pub enum InvalidReason {
 impl AppError {
     /// Wraps an error that the frontend cannot act on.
     ///
-    /// The source is **dropped from the return value on purpose**. Call this
-    /// rather than constructing [`AppError::Internal`] directly, so there is
-    /// one place responsible for logging the detail that is being withheld.
-    ///
-    /// Logging is currently a `eprintln!`; ticket 13 replaces it with a
-    /// structured span carrying the full source chain.
+    /// The source is **dropped from the return value on purpose** and logged
+    /// instead. Call this rather than constructing [`AppError::Internal`]
+    /// directly, so exactly one place is responsible for recording the detail
+    /// being withheld — and so it is recorded exactly once, rather than at
+    /// every level that propagates it.
     #[must_use]
-    pub fn internal<E: std::fmt::Display>(source: E) -> Self {
-        eprintln!("internal error: {source}");
+    pub fn internal<E: std::error::Error>(source: E) -> Self {
+        tracing::error!(
+            target: "cabalmesh::error",
+            error = %source,
+            chain = %SourceChain(&source),
+            "internal error"
+        );
+        Self::Internal
+    }
+
+    /// As [`AppError::internal`], for sources that only implement `Display`.
+    ///
+    /// Prefer the typed version: `Box<dyn Error>` and bare strings lose the
+    /// source chain, which is the most useful part of a diagnostic.
+    #[must_use]
+    pub fn internal_msg<E: std::fmt::Display>(source: E) -> Self {
+        tracing::error!(target: "cabalmesh::error", error = %source, "internal error");
         Self::Internal
     }
 
@@ -141,6 +155,24 @@ impl AppError {
             | Self::TooManySubscriptions { .. }
             | Self::Internal => false,
         }
+    }
+}
+
+/// Renders an error's full `source()` chain as `outer: middle: root`.
+///
+/// The root cause is usually the useful part and is exactly what `Display` on
+/// the outermost error throws away.
+struct SourceChain<'a>(&'a dyn std::error::Error);
+
+impl std::fmt::Display for SourceChain<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)?;
+        let mut current = self.0.source();
+        while let Some(cause) = current {
+            write!(f, ": {cause}")?;
+            current = cause.source();
+        }
+        Ok(())
     }
 }
 

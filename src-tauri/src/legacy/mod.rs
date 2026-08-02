@@ -79,7 +79,7 @@ pub async fn send_intent_to_mesh(
                 "Presence" => "presence",
                 _ => "settlement",
             };
-            println!("📤 Sending {} message: {}", intent_type, payload);
+            tracing::info!("📤 Sending {} message: {}", intent_type, payload);
             if let Some(tx) = &state_lock.mesh_tx {
                 let intent = PrivacyIntent {
                     intent_type: intent_type.to_string(),
@@ -129,7 +129,7 @@ pub async fn generate_zk_proof(
     price_ceiling: u64,
     state: State<'_, Arc<Mutex<AppState>>>,
 ) -> Result<ZKProof, String> {
-    println!("🚀 handling generate_zk_proof command");
+    tracing::info!("🚀 handling generate_zk_proof command");
     let state = state.lock().await;
     let request = ProofRequest {
         balance,

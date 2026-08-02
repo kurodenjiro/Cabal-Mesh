@@ -11,6 +11,7 @@ members = ["crates/*"]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+tracing = "0.1"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
@@ -77,6 +78,11 @@ tokio = { version = "1", features = ["full"] }
 # NB: 0.13 renamed the rustls feature from `rustls-tls` to `rustls`.
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "http2"] }
 
+# Structured, span-aware diagnostics. Libraries emit through the facade only;
+# the app crate is the single place a subscriber is installed.
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "ansi"] }
+
 # Additional utilities
 futures = "0.3"
 async-trait = "0.1"
@@ -120,6 +126,15 @@ thiserror.workspace = true
 # this keeps the local desktop dev workflow intact until then.
 [target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
 dotenv = "0.15.0"
+
+# Apple platforms route to the unified log, so iOS output shows in Console.app
+# and macOS `log stream` — the only way to see anything from a device.
+[target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
+tracing-oslog = "0.3"
+
+# Android routes to logcat, the equivalent there.
+[target.'cfg(target_os = "android")'.dependencies]
+tracing-android = "0.2"
 
 [dev-dependencies]
 insta = "1.48.0"
