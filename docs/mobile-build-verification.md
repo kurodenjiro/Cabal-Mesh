@@ -868,6 +868,55 @@ rather than an archaeology exercise.
 
 ---
 
+## Shell and accessibility foundation (2026-08-02, ticket 28)
+
+Verified on the simulator: header with the Silkscreen wordmark clear of the
+status bar, real protocol glyphs in the tab bar, `HOME` selected with the white
+underline at full opacity against 0.34 for the rest, and the home indicator
+region reclaimed.
+
+### Accessibility decisions that were cheap now and expensive later
+
+**Type scale is unclamped.** `--type-scale` comes from the OS setting with no
+ceiling. An earlier revision capped it at 130%, which was a decision to fail
+WCAG 1.4.4 rather than a resolution of it — the criterion does not forbid a 9px
+base, it forbids a layout that cannot grow.
+
+**Nothing has a fixed height.** Header, tab bar and rows use `minHeight`. A
+fixed height clips descenders the moment the scale rises, which is exactly what
+supporting 200% requires avoiding.
+
+**The tab bar leads with glyphs.** Five long uppercase labels in 390px at 200%
+is roughly 2.5× the available width. The board treats glyphs as primary, so the
+icon carries meaning and `aria-label` carries the name; labels clip rather than
+wrap. No overflow menu — that would hide primary destinations.
+
+**Roles and states are explicit.** `role="tablist"`/`role="tab"` with
+`aria-selected`, because the white underline is a *visual* selected state that
+reaches no assistive technology.
+
+**Hover is gated to real pointers.** `:hover` sticks after a tap in a mobile
+webview, and the brand's hover inverts a button — leaving it stuck white-on-black.
+
+**Screen state is typed so illegal navigation is unrepresentable.** `detail` and
+`settled` carry an `IntentId` in the type, so "open detail with nothing loaded"
+cannot be expressed. Hardware back binds to the same `back()` the header uses,
+so the two cannot disagree.
+
+### Two bugs the device caught that inspection would not
+
+**Glyphs rendered as broken images.** `Icon` builds `{basePath}/{name}.png` and
+the base path was missing its `icons/` segment.
+
+**`Icon` has no srcset**, so whatever sits at the plain filename is what every
+density gets — and that was the 264×264 original. `scripts/stage-ds-assets.py`
+now puts the **@3x variant** at the plain name: at 20 CSS px on a 3× device that
+is 60 device pixels from a 60px source, exactly 1:1 with no resampling, which is
+what `pixelated` is actually good at. Originals stay in `src/ds/assets` so
+resampling can be redone.
+
+---
+
 ## Android — not yet attempted (ticket 08)
 
 No Rust targets, no SDK, no NDK, and none of `JAVA_HOME` / `ANDROID_HOME` / `NDK_HOME` set. The iOS result is encouraging but does not transfer: Android is where the TLS backend actually matters, since it ships no system OpenSSL. That is why ticket 02 moved to rustls, but it is unproven until an Android build runs.

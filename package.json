@@ -12,7 +12,7 @@
     "tauri": "tauri",
     "ds:unbundle": "python3 scripts/unbundle-ds.py",
     "ds:types": "python3 scripts/generate-ds-types.py",
-    "ds:assets": "python3 scripts/resample-ds-assets.py",
+    "ds:assets": "python3 scripts/resample-ds-assets.py && python3 scripts/stage-ds-assets.py",
     "bindings": "cd src-tauri && cargo test --features ts-rs export_bindings --quiet",
     "bindings:check": "npm run bindings && git diff --exit-code -- src/types/bindings.ts",
     "ios:clean-build": "rm -rf src-tauri/gen/apple/build/arm64-sim src-tauri/gen/apple/build/arm64 src-tauri/gen/apple/build/*.xcarchive",
