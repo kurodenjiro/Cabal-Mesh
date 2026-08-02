@@ -225,6 +225,7 @@ impl MeshNetwork {
                     match command {
                         MeshCommand::Snapshot { reply } => {
                             let _ = reply.send(MeshSnapshot {
+                                peer_id: self.swarm.local_peer_id().to_string(),
                                 peer_count: self.swarm.connected_peers().count(),
                                 listening_on: listening_on.clone(),
                                 offline,

@@ -163,3 +163,119 @@ pub async fn enter_mesh(
 
     Ok(id.to_string())
 }
+
+// ---------------------------------------------------------------------------
+// Home
+// ---------------------------------------------------------------------------
+
+/// What the home screen renders.
+#[derive(Debug, Clone, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "camelCase")]
+pub struct MeshSnapshotView {
+    /// Truncated for display, e.g. `7F3A..8C2E`.
+    pub node_id: String,
+    /// Uptime in the board's format, e.g. `3D 14H 22M`.
+    pub uptime: String,
+    pub connected: bool,
+    pub stats: Vec<crate::bindings::StatTile>,
+}
+
+/// Mesh status for the home screen.
+///
+/// # Errors
+///
+/// [`AppError::NotReady`] before bootstrap completes, which the connecting
+/// screen already renders as progress.
+#[tauri::command]
+pub async fn mesh_snapshot(state: State<'_, AppState>) -> Result<MeshSnapshotView, AppError> {
+    use crate::bindings::{separated, StatTile};
+
+    let services = state.services()?;
+    let mesh = services.mesh.as_ref().ok_or(AppError::MeshOffline)?;
+    let snapshot = mesh.snapshot().await.map_err(|_| AppError::MeshOffline)?;
+
+    // Deltas are omitted rather than fabricated. There is no baseline to
+    // compare against yet, and the brand's copy rules demand exact figures —
+    // a made-up "+12.4%" would be a fabricated trust signal in a product whose
+    // whole pitch is proving things.
+    let stats = vec![
+        StatTile::plain("NETWORK NODES", separated(snapshot.peer_count as u64)),
+        StatTile::plain("RELAYED BYTES", separated(snapshot.relay_bytes)),
+        // Ticket 03 is still open: no source for a reputation score exists.
+        // Rendering an em dash is the honest placeholder; inventing 87.6 would
+        // not be.
+        StatTile::plain("REPUTATION SCORE", "—"),
+    ];
+
+    Ok(MeshSnapshotView {
+        node_id: cabal_core::NodeId::new(snapshot.peer_id.clone()).truncated(),
+        uptime: format_uptime(state.uptime_seconds()),
+        connected: snapshot.peer_count > 0,
+        stats,
+    })
+}
+
+/// Formats seconds as `3D 14H 22M`, matching the board.
+///
+/// Days are dropped when zero rather than rendered as `0D`, which reads as
+/// broken rather than as "less than a day".
+fn format_uptime(seconds: u64) -> String {
+    let days = seconds / 86_400;
+    let hours = (seconds % 86_400) / 3_600;
+    let minutes = (seconds % 3_600) / 60;
+    if days > 0 {
+        format!("{days}D {hours}H {minutes}M")
+    } else if hours > 0 {
+        format!("{hours}H {minutes}M")
+    } else {
+        format!("{minutes}M")
+    }
+}
+
+/// Streams the mesh log ticker.
+///
+/// Replays the retained tail first so the terminal is never empty on first
+/// paint, then streams live.
+///
+/// # Errors
+///
+/// [`AppError::TooManySubscriptions`] if the registry is full.
+#[tauri::command]
+pub async fn subscribe_mesh_log(
+    on_line: tauri::ipc::Channel<crate::bindings::LogLine>,
+    state: State<'_, AppState>,
+) -> Result<String, AppError> {
+    use crate::bindings::{LogLine, LogTone};
+
+    let (id, token) = state.subscriptions().register("mesh-log")?;
+    let registry = state.subscriptions().clone();
+    let handle = id.clone();
+    let services = state.services().ok();
+
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::select! {
+                () = token.cancelled() => break,
+                () = tokio::time::sleep(std::time::Duration::from_millis(1_800)) => {}
+            }
+
+            let Some(services) = services.as_ref() else { break };
+            let Some(mesh) = services.mesh.as_ref() else { break };
+            let Ok(snapshot) = mesh.snapshot().await else { break };
+
+            // Real mesh state, not a canned array. Lowercase and terse, as the
+            // board specifies for log lines.
+            let line = LogLine::new(
+                format!("peers {} · relayed {} bytes", snapshot.peer_count, snapshot.relay_bytes),
+                if snapshot.peer_count > 0 { LogTone::Ok } else { LogTone::Dim },
+            );
+            if on_line.send(line).is_err() {
+                break;
+            }
+        }
+        registry.finished(&handle);
+    });
+
+    Ok(id.to_string())
+}

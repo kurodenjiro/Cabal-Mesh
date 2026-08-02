@@ -70,6 +70,12 @@ pub enum MeshCommand {
 /// What the home screen needs to render mesh status.
 #[derive(Debug, Clone, Default)]
 pub struct MeshSnapshot {
+    /// This node's libp2p peer id.
+    ///
+    /// Taken from the swarm rather than parsed out of a listen address: listen
+    /// addresses carry no `/p2p/` component, so deriving it from them yields
+    /// the address itself.
+    pub peer_id: String,
     pub peer_count: usize,
     pub listening_on: Vec<String>,
     pub offline: bool,

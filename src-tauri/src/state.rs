@@ -126,6 +126,8 @@ struct Inner {
     services: RwLock<Option<Services>>,
     runtime: RwLock<RuntimeCaps>,
     caps: PlatformCaps,
+    /// When the process started, for uptime display.
+    started: std::time::Instant,
     /// Live frontend streams. Exists from construction, not from bootstrap:
     /// the connecting screen subscribes to the handshake log *before* services
     /// are published, so the registry has to outlive that gap.
@@ -153,6 +155,7 @@ impl AppState {
                 services: RwLock::new(None),
                 runtime: RwLock::new(RuntimeCaps::default()),
                 caps: PlatformCaps::current(),
+                started: std::time::Instant::now(),
                 subscriptions: Registry::new(),
             }),
         }
@@ -203,6 +206,12 @@ impl AppState {
     #[must_use]
     pub fn subscriptions(&self) -> &Registry {
         &self.inner.subscriptions
+    }
+
+    /// Seconds since the process started.
+    #[must_use]
+    pub fn uptime_seconds(&self) -> u64 {
+        self.inner.started.elapsed().as_secs()
     }
 
     /// Compile-time capabilities.

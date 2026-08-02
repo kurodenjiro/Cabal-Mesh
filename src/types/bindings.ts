@@ -19,6 +19,19 @@ export type LogLine = { text: string, tone: LogTone, };
 export type LogTone = "out" | "dim" | "ok" | "err" | "info" | "loud";
 
 /**
+ * What the home screen renders.
+ */
+export type MeshSnapshotView = { 
+/**
+ * Truncated for display, e.g. `7F3A..8C2E`.
+ */
+nodeId: string, 
+/**
+ * Uptime in the board's format, e.g. `3D 14H 22M`.
+ */
+uptime: string, connected: boolean, stats: Array<StatTile>, };
+
+/**
  * What the splash screen needs to decide what it is offering.
  */
 export type SessionStatus = { 

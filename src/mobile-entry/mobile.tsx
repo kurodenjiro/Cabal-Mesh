@@ -12,6 +12,7 @@ import "../ds/index";
 import { AppShell } from "../shell/AppShell";
 import { Splash } from "../screens/Splash";
 import { Connecting } from "../screens/Connecting";
+import { Home } from "../screens/Home";
 import type { Screen } from "../shell/screen";
 
 /**
@@ -61,7 +62,7 @@ function App() {
 
   return (
     <AppShell screen={screen} onNavigate={setScreen}>
-      <Placeholder screen={screen} />
+      {screen.name === "home" ? <Home /> : <Placeholder screen={screen} />}
     </AppShell>
   );
 }

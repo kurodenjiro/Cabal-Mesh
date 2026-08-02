@@ -19,6 +19,8 @@ const COMMANDS: &[&str] = &[
     "unsubscribe",
     "session_status",
     "enter_mesh",
+    "mesh_snapshot",
+    "subscribe_mesh_log",
     // mesh
     "send_intent_to_mesh",
     "get_relay_stats",

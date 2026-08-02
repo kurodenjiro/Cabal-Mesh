@@ -13,6 +13,8 @@
     "core:default",
     "allow-unsubscribe",
     "allow-session-status",
-    "allow-enter-mesh"
+    "allow-enter-mesh",
+    "allow-mesh-snapshot",
+    "allow-subscribe-mesh-log"
   ]
 }

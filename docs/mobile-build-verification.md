@@ -955,6 +955,45 @@ discipline working — nothing speculative.
 
 ---
 
+## Home screen, on real data (2026-08-02, ticket 30)
+
+Mesh status panel with corner registration ticks, live stat tiles, and the log
+ticker — every figure from the running mesh, none canned.
+
+```
+MESH STATUS
+■ MESH UNREACHABLE · OPERATING OFFLINE
+NODE ID     12D3..W2CE
+UPTIME              0M
+
+NETWORK NODES   0
+RELAYED BYTES   0
+REPUTATION SCORE —
+```
+
+### The reputation tile renders an em dash
+
+Ticket 03 has not resolved where a reputation score would come from. The
+prototype shows `87.6 (+5.3%)`, which is a constant. Rendering it would be a
+fabricated trust signal in a product whose entire pitch is proving things, and
+the brand's own copy rules demand exact figures.
+
+`StatTile::plain` omits the delta rather than emitting `+0.0%`, for the same
+reason. **This screen is finished; the number is not.** It becomes real the
+moment ticket 03 names a source.
+
+### A bug the device caught
+
+`NODE ID` first rendered `/ip4..8299` — a truncated *listen address*. The
+extraction looked for a `/p2p/` component, which listen addresses do not carry,
+so it silently fell through to the address itself. The peer id now comes from
+the swarm directly.
+
+That is the kind of thing that type-checks, runs, and produces plausible-looking
+output — and only a screenshot catches it.
+
+---
+
 ## Android — not yet attempted (ticket 08)
 
 No Rust targets, no SDK, no NDK, and none of `JAVA_HOME` / `ANDROID_HOME` / `NDK_HOME` set. The iOS result is encouraging but does not transfer: Android is where the TLS backend actually matters, since it ships no system OpenSSL. That is why ticket 02 moved to rustls, but it is unproven until an Android build runs.

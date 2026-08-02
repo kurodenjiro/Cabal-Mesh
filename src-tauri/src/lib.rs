@@ -231,6 +231,8 @@ pub fn run() {
                     commands::unsubscribe,
                     commands::session_status,
                     commands::enter_mesh,
+                    commands::mesh_snapshot,
+                    commands::subscribe_mesh_log,
                     app_initializer::kill_switch,
             legacy::send_intent_to_mesh,
             legacy::analyze_pdf_content,
@@ -287,7 +289,7 @@ pub fn run() {
             {
                 // Mobile gets the reshaped surface only. Screen commands join
                 // it as their screens land.
-                tauri::generate_handler![commands::unsubscribe, commands::session_status, commands::enter_mesh]
+                tauri::generate_handler![commands::unsubscribe, commands::session_status, commands::enter_mesh, commands::mesh_snapshot, commands::subscribe_mesh_log]
             }
         })
         .build(tauri::generate_context!())
