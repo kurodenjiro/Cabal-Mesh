@@ -819,6 +819,55 @@ far smaller cost than an unusable app.
 
 ---
 
+## Design system vendored (2026-08-02, ticket 27)
+
+`src/ds/` — 25 component files, 32 exports, 162 tokens, 14 glyphs.
+**Verified rendering on the simulator**: Silkscreen wordmark at `0.42em`
+tracking, IBM Plex Mono body, pure black ground, safe area respected. No
+network involved.
+
+### Fonts self-hosted — the CDN would have been fatal
+
+The delivered `fonts.css` opened with an `@import` from Google Fonts. Under this
+project's CSP a Tauri webview cannot fetch that, and the premise is *operating
+offline* — first launch without network would render in fallback
+`ui-monospace`, losing the brand's most defining property exactly when it
+matters.
+
+Latin subset only: 4 faces, **32 KB**, against the 7 weights × 8 subsets the CDN
+import pulled. `grep` for `fonts.googleapis` in the built CSS returns 0.
+
+### The un-bundling broke the app first
+
+Splitting the bundle left `Object.assign(__ds_scope, …)` — the bundle's own
+registration — in 6 form components. `__ds_scope` no longer exists, so it threw
+a `ReferenceError` at module load and took down **the entire bundle**, not just
+those components. The device showed a black screen with correct tokens and no
+content, which reads as a CSS problem rather than a JS one.
+
+`scripts/unbundle-ds.py` now strips it and **hard-fails** if any scaffolding
+survives, rather than emitting code that throws at runtime. Bundle also dropped
+242 KB → 195 KB, since the broken code was dead weight.
+
+### Glyphs resampled
+
+264×264 board crops rendered at 20px is a 4.4× downscale, and `pixelated` is
+correct for *up*scaling and destructive downscaling — thin strokes drop out and
+shimmer while scrolling. `scripts/resample-ds-assets.py` produces exact
+@1x/@2x/@3x variants with a Lanczos filter, so the browser never resizes.
+
+### Types from the adherence lint
+
+The design system shipped no `.d.ts`, but its lint config encodes the same
+information as regexes. `scripts/generate-ds-types.py` turns 25 components and
+22 enumerated prop domains into types, so `<Button tone="blue">` is a compile
+error rather than a lint warning nobody reads.
+
+All three scripts are in the repo, so replacing the vendored tree is a command
+rather than an archaeology exercise.
+
+---
+
 ## Android — not yet attempted (ticket 08)
 
 No Rust targets, no SDK, no NDK, and none of `JAVA_HOME` / `ANDROID_HOME` / `NDK_HOME` set. The iOS result is encouraging but does not transfer: Android is where the TLS backend actually matters, since it ships no system OpenSSL. That is why ticket 02 moved to rustls, but it is unproven until an Android build runs.

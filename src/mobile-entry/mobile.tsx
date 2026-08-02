@@ -10,12 +10,36 @@
  */
 import React from "react";
 import ReactDOM from "react-dom/client";
+import "../ds/index";
 
+/**
+ * Proves the vendored design system renders: real faces, real tokens, real
+ * components. Replaced by the shell in ticket 28 and the screens from 29.
+ */
 function Placeholder() {
   return (
-    <main>
-      <h1>CABAL MESH</h1>
-      <p>Mobile shell. Screens land from ticket 29.</p>
+    <main
+      style={{
+        padding: "var(--space-8)",
+        paddingTop: "calc(var(--safe-top) + var(--space-8))",
+        background: "var(--surface-page)",
+        color: "var(--text-secondary)",
+        minHeight: "100vh",
+      }}
+    >
+      <h1
+        style={{
+          fontFamily: "var(--type-wordmark-family)",
+          letterSpacing: "var(--type-wordmark-tracking)",
+          fontSize: "var(--text-lg)",
+          color: "var(--text-primary)",
+        }}
+      >
+        CABAL MESH
+      </h1>
+      <p style={{ marginTop: "var(--space-6)", fontSize: "var(--text-base)" }}>
+        Design system vendored. Shell lands in ticket 28.
+      </p>
     </main>
   );
 }
