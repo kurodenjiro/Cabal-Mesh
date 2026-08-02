@@ -40,7 +40,10 @@
 /// Once ticket 12 introduces the typed error union, this is the only place it
 /// is permitted to be flattened.
 pub fn flatten_error<E: std::fmt::Display>(error: E) -> String {
-    error.to_string()
+    // Delegates to `crate::error::flatten`, which is unconditionally compiled.
+    // A few frozen commands live in always-compiled modules and cannot reach
+    // into this `cfg(desktop)`-gated one.
+    crate::error::flatten(error)
 }
 
 #[cfg(test)]

@@ -15,6 +15,9 @@ pub mod zk_handler;
 mod llm_json;
 mod telemetry;
 
+/// Managed application state. See src/state.rs.
+pub mod state;
+
 /// The typed error union that crosses the IPC boundary. See src/error.rs.
 pub mod error;
 
@@ -25,7 +28,6 @@ pub mod legacy;
 
 
 use app_initializer::SystemBootstrap;
-use mesh::PrivacyIntent;
 use agent::SharkAgent;
 use matcher::MatchAgent;
 use zk_handler::ZKHandler;
@@ -33,19 +35,9 @@ use ollama_manager::OllamaManager;
 use blockchain_bridge::BlockchainBridge;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::Mutex;
 use tauri::{Manager, Emitter};
 
-// Global state for mesh network
-pub struct AppState {
-    pub mesh_tx: Option<mpsc::UnboundedSender<PrivacyIntent>>,
-    pub agent: Arc<SharkAgent>,
-    pub matcher: Arc<MatchAgent>,
-    pub zk_handler: Arc<ZKHandler>,
-    pub ollama: Arc<OllamaManager>,
-    pub bridge: Arc<Mutex<BlockchainBridge>>,
-    pub relay_bytes: Arc<AtomicU64>,
-}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -57,6 +49,12 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
+            // Synchronously, before the webview exists. Bootstrap fills the
+            // services in afterwards; until then commands get NotReady rather
+            // than a panic from an unmanaged type.
+            let state = state::AppState::new();
+            app.manage(state.clone());
+
             let app_handle = app.handle().clone();
 
             // Create consistent Ollama instance
@@ -155,32 +153,31 @@ pub fn run() {
                             }
                         });
 
-                        // Initialize Global App State
-                        let state = Arc::new(Mutex::new(AppState {
+                        state.set_services(state::Services {
                             mesh_tx: Some(intent_tx),
                             agent: Arc::new(SharkAgent::new(None)),
                             matcher: Arc::new(MatchAgent::new(None)),
                             zk_handler: Arc::new(ZKHandler::new(None)),
                             ollama: ollama_state,
-                            bridge: bridge,
+                            bridge,
                             relay_bytes,
-                        }));
-
-                        app_handle.manage(state);
+                        });
                     }
                     Err(e) => {
                         tracing::error!("❌ Bootstrap Failed: {}", e);
-                        // Initialize state even on failure
-                        let state = Arc::new(Mutex::new(AppState {
+                        // Publish anyway: without a mesh the chain and vault
+                        // commands still work, and the UI can say so. Leaving
+                        // services unset would make every command NotReady
+                        // forever, which reads as a hang rather than an error.
+                        state.set_services(state::Services {
                             mesh_tx: None,
                             agent: Arc::new(SharkAgent::new(None)),
                             matcher: Arc::new(MatchAgent::new(None)),
                             zk_handler: Arc::new(ZKHandler::new(None)),
                             ollama: ollama_state,
-                            bridge: bridge,
+                            bridge,
                             relay_bytes: Arc::new(AtomicU64::new(0)),
-                        }));
-                        app_handle.manage(state);
+                        });
                     }
                 }
             });

@@ -158,6 +158,19 @@ impl AppError {
     }
 }
 
+/// Collapses an error into the flat string the frozen desktop surface returns.
+///
+/// Lives here rather than in `legacy` because `legacy` is `cfg(desktop)`-gated
+/// while a few frozen commands are defined in always-compiled modules. Having
+/// it only in `legacy` compiled on desktop and failed on iOS — a class of
+/// break no desktop build can catch.
+///
+/// [`crate::legacy::adapt::flatten_error`] delegates here, so the seam is still
+/// documented in one place.
+pub fn flatten<E: std::fmt::Display>(error: E) -> String {
+    error.to_string()
+}
+
 /// Renders an error's full `source()` chain as `outer: middle: root`.
 ///
 /// The root cause is usually the useful part and is exactly what `Display` on

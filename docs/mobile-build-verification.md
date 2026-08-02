@@ -304,6 +304,73 @@ Test count: **85**.
 
 ---
 
+## State and capabilities — reshaped (2026-08-02, ticket 14)
+
+The global `Arc<Mutex<AppState>>` is gone. Every command used to lock it, lock
+a second mutex inside, then await network I/O holding both: two concurrent RPC
+calls ran strictly one after the other. Commands now take a cheap `Services`
+snapshot and release the lock before awaiting anything.
+
+**Asserted by timing, not by inspection** — `tests/state_concurrency.rs` runs
+8 tasks of 150 ms each and fails if the total approaches the 1,200 ms a
+serialized run would take. "No global mutex" is easy to claim from a diff and
+easy to lose again in a later refactor.
+
+State is now managed **synchronously**, before the webview exists. Previously it
+was managed inside a spawned task, so a command arriving during bootstrap found
+nothing managed — and a missing `State<'_, T>` is a panic inside the IPC
+handler, not an error a command can convert. It is now `AppError::NotReady`,
+which is the state the connecting screen already renders as progress.
+
+`PlatformCaps` (build-time, `Copy`) and `RuntimeCaps` (permissions,
+connectivity) are separate types. An earlier design had one struct described as
+build-time immutable while carrying a permission grant — a contradiction,
+because a user can revoke Local Network access while the app is backgrounded.
+Conflating them means that revocation is never noticed and mDNS silently stops
+finding peers.
+
+### How state resolution was actually verified
+
+The mock runtime cannot prove it: the ACL runs *before* state resolution and
+`mock_context` has no resolved capabilities, so every invoke is refused before a
+command body runs. `tests/ipc_wiring.rs` was rewritten to assert what it does
+prove — that the ticket 06 ACL is enforced on the real invoke path.
+
+Proof came from running the app instead. Bootstrap and the frontend both call
+`sync_state`, distinguishable by argument:
+
+```
+sync_state{wallet_address_override="ignored_override"}   <- bootstrap
+sync_state{wallet_address_override=""}                   <- frontend, over IPC
+```
+
+The second line is a frontend command resolving `State<'_, AppState>` and
+executing. That is the regression this ticket was most at risk of.
+
+### A trap worth knowing about
+
+**The debug binary is built with `cfg(dev)`, so it loads `devUrl`, not the
+bundled frontend.** Run `target/debug/cabalmesh` without Vite serving port 1420
+and the webview loads nothing — bootstrap logs look perfect while *no* frontend
+command ever runs.
+
+That cost real time here: it looks exactly like a broken IPC layer or a
+regression from the CSP work. Before concluding the frontend is broken, check
+that `npm run dev` is running.
+
+### A `cfg` bug the desktop build could not catch
+
+`kill_switch` lives in an always-compiled module but called
+`crate::legacy::adapt::flatten_error`, and `legacy` is `cfg(desktop)`-gated. It
+compiled on desktop and failed only on `aarch64-apple-ios-sim`. `error::flatten`
+is now the unconditional home and `legacy` delegates to it.
+
+This is the argument for cross-compiling every ticket rather than at the end.
+
+Test count: **98**.
+
+---
+
 ## Android — not yet attempted (ticket 08)
 
 No Rust targets, no SDK, no NDK, and none of `JAVA_HOME` / `ANDROID_HOME` / `NDK_HOME` set. The iOS result is encouraging but does not transfer: Android is where the TLS backend actually matters, since it ships no system OpenSSL. That is why ticket 02 moved to rustls, but it is unproven until an Android build runs.

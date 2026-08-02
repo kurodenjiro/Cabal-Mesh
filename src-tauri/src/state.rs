@@ -1,0 +1,306 @@
+//! Application state.
+//!
+//! # What was wrong before
+//!
+//! State was a single `Arc<Mutex<AppState>>`. Every command locked it, then
+//! locked a second mutex inside it, then awaited network I/O while holding
+//! both. Two concurrent RPC calls therefore ran strictly one after the other:
+//! the app had no concurrency at all, only the appearance of it.
+//!
+//! It was also managed *inside a spawned task*, so any command invoked before
+//! bootstrap finished raced it. That failure is worse than it sounds — a
+//! missing `State<'_, T>` is a **runtime panic inside the IPC handler**, not
+//! an error a command can convert. The window was small, so it looked stable.
+//!
+//! # The shape now
+//!
+//! [`AppState`] is managed synchronously at startup, before the webview can
+//! invoke anything. It is cheap to clone and holds no lock of its own; the
+//! services inside it arrive later.
+//!
+//! Commands ask for [`AppState::services`], which is `Ok` once bootstrap has
+//! completed and [`AppError::NotReady`] before then. That is the same state
+//! the `connecting` screen already renders as progress, so "not ready" became
+//! a value instead of a panic.
+//!
+//! # Why `std::sync::RwLock` and not the async one
+//!
+//! The critical sections here clone a handful of `Arc`s and return. Nothing is
+//! held across an `.await`. Tauri's own guidance is that the standard-library
+//! lock is preferred in async code unless a guard genuinely spans a suspension
+//! point, and paying for an async lock to guard a pointer copy is exactly the
+//! case it warns about.
+
+use crate::agent::SharkAgent;
+use crate::blockchain_bridge::BlockchainBridge;
+use crate::error::AppError;
+use crate::matcher::MatchAgent;
+use crate::mesh::PrivacyIntent;
+use crate::ollama_manager::OllamaManager;
+use crate::zk_handler::ZKHandler;
+use serde::Serialize;
+use std::sync::atomic::AtomicU64;
+use std::sync::{Arc, RwLock};
+use tokio::sync::{mpsc, Mutex};
+
+/// The subsystems that exist only after bootstrap succeeds.
+///
+/// Every field is an `Arc` or a channel sender, so cloning this is a few
+/// pointer copies. That is what lets a command take a snapshot and release the
+/// lock immediately, rather than holding it across the network call it is
+/// about to make.
+#[derive(Clone)]
+pub struct Services {
+    pub mesh_tx: Option<mpsc::UnboundedSender<PrivacyIntent>>,
+    pub agent: Arc<SharkAgent>,
+    pub matcher: Arc<MatchAgent>,
+    pub zk_handler: Arc<ZKHandler>,
+    pub ollama: Arc<OllamaManager>,
+    pub bridge: Arc<Mutex<BlockchainBridge>>,
+    pub relay_bytes: Arc<AtomicU64>,
+}
+
+/// Facts fixed when the binary was compiled. Never change, so `Copy`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlatformCaps {
+    /// Whether the Noir toolchain can be invoked. Desktop only.
+    pub zk_proving: bool,
+    /// Whether a local model server can be spawned. Desktop only.
+    pub local_llm: bool,
+    /// Whether the mesh can keep running while backgrounded. False on iOS,
+    /// which grants no general background networking.
+    pub background_mesh: bool,
+}
+
+impl PlatformCaps {
+    /// Resolved from compile-time configuration.
+    #[must_use]
+    pub const fn current() -> Self {
+        Self {
+            zk_proving: cfg!(desktop),
+            local_llm: crate::platform::CAN_SPAWN_PROCESSES,
+            background_mesh: cfg!(not(target_os = "ios")),
+        }
+    }
+}
+
+/// State that changes while the app runs.
+///
+/// Kept separate from [`PlatformCaps`] on purpose. An earlier design had one
+/// struct described as build-time immutable while carrying a permission grant
+/// — a contradiction, because a user can revoke Local Network access from
+/// Settings while the app is backgrounded. Conflating the two means that
+/// revocation is never noticed and mDNS silently stops finding peers.
+///
+/// Re-read on resume.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeCaps {
+    /// Whether local-network discovery is permitted right now.
+    pub mdns_granted: bool,
+    /// Whether the bootstrap relay answered on the last attempt.
+    pub relay_reachable: bool,
+    /// Whether the device believes it has connectivity.
+    pub online: bool,
+}
+
+impl Default for RuntimeCaps {
+    /// Pessimistic: nothing is assumed granted or reachable until observed.
+    /// Optimistic defaults would make the first render claim capabilities the
+    /// app has not verified.
+    fn default() -> Self {
+        Self {
+            mdns_granted: false,
+            relay_reachable: false,
+            online: false,
+        }
+    }
+}
+
+struct Inner {
+    /// `None` until bootstrap completes.
+    services: RwLock<Option<Services>>,
+    runtime: RwLock<RuntimeCaps>,
+    caps: PlatformCaps,
+}
+
+/// Managed application state.
+///
+/// Cheap to clone; Tauri stores it directly, with no outer `Arc` — the
+/// framework already owns it, and wrapping it again was a redundant layer.
+#[derive(Clone)]
+pub struct AppState {
+    inner: Arc<Inner>,
+}
+
+impl AppState {
+    /// Creates state with no services yet.
+    ///
+    /// Call and `manage` this **synchronously**, before the webview can
+    /// invoke. Bootstrap fills it in afterwards via [`AppState::set_services`].
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(Inner {
+                services: RwLock::new(None),
+                runtime: RwLock::new(RuntimeCaps::default()),
+                caps: PlatformCaps::current(),
+            }),
+        }
+    }
+
+    /// Publishes the bootstrapped services. Called once, from bootstrap.
+    pub fn set_services(&self, services: Services) {
+        *self
+            .inner
+            .services
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(services);
+        tracing::info!(target: "cabalmesh::state", "services published");
+    }
+
+    /// A snapshot of the services.
+    ///
+    /// Returns a clone rather than a guard so the caller holds no lock while
+    /// it awaits — which is the entire reason commands no longer serialize.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError::NotReady`] if bootstrap has not finished.
+    pub fn services(&self) -> Result<Services, AppError> {
+        self.inner
+            .services
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .ok_or(AppError::NotReady { subsystem: "bootstrap" })
+    }
+
+    /// Whether bootstrap has completed.
+    #[must_use]
+    pub fn is_ready(&self) -> bool {
+        self.inner
+            .services
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some()
+    }
+
+    /// Compile-time capabilities.
+    ///
+    /// Not `const fn`: reaching through the `Arc` needs a deref coercion,
+    /// which is not permitted in const context. The values themselves are
+    /// still fixed at compile time — see [`PlatformCaps::current`].
+    #[must_use]
+    pub fn platform_caps(&self) -> PlatformCaps {
+        self.inner.caps
+    }
+
+    /// Current runtime capabilities.
+    #[must_use]
+    pub fn runtime_caps(&self) -> RuntimeCaps {
+        *self
+            .inner
+            .runtime
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Replaces runtime capabilities. Called after bootstrap and on resume,
+    /// since a permission can be revoked while the app is backgrounded.
+    pub fn set_runtime_caps(&self, caps: RuntimeCaps) {
+        let mut guard = self
+            .inner
+            .runtime
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if *guard != caps {
+            tracing::info!(
+                target: "cabalmesh::state",
+                mdns_granted = caps.mdns_granted,
+                relay_reachable = caps.relay_reachable,
+                online = caps.online,
+                "runtime capabilities changed"
+            );
+            *guard = caps;
+        }
+    }
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_not_ready_before_bootstrap() {
+        let state = AppState::new();
+        assert!(!state.is_ready());
+        assert!(matches!(
+            state.services(),
+            Err(AppError::NotReady { subsystem: "bootstrap" })
+        ));
+    }
+
+    #[test]
+    fn asking_early_is_an_error_not_a_panic() {
+        // The whole point: before, a command arriving during bootstrap panicked
+        // inside the IPC handler because the managed type was absent. Now it is
+        // a value the connecting screen already knows how to render.
+        let state = AppState::new();
+        assert!(state.services().is_err());
+    }
+
+    #[test]
+    fn platform_caps_are_immutable_and_copy() {
+        let state = AppState::new();
+        let first = state.platform_caps();
+        let second = state.platform_caps();
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn runtime_caps_start_pessimistic() {
+        // Optimistic defaults would have the first render claim capabilities
+        // that have not been observed.
+        let caps = AppState::new().runtime_caps();
+        assert!(!caps.mdns_granted);
+        assert!(!caps.relay_reachable);
+        assert!(!caps.online);
+    }
+
+    #[test]
+    fn runtime_caps_can_change_after_construction() {
+        // The distinction from PlatformCaps: a user can revoke local network
+        // access while the app is backgrounded, and the app must be able to
+        // notice.
+        let state = AppState::new();
+        state.set_runtime_caps(RuntimeCaps {
+            mdns_granted: true,
+            relay_reachable: true,
+            online: true,
+        });
+        assert!(state.runtime_caps().mdns_granted);
+
+        state.set_runtime_caps(RuntimeCaps {
+            mdns_granted: false,
+            ..state.runtime_caps()
+        });
+        assert!(!state.runtime_caps().mdns_granted);
+        assert!(state.runtime_caps().online);
+    }
+
+    #[test]
+    fn clones_share_one_underlying_state() {
+        let state = AppState::new();
+        let clone = state.clone();
+        state.set_runtime_caps(RuntimeCaps { online: true, ..RuntimeCaps::default() });
+        assert!(clone.runtime_caps().online);
+    }
+}

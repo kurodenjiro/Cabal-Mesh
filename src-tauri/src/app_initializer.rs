@@ -1,11 +1,10 @@
 use crate::blockchain_bridge::BlockchainBridge;
 use crate::mesh::{MeshNetwork, MeshEvent, PrivacyIntent};
-use crate::AppState;
-use tauri::{AppHandle, Emitter, Manager, State};
+use crate::state::AppState;
+use tauri::{AppHandle, Emitter, State};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc;
-use std::time::Duration;
 
 #[derive(Clone, serde::Serialize)]
 struct BootstrapStatus {
@@ -87,8 +86,8 @@ impl SystemBootstrap {
 
 // 5. Security: Kill Switch Command
 #[tauri::command]
-pub async fn kill_switch(state: State<'_, Arc<Mutex<AppState>>>) -> Result<String, String> {
-    let state = state.lock().await;
+pub async fn kill_switch(state: State<'_, AppState>) -> Result<String, String> {
+    let state = state.services().map_err(crate::error::flatten)?;
     let bridge = state.bridge.lock().await;
     
     // Shred local key
