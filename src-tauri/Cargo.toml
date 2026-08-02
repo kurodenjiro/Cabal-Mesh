@@ -163,6 +163,8 @@ tracing-oslog = "0.3"
 tracing-android = "0.2"
 
 [dev-dependencies]
+chrono = { version = "0.4", features = ["serde"] }
+cabal-store = { path = "crates/cabal-store" }
 tempfile = "3"
 cabal-core = { path = "crates/cabal-core" }
 insta = "1.48.0"

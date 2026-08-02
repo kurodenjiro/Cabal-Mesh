@@ -180,6 +180,9 @@ fn queued_tx_shape() {
         status: "queued".into(),
         tx_hash: None,
         reason: None,
+        // Untried, so `attempts` must be omitted from the wire shape — that is
+        // what keeps the frozen contract unchanged by ticket 25's addition.
+        attempts: 0,
     }));
 }
 
@@ -193,6 +196,7 @@ fn queued_tx_failed_shape() {
         status: "failed".into(),
         tx_hash: Some("0xc70d".into()),
         reason: Some("insufficient funds".into()),
+        attempts: 0,
     }));
 }
 

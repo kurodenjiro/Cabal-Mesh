@@ -17,6 +17,9 @@ pub mod mesh_handle;
 
 /// Bootstrap peer configuration. See src/bootstrap_config.rs.
 pub mod bootstrap_config;
+
+/// Chain selection and contract addresses. See src/network_config.rs.
+pub mod network_config;
 pub mod zk_handler;
 mod llm_json;
 mod lifecycle;

@@ -151,6 +151,14 @@ pub struct QueuedTx {
     /// UI can say so instead of suggesting a retry that can never succeed.
     #[serde(default)]
     pub reason: Option<String>,
+    /// How many times submission has been tried.
+    ///
+    /// `skip_serializing_if` keeps a never-retried entry serializing exactly as
+    /// before, so the frozen desktop contract is unchanged — verified by the
+    /// snapshot suite. `default` lets a queue file written before this field
+    /// existed still load.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub attempts: u8,
 }
 
 /// A transaction this node successfully relayed to the chain on behalf of
@@ -165,6 +173,12 @@ pub struct RelayedTxRecord {
     /// relayer-payment settlement mechanism yet. Labeled as an estimate wherever shown.
     pub reward_avax: String,
     pub relayed_at: DateTime<Utc>,
+}
+
+/// Serde helper: an untried entry omits `attempts` so the on-disk and
+/// on-the-wire shape matches what the frozen UI already expects.
+fn is_zero(value: &u8) -> bool {
+    *value == 0
 }
 
 /// Result of an action that normally hits the chain directly: either it went
@@ -216,20 +230,16 @@ impl BlockchainBridge {
         // No fallback here: an absent/invalid address should surface as a clear
         // runtime error the first time a contract call is attempted, not a
         // silently-wrong placeholder.
-        let escrow_address = std::env::var("ESCROW_CONTRACT_ADDRESS")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .and_then(|s| Address::from_str(&s).ok());
+        // Layered configuration rather than bare environment reads: a mobile
+        // bundle has no environment, so every address used to resolve to None
+        // and every contract call failed looking like a chain problem.
+        let network = crate::network_config::NetworkConfig::load(&JsonStore::new(
+            crate::app_paths::in_data_dir("network.json"),
+        ));
 
-        let marketplace_address = std::env::var("MARKETPLACE_CONTRACT_ADDRESS")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .and_then(|s| Address::from_str(&s).ok());
-
-        let voucher_address = std::env::var("VOUCHER_CONTRACT_ADDRESS")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .and_then(|s| Address::from_str(&s).ok());
+        let escrow_address = network.escrow().and_then(|s| Address::from_str(&s).ok());
+        let marketplace_address = network.marketplace().and_then(|s| Address::from_str(&s).ok());
+        let voucher_address = network.voucher().and_then(|s| Address::from_str(&s).ok());
 
         let app_dir = crate::app_paths::data_dir();
 
@@ -476,6 +486,7 @@ impl BlockchainBridge {
             status: "queued".to_string(),
             tx_hash: None,
             reason: None,
+            attempts: 0,
         };
 
         let mut pending = self.load_pending_relay_txs();
@@ -484,6 +495,71 @@ impl BlockchainBridge {
 
         tracing::info!("📡 [Bridge] Signed offline, queued for mesh relay: {} ({})", queued.id, summary);
         Ok(queued)
+    }
+
+    /// Maximum submission attempts before an entry is parked as failed.
+    ///
+    /// Retrying forever would drain the battery re-broadcasting a transaction
+    /// the chain will never accept — a bad nonce or an underpriced fee does not
+    /// improve by being tried again.
+    pub const MAX_ATTEMPTS: u8 = 5;
+
+    /// Submits our own queued transactions now that connectivity is back.
+    ///
+    /// The existing path relies on a *peer* with Relay Mode picking them up,
+    /// which never happens for a user who is simply alone and offline. This is
+    /// the self-service path: when the device itself regains connectivity, it
+    /// drains its own queue.
+    ///
+    /// Returns how many were confirmed.
+    ///
+    /// # Errors
+    ///
+    /// Only if the queue cannot be persisted. Individual submission failures
+    /// are recorded against their entry and retried later rather than aborting
+    /// the drain — one bad transaction must not block the rest.
+    pub async fn drain_pending(&self) -> Result<usize, Box<dyn Error>> {
+        let mut pending = self.load_pending_relay_txs();
+        if pending.is_empty() {
+            return Ok(0);
+        }
+
+        let mut confirmed = 0_usize;
+        for entry in &mut pending {
+            if entry.status != "queued" || entry.attempts >= Self::MAX_ATTEMPTS {
+                continue;
+            }
+            entry.attempts = entry.attempts.saturating_add(1);
+
+            match self.submit_raw_transaction(&entry.raw_tx_hex).await {
+                Ok(tx_hash) => {
+                    entry.status = "confirmed".to_string();
+                    entry.tx_hash = Some(tx_hash);
+                    entry.reason = None;
+                    confirmed += 1;
+                    tracing::info!(id = %entry.id, "queued transaction confirmed after reconnect");
+                }
+                Err(error) => {
+                    entry.reason = Some(error.to_string());
+                    if entry.attempts >= Self::MAX_ATTEMPTS {
+                        entry.status = "failed".to_string();
+                        tracing::warn!(
+                            id = %entry.id,
+                            attempts = entry.attempts,
+                            "queued transaction parked after repeated failures"
+                        );
+                    } else {
+                        tracing::debug!(id = %entry.id, attempts = entry.attempts, "retry failed");
+                    }
+                }
+            }
+        }
+
+        // Persisted after every drain, not only on success: attempt counts are
+        // what stop an unminable transaction being retried forever across
+        // restarts.
+        self.save_pending_relay_txs(&pending)?;
+        Ok(confirmed)
     }
 
     /// Broadcasts a raw signed transaction someone else queued while offline.

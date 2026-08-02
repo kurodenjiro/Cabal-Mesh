@@ -728,6 +728,50 @@ Test count: **162**.
 
 ---
 
+## Chain config and offline queue (2026-08-02, tickets 24 + 25)
+
+**Contract addresses came from bare `std::env::var` with no fallback.** On
+desktop a dotfile made that work. On mobile there is no environment to read and
+no file to load, so every address resolved to `None` and every contract call
+failed — with an error that looked like a chain problem rather than a
+configuration one.
+
+Now a compiled-in table keyed by network, overridable at runtime, with the
+desktop environment layer retained for the local two-node test.
+
+**The default is Fuji, not mainnet.** This build is still moving and the
+contracts are unaudited; a wrong default here spends real money rather than
+displaying something wrong. Undeployed contracts are `None` rather than a
+placeholder, so the failure reads "not configured" instead of surfacing as a
+chain error.
+
+### The queue drains itself now
+
+The existing path relied on a *peer* with Relay Mode picking transactions up —
+which never happens for a user who is simply alone and offline. `drain_pending`
+is the self-service path: when the device regains connectivity it submits its
+own queue.
+
+Retries are bounded at 5. Retrying forever would drain the battery
+re-broadcasting a transaction the chain will never accept, since a bad nonce or
+an underpriced fee does not improve by being tried again. The attempt count is
+**persisted**, so a relaunch does not reset the counter and restart the loop.
+
+### Extending the frozen type without breaking it
+
+`QueuedTx` gained `attempts`, and the frozen desktop UI must see exactly the
+shape it always saw. `#[serde(default, skip_serializing_if)]` means an untried
+entry serializes identically to before, and a queue file written before the
+field existed still loads — real installations have one, and failing to read it
+would drop transactions the user is waiting on.
+
+**The 23 contract snapshots stayed green through the change**, which is the
+proof rather than the intention.
+
+Test count: **167**.
+
+---
+
 ## Android — not yet attempted (ticket 08)
 
 No Rust targets, no SDK, no NDK, and none of `JAVA_HOME` / `ANDROID_HOME` / `NDK_HOME` set. The iOS result is encouraging but does not transfer: Android is where the TLS backend actually matters, since it ships no system OpenSSL. That is why ticket 02 moved to rustls, but it is unproven until an Android build runs.
