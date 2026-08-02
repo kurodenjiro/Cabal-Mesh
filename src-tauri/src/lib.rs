@@ -19,6 +19,7 @@ pub mod mesh_handle;
 pub mod bootstrap_config;
 pub mod zk_handler;
 mod llm_json;
+mod lifecycle;
 mod telemetry;
 mod vault_key;
 
@@ -284,6 +285,20 @@ pub fn run() {
                 tauri::generate_handler![commands::unsubscribe]
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // Mobile lifecycle. Tauri 2.11 propagates these from the platform;
+            // 2.9 did not, which is why an earlier plan specified a custom
+            // plugin that is no longer needed.
+            #[cfg(mobile)]
+            if let tauri::RunEvent::WindowEvent { event, .. } = &event {
+                match event {
+                    tauri::WindowEvent::Suspended => lifecycle::on_suspend(app),
+                    tauri::WindowEvent::Resumed => lifecycle::on_resume(app),
+                    _ => {}
+                }
+            }
+            let _ = (app, event);
+        });
 }

@@ -678,6 +678,56 @@ Test count: **160**.
 
 ---
 
+## Lifecycle — native, no plugin (2026-08-02, ticket 22)
+
+An earlier plan specified a custom lifecycle plugin. It was written against
+2.9, where nothing propagated. **2.11 emits `WindowEvent::Suspended` and
+`WindowEvent::Resumed` on mobile**, so the plugin was obsolete before it was
+written — and the plugin count dropped from four to three.
+
+Verified on the simulator by backgrounding and returning:
+
+```
+[com.cabalmesh.app:default] suspended  cancelled_streams=0
+[com.cabalmesh.app:default] resumed
+```
+
+Confirmed against the Tauri 2.11.5 source, since the changelog names the tao
+events rather than the public path:
+
+| | Suspended | Resumed |
+|---|---|---|
+| Android | `Activity.onPause` | `Activity.onResume` (first ignored) |
+| iOS | `applicationWillResignActive` | `applicationWillEnterForeground` |
+| Desktop | not emitted | not emitted |
+
+### The iOS asymmetry is real, and shapes what teardown may do
+
+Those two callbacks are **not** mirror images. `willResignActive` fires for
+transient interruptions — control centre, notification shade, incoming call, a
+permission prompt — while `willEnterForeground` fires only after genuinely
+leaving the background.
+
+So pulling down the notification shade delivers `Suspended` with **no matching
+`Resumed`** until the app is actually backgrounded and returned to. Anything
+torn down on suspend must therefore be cheap to lose and rebuilt on demand, not
+only on resume — otherwise glancing at a notification silently kills the mesh
+for the rest of the session.
+
+Teardown is bounded accordingly: cancel live streams, stop mesh participation.
+Both re-establish on the next subscribe or publish, so the transient case
+self-heals. The swarm is deliberately left running.
+
+Resume re-reads runtime capabilities rather than assuming them: a user can
+revoke Local Network access from Settings while backgrounded, and an app that
+kept believing it was granted would silently find no peers and blame the
+network. Streams are **not** restarted — the frontend re-subscribes when screens
+remount, and guessing would recreate streams nothing is listening to.
+
+Test count: **162**.
+
+---
+
 ## Android — not yet attempted (ticket 08)
 
 No Rust targets, no SDK, no NDK, and none of `JAVA_HOME` / `ANDROID_HOME` / `NDK_HOME` set. The iOS result is encouraging but does not transfer: Android is where the TLS backend actually matters, since it ships no system OpenSSL. That is why ticket 02 moved to rustls, but it is unproven until an Android build runs.
