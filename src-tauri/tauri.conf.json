@@ -42,6 +42,14 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "iOS": {
+      "minimumSystemVersion": "14.0",
+      "infoPlist": "./Info.plist"
+    },
+    "android": {
+      "minSdkVersion": 24,
+      "autoIncrementVersionCode": true
+    }
   }
 }
