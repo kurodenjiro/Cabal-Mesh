@@ -1,8 +1,17 @@
 /** @type {import('tailwindcss').Config} */
 export default {
+  // Scoped to the FROZEN desktop tree only.
+  //
+  // Never widen this to src/**. Tailwind compiles to raw px and hex values,
+  // which is exactly what the design system's adherence lint forbids, and a
+  // single generated utility class reaching a DS surface reintroduces the
+  // collision this split exists to prevent.
   content: [
     "./index.html",
-    "./src/**/*.{js,ts,jsx,tsx}",
+    "./src/*.{js,ts,jsx,tsx}",
+    "./src/components/**/*.{js,ts,jsx,tsx}",
+    "./src/hooks/**/*.{js,ts,jsx,tsx}",
+    "./src/lib/**/*.{js,ts,jsx,tsx}",
   ],
   theme: {
     extend: {

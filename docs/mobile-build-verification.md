@@ -772,6 +772,53 @@ Test count: **167**.
 
 ---
 
+## Frontend build split (2026-08-02, ticket 26)
+
+Two output **directories**, not two entry files in one:
+
+```
+index.html            -> dist-desktop/   (frozen RPG UI, Tailwind + framer-motion)
+src/mobile-entry/     -> dist-mobile/    (design-system UI, neither)
+```
+
+`frontendDist` names a directory and Tauri always serves the `index.html`
+inside it, so the original two-entries-in-one-folder design would have loaded
+the **desktop UI on the phone**.
+
+**Verified by screenshot, not by inspection.** iOS now renders the mobile shell
+— no RPG sprites, no Tailwind. Desktop still bundles the RPG UI with its
+Tailwind CSS intact.
+
+| | dist-mobile | dist-desktop |
+|---|---|---|
+| size | 196 KB | 1.9 MB |
+| Tailwind in CSS | none emitted | present |
+
+### Three traps avoided
+
+**Vite resolves `outDir` relative to `root`.** With a nested mobile root, a bare
+`dist-mobile` lands in `src/mobile-entry/dist-mobile` and the Tauri overlay
+points at nothing. Both outputs use absolute paths.
+
+**Both `beforeDevCommand` and `beforeBuildCommand` are overridden** in each
+platform overlay. Overriding only the build command means `tauri ios dev`
+starts the desktop root and serves the desktop UI — the dev-mode twin of the
+`frontendDist` bug, and just as easy to misread as a routing problem.
+
+**Tailwind's `content` glob is scoped to the frozen tree**, never `src/**`.
+Tailwind compiles to the raw px and hex values the adherence lint forbids, so
+one generated utility reaching a design-system surface reintroduces exactly the
+collision this split prevents.
+
+Also fixed the HMR port: it reused the dev-server port, so HMR never attached on
+a physical device. Now 1421, matching the Tauri template.
+
+The mobile viewport carries `viewport-fit=cover` and deliberately **no**
+`user-scalable=no` — locking zoom fails WCAG 1.4.4, and an accidental pinch is a
+far smaller cost than an unusable app.
+
+---
+
 ## Android — not yet attempted (ticket 08)
 
 No Rust targets, no SDK, no NDK, and none of `JAVA_HOME` / `ANDROID_HOME` / `NDK_HOME` set. The iOS result is encouraging but does not transfer: Android is where the TLS backend actually matters, since it ships no system OpenSSL. That is why ticket 02 moved to rustls, but it is unproven until an Android build runs.

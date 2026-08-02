@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "dev:mobile": "vite --mode mobile",
+    "build:mobile": "tsc && vite build --mode mobile",
     "preview": "vite preview",
     "tauri": "tauri",
     "bindings": "cd src-tauri && cargo test --features ts-rs export_bindings --quiet",
