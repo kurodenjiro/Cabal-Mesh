@@ -427,6 +427,61 @@ Test count: **113**.
 
 ---
 
+## Storage — crash-safe and sandbox-correct (2026-08-02, ticket 17)
+
+`crates/cabal-store`. 11 tests. Two problems fixed.
+
+**Paths were discovered, not injected.** Storage called `dirs::data_dir()`, a
+desktop convention with no correct answer inside a mobile app sandbox, and no
+way for a caller to correct it. The path now comes from Tauri's platform
+resolver, is set once at startup, and is read everywhere else. `dirs` is
+removed from the dependency tree.
+
+**Writes were not atomic.** A mobile process is killed without warning, and a
+truncated `identities.json` is an unrecoverable wallet loss, not a cache miss.
+Writes now encode first, then go to a sibling temporary file, flush, `sync_all`,
+and rename over the target. Each step is load-bearing: encoding first means a
+serialization failure cannot truncate good data; `sync_all` before the rename
+means a power loss cannot make the rename visible while the contents are not;
+and the temporary file is a sibling so the rename stays on one filesystem,
+where it is atomic.
+
+`load` fails loudly on corruption; `load_or` falls back to a default. The split
+is deliberate and documented at the call site: caches and queues cost a refresh,
+a wallet must never silently become empty.
+
+### The migration this uncovered
+
+Moving to the platform directory renamed the folder from `cabalmesh` to
+`com.cabalmesh.app`. Caught at runtime — the app generated a **brand-new
+identity** while the real wallet sat orphaned in the old location:
+
+```
+🆕 Generating NEW Identity 'Genesis Fox'
+   Identity: 0x6db089712FE0264a0ff2B7fE0Baa5F81189204C9    <- fresh, empty
+   (real wallet 0xfF8dd6db… still in ~/…/Application Support/cabalmesh)
+```
+
+That is precisely the data loss this ticket exists to prevent, introduced by
+the fix for it.
+
+The directories are siblings on every desktop platform, so the old one is found
+without reintroducing path discovery. Migration is conservative: it **copies
+rather than moves** (the old directory holds private keys — deleting it is the
+user's call), runs **only when the destination has no identities**, and is best
+effort per file.
+
+Verified by clearing the new directory and relaunching:
+
+```
+adopted state from the pre-move data directory … copied=3
+Identity: 0xfF8dd6dbB7B97b44044573cFE843dE1F463637a9    <- original wallet
+```
+
+Test count: **124**.
+
+---
+
 ## Android — not yet attempted (ticket 08)
 
 No Rust targets, no SDK, no NDK, and none of `JAVA_HOME` / `ANDROID_HOME` / `NDK_HOME` set. The iOS result is encouraging but does not transfer: Android is where the TLS backend actually matters, since it ships no system OpenSSL. That is why ticket 02 moved to rustls, but it is unproven until an Android build runs.

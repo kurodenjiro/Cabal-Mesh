@@ -58,6 +58,17 @@ pub fn run() {
             // Synchronously, before the webview exists. Bootstrap fills the
             // services in afterwards; until then commands get NotReady rather
             // than a panic from an unmanaged type.
+            // Before anything can persist: Tauri knows the correct directory
+            // on every platform, and a mobile sandbox has no other right answer.
+            match app.path().app_data_dir() {
+                Ok(dir) => app_paths::set(dir),
+                Err(error) => tracing::error!(
+                    target: "cabalmesh::paths",
+                    %error,
+                    "platform gave no app data directory; falling back"
+                ),
+            }
+
             let state = state::AppState::new();
             app.manage(state.clone());
 

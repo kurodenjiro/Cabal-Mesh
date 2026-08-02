@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use cabal_store::JsonStore;
 use std::fs;
 use std::path::PathBuf;
 use std::error::Error;
@@ -244,7 +245,7 @@ impl BlockchainBridge {
     }
 
     fn save_identities(&self) -> Result<(), Box<dyn Error>> {
-        fs::write(&self.identity_path, serde_json::to_string_pretty(&self.identities)?)?;
+        JsonStore::new(&self.identity_path).save(&self.identities)?;
         Ok(())
     }
 
@@ -359,7 +360,7 @@ impl BlockchainBridge {
     }
 
     fn save_chain_cache(&self, cache: &ChainStateCache) -> Result<(), Box<dyn Error>> {
-        fs::write(&self.chain_cache_path, serde_json::to_string_pretty(cache)?)?;
+        JsonStore::new(&self.chain_cache_path).save(cache)?;
         Ok(())
     }
 
@@ -371,7 +372,7 @@ impl BlockchainBridge {
     }
 
     fn save_pending_relay_txs(&self, txs: &[QueuedTx]) -> Result<(), Box<dyn Error>> {
-        fs::write(&self.pending_relay_path, serde_json::to_string_pretty(txs)?)?;
+        JsonStore::new(&self.pending_relay_path).save(&txs)?;
         Ok(())
     }
 
@@ -524,7 +525,7 @@ impl BlockchainBridge {
     }
 
     fn save_relayed_history(&self, history: &[RelayedTxRecord]) -> Result<(), Box<dyn Error>> {
-        fs::write(&self.relayed_history_path, serde_json::to_string_pretty(history)?)?;
+        JsonStore::new(&self.relayed_history_path).save(&history)?;
         Ok(())
     }
 
@@ -542,7 +543,7 @@ impl BlockchainBridge {
 
     pub fn apply_relay_boost(&self, additional: f64) -> Result<f64, Box<dyn Error>> {
         let updated = self.get_relay_boost_multiplier() + additional;
-        fs::write(&self.relay_boost_path, updated.to_string())?;
+        JsonStore::compact(&self.relay_boost_path).save(&updated)?;
         Ok(updated)
     }
 
@@ -614,7 +615,7 @@ impl BlockchainBridge {
     // snapshot written moments earlier fail every time) — real private keys
     // live in `identity_path`, untouched by this.
     fn save_snapshot_encrypted(&self, snapshot: &Snapshot) -> Result<(), Box<dyn Error>> {
-        fs::write(&self.storage_path, serde_json::to_vec(&snapshot)?)?;
+        JsonStore::compact(&self.storage_path).save(&snapshot)?;
         tracing::info!("💾 [Bridge] Snapshot saved.");
         Ok(())
     }
@@ -1080,7 +1081,7 @@ impl BlockchainBridge {
     }
 
     fn save_content_store(&self, store: &std::collections::HashMap<u64, ContentRecord>) -> Result<(), Box<dyn Error>> {
-        fs::write(&self.content_store_path, serde_json::to_string_pretty(store)?)?;
+        JsonStore::new(&self.content_store_path).save(store)?;
         Ok(())
     }
 
@@ -1092,7 +1093,7 @@ impl BlockchainBridge {
     }
 
     fn save_received_content(&self, store: &std::collections::HashMap<u64, ContentRecord>) -> Result<(), Box<dyn Error>> {
-        fs::write(&self.received_content_path, serde_json::to_string_pretty(store)?)?;
+        JsonStore::new(&self.received_content_path).save(store)?;
         Ok(())
     }
 
