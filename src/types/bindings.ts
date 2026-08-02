@@ -19,6 +19,23 @@ export type LogLine = { text: string, tone: LogTone, };
 export type LogTone = "out" | "dim" | "ok" | "err" | "info" | "loud";
 
 /**
+ * What the splash screen needs to decide what it is offering.
+ */
+export type SessionStatus = { 
+/**
+ * Whether bootstrap has finished and the mesh is usable.
+ */
+ready: boolean, 
+/**
+ * Truncated node id, e.g. `7F3A..8C2E`. Absent before bootstrap.
+ */
+nodeId: string | null, 
+/**
+ * Whether a peer is reachable right now.
+ */
+connected: boolean, };
+
+/**
  * A home-screen stat tile, pre-formatted.
  *
  * The frontend renders these verbatim. Sending a raw number and formatting it

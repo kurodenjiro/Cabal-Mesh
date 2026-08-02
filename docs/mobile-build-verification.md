@@ -917,6 +917,44 @@ resampling can be redone.
 
 ---
 
+## First screens live (2026-08-02, ticket 29)
+
+**Splash** and **connecting**, both verified on the simulator.
+
+Splash renders the minimal logo mark, the wordmark in Silkscreen at `0.42em`
+tracking with its matching text-indent (the board specifies both together —
+tracking alone pushes it off-centre), the primary and ghost buttons, and the
+board's copy verbatim: *"Zero identity. Private intents."*, *"The nobody
+network."*
+
+Connecting is the first **real end-to-end stream**: Rust command → Tauri
+`Channel` → React → the design system's `Terminal`.
+
+```
+CONNECTING TO MESH
+NO IDENTITY IS ATTACHED.
+[████████░░░░░░░░░░░░]  40%
+> INITIALIZING EPHEMERAL NODE...
+> GENERATING ONE-TIME KEYPAIR...
+> NO IDENTITY WRITTEN.
+> ▌
+```
+
+Tones map correctly (`dim` vs `out`), the meter advances in `steps()` rather
+than easing, and the caret blinks on the 3-step cycle. The final `ok` line
+advances to home — observed by screenshotting at 6s and finding the app already
+there.
+
+The line buffer is bounded at 200. A live feed into an unbounded array is a slow
+OOM on a 2 GB device, and the prototype's `setInterval` over a canned array
+hides that entirely.
+
+**Mobile's IPC surface opened for the first time**, and only by three:
+`unsubscribe`, `session_status`, `enter_mesh`. That is the per-screen grant
+discipline working — nothing speculative.
+
+---
+
 ## Android — not yet attempted (ticket 08)
 
 No Rust targets, no SDK, no NDK, and none of `JAVA_HOME` / `ANDROID_HOME` / `NDK_HOME` set. The iOS result is encouraging but does not transfer: Android is where the TLS backend actually matters, since it ships no system OpenSSL. That is why ticket 02 moved to rustls, but it is unproven until an Android build runs.

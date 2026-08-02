@@ -63,6 +63,8 @@
     "allow-can-spawn-processes",
     "allow-match-intent-to-listings",
     "allow-generate-zk-proof",
-    "allow-unsubscribe"
+    "allow-unsubscribe",
+    "allow-session-status",
+    "allow-enter-mesh"
   ]
 }

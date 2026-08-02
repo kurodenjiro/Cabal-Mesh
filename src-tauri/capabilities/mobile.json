@@ -11,6 +11,8 @@
   ],
   "permissions": [
     "core:default",
-    "allow-unsubscribe"
+    "allow-unsubscribe",
+    "allow-session-status",
+    "allow-enter-mesh"
   ]
 }

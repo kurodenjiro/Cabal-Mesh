@@ -17,6 +17,8 @@
 const COMMANDS: &[&str] = &[
     // reshaped surface (src/commands.rs) — registered on every platform
     "unsubscribe",
+    "session_status",
+    "enter_mesh",
     // mesh
     "send_intent_to_mesh",
     "get_relay_stats",

@@ -62,8 +62,11 @@ def main() -> None:
         "",
         "import type * as React from 'react';",
         "",
-        "type Base = { children?: React.ReactNode; className?: string; "
-        "style?: React.CSSProperties; key?: React.Key };",
+        "// Every design-system component spreads `...rest` onto its root DOM",
+        "// element, so ordinary DOM props are legal alongside the declared ones.",
+        "// The adherence lint only enumerates the design-system props; it does not",
+        "// mean the others are rejected.",
+        "type Base = React.HTMLAttributes<HTMLElement> & { key?: React.Key };",
         "",
     ]
 

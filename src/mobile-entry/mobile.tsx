@@ -10,6 +10,8 @@ import React, { useState } from "react";
 import ReactDOM from "react-dom/client";
 import "../ds/index";
 import { AppShell } from "../shell/AppShell";
+import { Splash } from "../screens/Splash";
+import { Connecting } from "../screens/Connecting";
 import type { Screen } from "../shell/screen";
 
 /**
@@ -46,7 +48,16 @@ function Placeholder({ screen }: { screen: Screen }) {
 }
 
 function App() {
-  const [screen, setScreen] = useState<Screen>({ name: "home" });
+  // Starts at splash: the app has no session until the user asks for one, and
+  // the prototype's own flow is splash -> connecting -> home.
+  const [screen, setScreen] = useState<Screen>({ name: "splash" });
+
+  if (screen.name === "splash") {
+    return <Splash onEnter={() => setScreen({ name: "connecting" })} />;
+  }
+  if (screen.name === "connecting") {
+    return <Connecting onJoined={() => setScreen({ name: "home" })} />;
+  }
 
   return (
     <AppShell screen={screen} onNavigate={setScreen}>
