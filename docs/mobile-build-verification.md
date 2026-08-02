@@ -217,6 +217,38 @@ window, that is called out rather than assumed.
 
 ---
 
+## Error taxonomy — typed and redacting (2026-08-02, ticket 12)
+
+`src-tauri/src/error.rs`. `AppError` serializes as a discriminated union tagged
+on `kind`, so the frontend switches on a variant and renders its own on-voice
+copy. The variant is the contract; the sentence is not.
+
+Before, every command returned `Result<T, String>` built from `e.to_string()`,
+which has two costs. The frontend could only display prose — no branching, no
+on-voice copy, no localisation. And it leaked: an I/O error's `Display`
+contains the filesystem path, a transport error's contains the RPC URL, and
+both travelled to the webview.
+
+**Redaction is enforced by test, not by convention.** `no_variant_leaks_infrastructure_detail`
+serializes every variant — including one built from an error containing a vault
+path, an RPC URL and a hex key — and asserts none of `/Users`, `http`, `://`,
+`.network`, `0xdeadbeef` or `vault.enc` survives. That is the test that fails
+if someone later adds a `message: String` field "just for debugging".
+
+`AppError::Chain` deliberately has no message field at all, only a `retryable`
+flag. `AppError::Internal` is unit-shaped: `AppError::internal(source)` logs
+the real error and returns a variant carrying none of it.
+
+37 legacy call sites now flatten through `legacy::adapt::flatten_error` rather
+than inline `e.to_string()`, making the compatibility seam real rather than
+notional. The 23 frozen-contract snapshots are unchanged by that move, which is
+the proof it is behaviour-preserving — the whole requirement for a
+compatibility layer.
+
+Test count across the workspace: **84**.
+
+---
+
 ## Android — not yet attempted (ticket 08)
 
 No Rust targets, no SDK, no NDK, and none of `JAVA_HOME` / `ANDROID_HOME` / `NDK_HOME` set. The iOS result is encouraging but does not transfer: Android is where the TLS backend actually matters, since it ships no system OpenSSL. That is why ticket 02 moved to rustls, but it is unproven until an Android build runs.

@@ -88,7 +88,7 @@ pub async fn send_intent_to_mesh(
                     relay_path: vec!["origin_node".to_string()],
                     relay_fee: None, // Settlements/relay messages don't carry relay fees
                 };
-                tx.send(intent).map_err(|e| e.to_string())?;
+                tx.send(intent).map_err(adapt::flatten_error)?;
                 return Ok(format!("{} message broadcasted: {}", intent_type, payload));
             } else {
                 return Err("Mesh network not initialized".to_string());
@@ -106,7 +106,7 @@ pub async fn send_intent_to_mesh(
     };
 
     if let Some(tx) = &state_lock.mesh_tx {
-        tx.send(intent).map_err(|e| e.to_string())?;
+        tx.send(intent).map_err(adapt::flatten_error)?;
         Ok(format!("Intent broadcasted: {}", payload))
     } else {
         Err("Mesh network not initialized".to_string())
@@ -119,7 +119,7 @@ pub async fn analyze_pdf_content(
     state: State<'_, Arc<Mutex<AppState>>>,
 ) -> Result<ContentAnalysis, String> {
     let state = state.lock().await;
-    state.agent.analyze_content(&text).await.map_err(|e| e.to_string())
+    state.agent.analyze_content(&text).await.map_err(adapt::flatten_error)
 }
 
 #[tauri::command]
@@ -140,7 +140,7 @@ pub async fn generate_zk_proof(
         .zk_handler
         .generate_proof(request)
         .await
-        .map_err(|e| e.to_string());
+        .map_err(adapt::flatten_error);
     
     match &result {
         Ok(_) => println!("✅ ZK Proof generated successfully"),
@@ -182,11 +182,11 @@ pub async fn create_escrow(
 ) -> Result<TxResult, String> {
     let state = state.lock().await;
     let bridge = state.bridge.lock().await;
-    let amount_wei = alloy::primitives::utils::parse_ether(&amount_avax).map_err(|e| e.to_string())?;
+    let amount_wei = alloy::primitives::utils::parse_ether(&amount_avax).map_err(adapt::flatten_error)?;
     bridge
         .create_escrow(&payee, amount_wei, expiry_unix.unwrap_or(0))
         .await
-        .map_err(|e| e.to_string())
+        .map_err(adapt::flatten_error)
 }
 
 #[tauri::command]
@@ -196,7 +196,7 @@ pub async fn release_escrow(
 ) -> Result<String, String> {
     let state = state.lock().await;
     let bridge = state.bridge.lock().await;
-    bridge.release_escrow(escrow_id).await.map_err(|e| e.to_string())
+    bridge.release_escrow(escrow_id).await.map_err(adapt::flatten_error)
 }
 
 #[tauri::command]
@@ -206,7 +206,7 @@ pub async fn refund_escrow(
 ) -> Result<String, String> {
     let state = state.lock().await;
     let bridge = state.bridge.lock().await;
-    bridge.refund_escrow(escrow_id).await.map_err(|e| e.to_string())
+    bridge.refund_escrow(escrow_id).await.map_err(adapt::flatten_error)
 }
 
 #[tauri::command]
@@ -216,7 +216,7 @@ pub async fn get_escrow_status(
 ) -> Result<serde_json::Value, String> {
     let state = state.lock().await;
     let bridge = state.bridge.lock().await;
-    bridge.get_escrow_status(escrow_id).await.map_err(|e| e.to_string())
+    bridge.get_escrow_status(escrow_id).await.map_err(adapt::flatten_error)
 }
 
 #[tauri::command]
@@ -242,7 +242,7 @@ pub async fn get_wallet_snapshot(
     let state = state.lock().await;
     let bridge = state.bridge.lock().await;
     match bridge.get_latest_snapshot() {
-        Ok(snapshot) => Ok(serde_json::to_value(snapshot).map_err(|e| e.to_string())?),
+        Ok(snapshot) => Ok(serde_json::to_value(snapshot).map_err(adapt::flatten_error)?),
         Err(_) => Ok(serde_json::Value::Null), // Return null, not empty object
     }
 }
@@ -266,7 +266,7 @@ pub async fn get_identity(
 ) -> Result<Vec<IdentityView>, String> { // Return full IdentityView objects
     let state = state.lock().await;
     let bridge = state.bridge.lock().await;
-    bridge.get_identity_views().map_err(|e| e.to_string())
+    bridge.get_identity_views().map_err(adapt::flatten_error)
 }
 
 #[tauri::command]
@@ -284,7 +284,7 @@ pub async fn logout_wallet(
 ) -> Result<Vec<IdentityView>, String> {
     let state = state.lock().await;
     let mut bridge = state.bridge.lock().await;
-    bridge.logout_identity().map_err(|e| e.to_string())
+    bridge.logout_identity().map_err(adapt::flatten_error)
 }
 
 #[tauri::command]
@@ -296,7 +296,7 @@ pub async fn import_wallet(
 ) -> Result<Vec<IdentityView>, String> {
     let state = state.lock().await;
     let mut bridge = state.bridge.lock().await;
-    bridge.import_identity(private_key_hex, alias, emoji).map_err(|e| e.to_string())
+    bridge.import_identity(private_key_hex, alias, emoji).map_err(adapt::flatten_error)
 }
 
 #[tauri::command]
@@ -307,7 +307,7 @@ pub async fn mint_voucher(
 ) -> Result<u64, String> {
     let state = state.lock().await;
     let bridge = state.bridge.lock().await;
-    bridge.mint_voucher(&voucher_type, &description).await.map_err(|e| e.to_string())
+    bridge.mint_voucher(&voucher_type, &description).await.map_err(adapt::flatten_error)
 }
 
 #[tauri::command]
@@ -317,7 +317,7 @@ pub async fn approve_voucher(
 ) -> Result<String, String> {
     let state = state.lock().await;
     let bridge = state.bridge.lock().await;
-    bridge.approve_voucher(token_id).await.map_err(|e| e.to_string())
+    bridge.approve_voucher(token_id).await.map_err(adapt::flatten_error)
 }
 
 #[tauri::command]
@@ -329,8 +329,8 @@ pub async fn create_asset_listing(
 ) -> Result<u64, String> {
     let state = state.lock().await;
     let bridge = state.bridge.lock().await;
-    let price_wei = alloy::primitives::utils::parse_ether(&price_avax).map_err(|e| e.to_string())?;
-    bridge.create_asset_listing(&description, price_wei, token_id).await.map_err(|e| e.to_string())
+    let price_wei = alloy::primitives::utils::parse_ether(&price_avax).map_err(adapt::flatten_error)?;
+    bridge.create_asset_listing(&description, price_wei, token_id).await.map_err(adapt::flatten_error)
 }
 
 #[tauri::command]
@@ -339,7 +339,7 @@ pub async fn get_active_asset_listings(
 ) -> Result<Vec<AssetListingView>, String> {
     let state = state.lock().await;
     let bridge = state.bridge.lock().await;
-    bridge.get_active_asset_listings().await.map_err(|e| e.to_string())
+    bridge.get_active_asset_listings().await.map_err(adapt::flatten_error)
 }
 
 #[tauri::command]
@@ -350,8 +350,8 @@ pub async fn buy_listing(
 ) -> Result<TxResult, String> {
     let state = state.lock().await;
     let bridge = state.bridge.lock().await;
-    let price_wei = alloy::primitives::utils::parse_ether(&price_avax).map_err(|e| e.to_string())?;
-    bridge.buy_listing(listing_id, price_wei).await.map_err(|e| e.to_string())
+    let price_wei = alloy::primitives::utils::parse_ether(&price_avax).map_err(adapt::flatten_error)?;
+    bridge.buy_listing(listing_id, price_wei).await.map_err(adapt::flatten_error)
 }
 
 #[tauri::command]
@@ -361,7 +361,7 @@ pub async fn submit_raw_transaction(
 ) -> Result<String, String> {
     let state = state.lock().await;
     let bridge = state.bridge.lock().await;
-    bridge.submit_raw_transaction(&raw_tx_hex).await.map_err(|e| e.to_string())
+    bridge.submit_raw_transaction(&raw_tx_hex).await.map_err(adapt::flatten_error)
 }
 
 #[tauri::command]
@@ -377,7 +377,7 @@ pub async fn get_pending_relay_txs(
 pub async fn prune_stale_relay_txs(state: State<'_, Arc<Mutex<AppState>>>) -> Result<usize, String> {
     let state = state.lock().await;
     let bridge = state.bridge.lock().await;
-    bridge.prune_stale_relay_txs().await.map_err(|e| e.to_string())
+    bridge.prune_stale_relay_txs().await.map_err(adapt::flatten_error)
 }
 
 #[tauri::command]
@@ -389,7 +389,7 @@ pub async fn mark_relay_tx_status(
 ) -> Result<(), String> {
     let state = state.lock().await;
     let bridge = state.bridge.lock().await;
-    bridge.mark_relay_tx_status(&queue_id, &status, tx_hash).map_err(|e| e.to_string())
+    bridge.mark_relay_tx_status(&queue_id, &status, tx_hash).map_err(adapt::flatten_error)
 }
 
 #[tauri::command]
@@ -401,7 +401,7 @@ pub async fn record_relayed_tx(
 ) -> Result<(), String> {
     let state = state.lock().await;
     let bridge = state.bridge.lock().await;
-    bridge.record_relayed_tx(&summary, &tx_hash, &reward_avax).map_err(|e| e.to_string())
+    bridge.record_relayed_tx(&summary, &tx_hash, &reward_avax).map_err(adapt::flatten_error)
 }
 
 #[tauri::command]
@@ -427,7 +427,7 @@ pub async fn apply_relay_boost(
 ) -> Result<f64, String> {
     let state = state.lock().await;
     let bridge = state.bridge.lock().await;
-    bridge.apply_relay_boost(additional).map_err(|e| e.to_string())
+    bridge.apply_relay_boost(additional).map_err(adapt::flatten_error)
 }
 
 #[tauri::command]
@@ -437,7 +437,7 @@ pub async fn release_deal(
 ) -> Result<String, String> {
     let state = state.lock().await;
     let bridge = state.bridge.lock().await;
-    bridge.release_deal(deal_id).await.map_err(|e| e.to_string())
+    bridge.release_deal(deal_id).await.map_err(adapt::flatten_error)
 }
 
 #[tauri::command]
@@ -447,7 +447,7 @@ pub async fn refund_deal(
 ) -> Result<String, String> {
     let state = state.lock().await;
     let bridge = state.bridge.lock().await;
-    bridge.refund_deal(deal_id).await.map_err(|e| e.to_string())
+    bridge.refund_deal(deal_id).await.map_err(adapt::flatten_error)
 }
 
 #[tauri::command]
@@ -457,7 +457,7 @@ pub async fn redeem_voucher(
 ) -> Result<String, String> {
     let state = state.lock().await;
     let bridge = state.bridge.lock().await;
-    bridge.redeem_voucher(token_id).await.map_err(|e| e.to_string())
+    bridge.redeem_voucher(token_id).await.map_err(adapt::flatten_error)
 }
 
 #[tauri::command]
@@ -467,7 +467,7 @@ pub async fn get_voucher_owner(
 ) -> Result<String, String> {
     let state = state.lock().await;
     let bridge = state.bridge.lock().await;
-    bridge.get_voucher_owner(token_id).await.map_err(|e| e.to_string())
+    bridge.get_voucher_owner(token_id).await.map_err(adapt::flatten_error)
 }
 
 #[tauri::command]
@@ -477,7 +477,7 @@ pub async fn get_owned_vouchers(
 ) -> Result<Vec<VoucherView>, String> {
     let state = state.lock().await;
     let bridge = state.bridge.lock().await;
-    bridge.get_owned_vouchers(&owner).await.map_err(|e| e.to_string())
+    bridge.get_owned_vouchers(&owner).await.map_err(adapt::flatten_error)
 }
 
 #[tauri::command]
@@ -487,7 +487,7 @@ pub async fn get_my_deals(
 ) -> Result<Vec<blockchain_bridge::DealView>, String> {
     let state = state.lock().await;
     let bridge = state.bridge.lock().await;
-    bridge.get_my_deals(&address).await.map_err(|e| e.to_string())
+    bridge.get_my_deals(&address).await.map_err(adapt::flatten_error)
 }
 
 /// Real status of the Ollama model the Shark Agent / matcher depend on —
@@ -527,7 +527,7 @@ pub async fn extract_pdf_text(
 ) -> Result<String, String> {
     let state = state.lock().await;
     let bridge = state.bridge.lock().await;
-    bridge.extract_pdf_text(pdf_bytes).map_err(|e| e.to_string())
+    bridge.extract_pdf_text(pdf_bytes).map_err(adapt::flatten_error)
 }
 
 #[tauri::command]
@@ -537,7 +537,7 @@ pub async fn sign_content(
 ) -> Result<blockchain_bridge::ContentRecord, String> {
     let state = state.lock().await;
     let bridge = state.bridge.lock().await;
-    bridge.sign_content(&text).map_err(|e| e.to_string())
+    bridge.sign_content(&text).map_err(adapt::flatten_error)
 }
 
 #[tauri::command]
@@ -548,7 +548,7 @@ pub async fn store_content(
 ) -> Result<(), String> {
     let state = state.lock().await;
     let bridge = state.bridge.lock().await;
-    bridge.store_content(token_id, record).map_err(|e| e.to_string())
+    bridge.store_content(token_id, record).map_err(adapt::flatten_error)
 }
 
 #[tauri::command]
@@ -571,7 +571,7 @@ pub async fn receive_content(
 ) -> Result<bool, String> {
     let state = state.lock().await;
     let bridge = state.bridge.lock().await;
-    bridge.receive_content(token_id, &text, &signature, &expected_seller).map_err(|e| e.to_string())
+    bridge.receive_content(token_id, &text, &signature, &expected_seller).map_err(adapt::flatten_error)
 }
 
 #[tauri::command]
@@ -593,13 +593,13 @@ pub async fn match_intent_to_listings(
     let state = state.lock().await;
     let listings = {
         let bridge = state.bridge.lock().await;
-        bridge.get_active_asset_listings().await.map_err(|e| e.to_string())?
+        bridge.get_active_asset_listings().await.map_err(adapt::flatten_error)?
     };
     state
         .matcher
         .match_intent(&intent, price_ceiling, &listings)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(adapt::flatten_error)
 }
 
 #[tauri::command]

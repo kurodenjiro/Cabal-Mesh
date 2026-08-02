@@ -106,6 +106,7 @@ aes-gcm = "0.10.3"
 base64 = "0.22.1"
 dirs = "5"
 lopdf = "0.44"
+thiserror.workspace = true
 
 # Desktop-only. A mobile bundle has no .env file to read and no environment to
 # read it into, so this must never enter the mobile dependency graph.

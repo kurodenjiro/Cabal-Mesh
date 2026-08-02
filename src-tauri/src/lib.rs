@@ -14,6 +14,9 @@ pub mod mesh;
 pub mod zk_handler;
 mod llm_json;
 
+/// The typed error union that crosses the IPC boundary. See src/error.rs.
+pub mod error;
+
 /// The frozen desktop IPC surface. See `legacy/mod.rs` for why it exists and
 /// what it is not allowed to become.
 #[cfg(all(desktop, feature = "desktop-legacy"))]
