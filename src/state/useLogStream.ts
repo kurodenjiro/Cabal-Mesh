@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import type { LogLine } from "../types/bindings";
 
-type StreamCommand = "enter_mesh" | "subscribe_mesh_log" | "settle_intent";
+type StreamCommand = "enter_mesh" | "subscribe_mesh_log" | "subscribe_settlement_log";
 
 /**
  * Opens a Rust log stream and guarantees teardown.
@@ -23,7 +23,9 @@ type StreamCommand = "enter_mesh" | "subscribe_mesh_log" | "settle_intent";
  *   it.
  *
  * Cancelling stops *delivery*, never the operation: leaving `connecting` does
- * not disconnect the mesh, and leaving `settled` does not abort a settlement.
+ * not disconnect the mesh, and leaving a settling intent does not abort the
+ * settlement. That is guaranteed on the Rust side — the settlement task holds
+ * no token from the subscription registry — not by anything this hook does.
  */
 export function useLogStream(
   command: StreamCommand,

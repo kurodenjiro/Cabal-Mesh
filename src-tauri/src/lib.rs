@@ -36,6 +36,12 @@ pub mod tls;
 /// The mocked reputation score, in one place. See src/reputation.rs.
 pub mod reputation;
 
+/// Every intent this device has composed. See src/intents.rs.
+pub mod intents;
+
+/// When this installation first ran. See src/install.rs.
+pub mod install;
+
 /// Managed application state. See src/state.rs.
 pub mod state;
 
@@ -192,10 +198,18 @@ pub fn run() {
                             }
                         });
 
-                        // Forward Mesh Events to Frontend
+                        // Forward Mesh Events to Frontend, applying them to the
+                        // intent ledger on the way through.
+                        //
+                        // Applied here rather than polled from a command: the
+                        // detail screen has to reflect negotiation as it
+                        // happens, and a five-second poll would show a bid
+                        // arriving five seconds after the peer sent it.
                         let handle_clone = app_handle.clone();
+                        let ledger = state.intents().clone();
                         tokio::spawn(async move {
                             while let Some(event) = event_rx.recv().await {
+                                intents::apply_mesh_event(&ledger, &event);
                                 let _ = handle_clone.emit("mesh-event", event);
                             }
                         });
@@ -259,6 +273,12 @@ pub fn run() {
                     commands::list_intents,
                     commands::intent_form_options,
                     commands::preview_intent,
+                    commands::broadcast_intent,
+                    commands::intent_detail,
+                    commands::subscribe_settlement_log,
+                    commands::settle_intent,
+                    commands::cancel_intent,
+                    commands::intent_proof,
                     commands::vault_assets,
                     commands::vault_identities,
                     commands::vault_keys,
@@ -320,7 +340,7 @@ pub fn run() {
             {
                 // Mobile gets the reshaped surface only. Screen commands join
                 // it as their screens land.
-                tauri::generate_handler![commands::unsubscribe, commands::session_status, commands::enter_mesh, commands::mesh_snapshot, commands::subscribe_mesh_log, commands::list_nearby_nodes, commands::list_intents, commands::intent_form_options, commands::preview_intent, commands::vault_assets, commands::vault_identities, commands::vault_keys, commands::profile_summary, commands::set_offline_mode]
+                tauri::generate_handler![commands::unsubscribe, commands::session_status, commands::enter_mesh, commands::mesh_snapshot, commands::subscribe_mesh_log, commands::list_nearby_nodes, commands::list_intents, commands::intent_form_options, commands::preview_intent, commands::broadcast_intent, commands::intent_detail, commands::subscribe_settlement_log, commands::settle_intent, commands::cancel_intent, commands::intent_proof, commands::vault_assets, commands::vault_identities, commands::vault_keys, commands::profile_summary, commands::set_offline_mode]
             }
         })
         .build(tauri::generate_context!())

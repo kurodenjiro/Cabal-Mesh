@@ -9,7 +9,14 @@ import type * as React from 'react';
 // element, so ordinary DOM props are legal alongside the declared ones.
 // The adherence lint only enumerates the design-system props; it does not
 // mean the others are rejected.
-type Base = React.HTMLAttributes<HTMLElement> & { key?: React.Key };
+//
+// `InputHTMLAttributes` rather than `HTMLAttributes`: the base has to be
+// wide enough for the widest root element any component spreads onto, and
+// `Input`/`Select`/`Checkbox` render form controls. With the narrower base
+// a controlled field — `value` plus `onChange` — is a type error even
+// though it is exactly how these components are meant to be used. It is a
+// superset of `HTMLAttributes`, so nothing else loses anything.
+type Base = React.InputHTMLAttributes<HTMLElement> & { key?: React.Key };
 
 export interface BadgeProps extends Base {
   tone?: 'neutral' | 'quiet' | 'loud' | 'info' | 'success' | 'alert';
