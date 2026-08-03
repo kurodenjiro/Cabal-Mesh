@@ -576,13 +576,12 @@ Physical iPhone + Android: font rendering, glyph crispness, tap targets, keyboar
 | C6 | Tailwind + framer-motion | **Kept, quarantined.** Two build outputs (`dist-desktop`, `dist-mobile`), each with its own `index.html`; Tailwind's `content` glob and framer-motion imports confined to the frozen desktop tree; import boundary enforced in CI. |
 | 4 | Node map layout | **Deterministic, seeded by peer id** — stable across renders and restarts. Detail in Phase C. |
 | — | `nodes` distances | **Removed.** No location source exists and none will be requested. Latency / hops / transport instead (§4, architecture §6.1). |
+| — | `REPUTATION SCORE` | **Mocked, in one place** (ticket 03, 2026-08-03). Derived from the peer identifier in `src-tauri/src/reputation.rs` so it is stable across polls and differs between devices; renders `87.6 (+5.3%)` on profile and a tile with a delta on home. An em dash remains whenever there is no mesh. Ticket 39 replaces it with a real signal. |
 
 ### Still open
 
 1. **Pixel Operator binaries.** `PixelOperator.ttf` + `PixelOperator-Bold.ttf` were never delivered; Silkscreen is a substitute. Every uppercase display string in the app — wordmark, headings, buttons, nav, all numeric figures — is currently rendering in the wrong face. `fonts.css` has the swap block ready; it is a two-line change once the files arrive. Not blocking, but it is the single largest gap between the shipped app and the board.
-2. **`REPUTATION SCORE 87.6 (+5.3%)`.** Shared with the architecture plan. Appears on `home` (stat tile) and `profile` (row). No source exists. Needs either a real signal or a defined placeholder treatment — a fabricated number is off-voice in a system whose copy rules demand exact ones.
-
-3. **Confirm-dialog copy vs. the offline path.** The prototype's dialog reads *"This intent executes offline and settles on-chain. No identity is attached."* The real architecture is queue-then-drain: offline, the intent is created and queued **locally**; broadcast and settlement follow reconnection. On-voice and accurate would be closer to *"Queued locally. Broadcast and settlement follow reconnection. No identity is attached."* — but this is brand copy from the design board, so it needs the design owner's call rather than a unilateral rewrite.
+2. **A real reputation signal.** The score now renders, but it is a mock (see §10). What it should measure — settled-intent count, uptime, stake, some derived score — is still unanswered, and the mock is a number the system cannot back. Tracked as ticket 39.
 
 ---
 

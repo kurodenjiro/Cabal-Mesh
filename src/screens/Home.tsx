@@ -15,9 +15,11 @@ const RETAINED = 200;
  * numbers, so implementing the separator rules per screen would guarantee they
  * drift.
  *
- * The reputation tile renders an em dash. Ticket 03 has not resolved where a
- * reputation score would come from, and inventing one would be a fabricated
- * trust signal in a product whose entire pitch is proving things.
+ * The reputation tile is a mock. Ticket 03 decided to ship a placeholder value
+ * rather than an em dash until a real signal exists; it is derived from the
+ * peer identifier in Rust so it stays stable across the five-second poll, and
+ * ticket 39 tracks replacing it. Nothing here knows that — the tile renders
+ * whatever Rust sends, like every other figure on the screen.
  */
 export function Home() {
   const [snapshot, setSnapshot] = useState<MeshSnapshotView | null>(null);

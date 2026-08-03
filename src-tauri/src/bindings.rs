@@ -200,8 +200,10 @@ mod tests {
     #[test]
     fn a_tile_without_a_baseline_omits_its_delta() {
         // Rendering "+0.0%" for an unmeasured figure would be a fabricated
-        // trend, which the brand's exactness rule forbids.
-        let tile = StatTile::plain("REPUTATION SCORE", "—");
+        // trend, which the brand's exactness rule forbids. `RELAYED BYTES` has
+        // no prior window to compare against, and the reputation tile falls
+        // back to this shape whenever there is no mesh to derive from.
+        let tile = StatTile::plain("RELAYED BYTES", "—");
         let json = serde_json::to_string(&tile).unwrap();
         assert!(!json.contains("delta\""), "absent delta must be omitted: {json}");
     }

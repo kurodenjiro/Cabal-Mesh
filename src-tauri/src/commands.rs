@@ -199,13 +199,23 @@ pub async fn mesh_snapshot(state: State<'_, AppState>) -> Result<MeshSnapshotVie
     // compare against yet, and the brand's copy rules demand exact figures —
     // a made-up "+12.4%" would be a fabricated trust signal in a product whose
     // whole pitch is proving things.
+    // The exception is the reputation score, which ticket 03 resolved as a
+    // mock until a real signal exists. It is derived rather than constant so
+    // it does not jitter between polls — see src/reputation.rs, which is the
+    // only place the value is produced, and ticket 39 to replace it.
+    let reputation = crate::reputation::Reputation::of(&snapshot.peer_id);
+    let reputation_tile = match reputation {
+        Some(reading) => {
+            StatTile::with_delta("REPUTATION SCORE", reading.value(), reading.delta_percent)
+        }
+        // No mesh, no peer identifier, nothing to derive from.
+        None => StatTile::plain("REPUTATION SCORE", "—"),
+    };
+
     let stats = vec![
         StatTile::plain("NETWORK NODES", separated(snapshot.peer_count as u64)),
         StatTile::plain("RELAYED BYTES", separated(snapshot.relay_bytes)),
-        // Ticket 03 is still open: no source for a reputation score exists.
-        // Rendering an em dash is the honest placeholder; inventing 87.6 would
-        // not be.
-        StatTile::plain("REPUTATION SCORE", "—"),
+        reputation_tile,
     ];
 
     Ok(MeshSnapshotView {
@@ -674,7 +684,8 @@ pub async fn vault_keys(state: State<'_, AppState>) -> Result<Vec<VaultRow>, App
 #[serde(rename_all = "camelCase")]
 pub struct ProfileView {
     pub node_id: String,
-    /// Em dash until ticket 03 names a source. Not a fabricated number.
+    /// `87.6 (+5.3%)`, or an em dash with no mesh. Mocked per ticket 03 — see
+    /// src/reputation.rs for what that means and ticket 39 to replace it.
     pub reputation: String,
     pub member_since: String,
     pub offline: bool,
@@ -695,25 +706,32 @@ pub async fn profile_summary(state: State<'_, AppState>) -> Result<ProfileView, 
         crate::app_paths::in_data_dir("network.json"),
     ));
 
-    let node_id = match services.mesh.as_ref() {
-        Some(mesh) => mesh
-            .snapshot()
-            .await
-            .map(|snapshot| cabal_core::NodeId::new(snapshot.peer_id).truncated())
-            .unwrap_or_else(|_| "—".into()),
-        None => "—".into(),
+    // One snapshot for all three fields. Asking the actor twice was two round
+    // trips for the same answer, and left a window where the identity and the
+    // offline flag could come from different states of the mesh.
+    let snapshot = match services.mesh.as_ref() {
+        Some(mesh) => mesh.snapshot().await.ok(),
+        None => None,
     };
 
-    let offline = match services.mesh.as_ref() {
-        Some(mesh) => mesh.snapshot().await.map(|s| s.offline).unwrap_or(true),
-        None => true,
-    };
+    let node_id = snapshot
+        .as_ref()
+        .map_or_else(|| "—".into(), |s| cabal_core::NodeId::new(s.peer_id.clone()).truncated());
+
+    // Absent mesh reads as offline: the screen must not show a connected
+    // switch for a mesh that is not there.
+    let offline = snapshot.as_ref().is_none_or(|s| s.offline);
+
+    // Mocked per ticket 03, derived from the same peer identifier the home
+    // tile uses so the two screens never disagree. See src/reputation.rs.
+    let reputation = snapshot
+        .as_ref()
+        .and_then(|s| crate::reputation::Reputation::of(&s.peer_id))
+        .map_or_else(|| "—".into(), |reading| reading.combined());
 
     Ok(ProfileView {
         node_id,
-        // Ticket 03 has not named a source. An em dash is the honest
-        // rendering; 87.6 would be a fabricated trust signal.
-        reputation: "—".into(),
+        reputation,
         member_since: "—".into(),
         offline,
         network: network.network.label().to_string(),

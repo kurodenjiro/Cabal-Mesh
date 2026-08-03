@@ -14,10 +14,12 @@ const ROWS: ReadonlyArray<{ label: string; icon: GlyphName }> = [
 /**
  * Identity, settings and leaving the mesh.
  *
- * **The reputation row renders an em dash.** Ticket 03 has not named a source
- * for a reputation score. The prototype's `87.6 (+5.3%)` is a constant, and
- * rendering it would be a fabricated trust signal in a product whose pitch is
- * proving things — the same call the home screen's stat tile makes.
+ * **The reputation row is a mock.** Ticket 03 decided to ship a placeholder
+ * value; it is derived from the peer identifier in Rust, in the same place the
+ * home tile reads from, so the two screens cannot disagree. Ticket 39 tracks
+ * pointing it at a real signal. With no mesh it stays an em dash — there is no
+ * identifier to derive from, and a constant would put one score on every
+ * device.
  *
  * The network is shown plainly, with testnet marked, so nobody mistakes a test
  * balance for a real one.

@@ -33,6 +33,9 @@ pub mod multicast;
 /// See src/tls.rs.
 pub mod tls;
 
+/// The mocked reputation score, in one place. See src/reputation.rs.
+pub mod reputation;
+
 /// Managed application state. See src/state.rs.
 pub mod state;
 

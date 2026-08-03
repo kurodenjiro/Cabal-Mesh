@@ -1381,6 +1381,7 @@ Everything from Phase 2 onward changes services *behind* this adapter. The snaps
 | 2 | Relay bootstrap node — who runs it? | **Self-hosted, address compiled in as the default**, user-overridable. Infra spec in §2.7.1; deployment is Phase 4. |
 | 5 | Marketplace/voucher/content commands | **Kept**, relocated to `cabal-legacy`, desktop-only registration. Required anyway by the frozen desktop UI. |
 | — | Desktop RPG UI | **Frozen** — which makes the §2.10 adapter mandatory, not optional. |
+| — | Reputation score | **Mocked in `src-tauri/src/reputation.rs`** (ticket 03, 2026-08-03), derived from the peer identifier rather than constant or random, so it is stable per identity and differs between devices. Both `mesh_snapshot` and `profile_summary` read that one function. Ticket 39 replaces it with a measured signal; until then it is a number the product cannot back, and that is recorded rather than hidden. |
 
 ### Defaulted without asking (change if wrong)
 
@@ -1388,7 +1389,7 @@ Everything from Phase 2 onward changes services *behind* this adapter. The snaps
 
 ### Still open
 
-1. **Reputation score (`87.6`, `+5.3%`)** — a hardcoded constant in the prototype, shown on two screens. No source exists in the codebase. Either point it at something real or it needs a defined placeholder treatment; inventing a number in Rust would be a fabricated trust signal in a product whose voice promises exact ones.
+1. **What the reputation score should measure.** The field renders (see §11), but from a mock. Whether the real signal is settled-intent count, uptime, stake or something derived is unanswered, and shipping the mock past a demo means shipping a trust signal with nothing behind it. Ticket 39.
 2. **Confirm-dialog copy is inaccurate for the offline path.** The prototype's dialog reads *"This intent executes offline and settles on-chain. No identity is attached."* The architecture is queue-then-drain: while offline the intent is **created and queued locally**; broadcast and settlement happen after reconnect. On-voice and accurate, e.g. *"Queued locally. Broadcast and settlement follow reconnection. No identity is attached."* — but this is brand copy from the design board, so it needs the design owner's sign-off rather than a unilateral edit.
 
 ---
