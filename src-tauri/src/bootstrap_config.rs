@@ -9,11 +9,19 @@
 //! Bootstrap peers are the answer: dial a known relay, learn about others
 //! through it, and upgrade to direct connections where hole punching works.
 //!
-//! # The relay is not yet deployed
+//! # The relay exists; no host runs it yet
 //!
 //! [`BootstrapConfig::default_relays`] is deliberately **empty**. Shipping a
 //! placeholder address would produce dial failures that look like bugs, and
-//! inventing one would be worse. Ticket 23 deploys the relay and fills this in.
+//! inventing one would be worse.
+//!
+//! The relay itself is written and tested — `crates/cabal-relay`, with a real
+//! client reserving through it in `tests/reservation.rs`. What is missing is a
+//! host to run it on. `docs/relay-operations.md` §6 is the one-line change
+//! here once there is one, and it also says to delete
+//! `no_placeholder_relay_ships` at the same time: that test exists to stop a
+//! made-up address shipping before a real relay exists, and once one does its
+//! job is over.
 //!
 //! Until then the mesh is LAN-only and says so, rather than appearing broken.
 
@@ -33,8 +41,9 @@ pub struct BootstrapConfig {
 impl BootstrapConfig {
     /// The compiled-in defaults.
     ///
-    /// Empty until ticket 23. See the module docs for why a placeholder would
-    /// be worse than nothing.
+    /// Empty until a relay host exists. See the module docs for why a
+    /// placeholder would be worse than nothing, and `docs/relay-operations.md`
+    /// for exactly what to put here.
     #[must_use]
     pub fn default_relays() -> Vec<String> {
         Vec::new()
@@ -135,8 +144,11 @@ mod tests {
 
     #[test]
     fn no_placeholder_relay_ships() {
-        // A fake address produces dial failures that read as bugs. Ticket 23
-        // fills this in with a real one.
+        // A fake address produces dial failures that read as bugs.
+        //
+        // **Delete this test when a real relay is deployed** — see
+        // docs/relay-operations.md §6. It guards the gap before one exists, and
+        // leaving it in place afterwards would block the real address.
         assert!(
             BootstrapConfig::default_relays().is_empty(),
             "a placeholder relay address must never ship"

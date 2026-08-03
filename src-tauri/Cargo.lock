@@ -1600,6 +1600,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "cabal-relay"
+version = "0.1.0"
+dependencies = [
+ "libp2p",
+ "libp2p-swarm",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "cabal-store"
 version = "0.1.0"
 dependencies = [
