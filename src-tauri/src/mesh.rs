@@ -100,6 +100,36 @@ pub struct MeshNetwork {
     pub relay_bytes: Arc<AtomicU64>,
 }
 
+/// The DNS resolver the swarm should use, read from the system where possible.
+///
+/// libp2p's `with_dns()` calls this same system lookup and treats failure as
+/// fatal. On Android there is no `/etc/resolv.conf` — DNS goes through `netd` —
+/// so the lookup always fails and the entire swarm failed to build with a bare
+/// `io error: No such file or directory (os error 2)`. Nothing in that message
+/// says "DNS", and the mesh was dead for want of a resolver it had nothing to
+/// resolve yet.
+///
+/// The fallback is Cloudflare rather than the crate default of Google, chosen
+/// deliberately for an app that argues about privacy. It resolves only `/dns/`
+/// multiaddrs in the relay list, so today — with that list empty — it is never
+/// consulted at all. Once ticket 23 puts real relays in, this deserves to be
+/// configurable alongside them.
+fn resolver_settings() -> (libp2p::dns::ResolverConfig, libp2p::dns::ResolverOpts) {
+    match hickory_resolver::system_conf::read_system_conf() {
+        Ok(settings) => settings,
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                "no system resolver configuration; falling back to Cloudflare DNS"
+            );
+            (
+                libp2p::dns::ResolverConfig::cloudflare(),
+                libp2p::dns::ResolverOpts::default(),
+            )
+        }
+    }
+}
+
 impl MeshNetwork {
     pub async fn new() -> Result<Self, Box<dyn Error>> {
         // Generate ephemeral keypair for "Nobody" identity
@@ -150,6 +180,8 @@ impl MeshNetwork {
             local_key.public(),
         );
 
+        let (resolver_config, resolver_opts) = resolver_settings();
+
         let swarm = SwarmBuilder::with_existing_identity(local_key)
             .with_tokio()
             .with_tcp(
@@ -161,7 +193,11 @@ impl MeshNetwork {
             // cellular handoff, which a TCP socket does not, and 0-RTT
             // resumption makes returning from background cheap.
             .with_quic()
-            .with_dns()?
+            // Configured explicitly rather than via `with_dns()`, which reads
+            // `/etc/resolv.conf` — a file Android does not have. There the
+            // whole swarm failed to build with a bare `os error 2`, taking the
+            // mesh down over a resolver it had nothing to resolve with yet.
+            .with_dns_config(resolver_config, resolver_opts)
             .with_relay_client(noise::Config::new, yamux::Config::default)?
             .with_behaviour(|key, relay_behaviour| MeshBehaviour {
                 mdns,

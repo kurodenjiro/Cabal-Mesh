@@ -26,6 +26,13 @@ mod lifecycle;
 mod telemetry;
 mod vault_key;
 
+/// The Android Wi-Fi multicast lock mDNS needs. See src/multicast.rs.
+pub mod multicast;
+
+/// Android's platform trust store, which rustls will not start without.
+/// See src/tls.rs.
+pub mod tls;
+
 /// Managed application state. See src/state.rs.
 pub mod state;
 
@@ -68,6 +75,12 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        // Registers the JNI handle only. Nothing here is reachable over IPC —
+        // see src/multicast.rs for why the webview gets no grant for it.
+        .plugin(multicast::init())
+        // Registered before anything that can make an HTTPS request: on Android
+        // rustls has no trust store until this runs. See src/tls.rs.
+        .plugin(tls::init())
         .setup(|app| {
             // Synchronously, before the webview exists. Bootstrap fills the
             // services in afterwards; until then commands get NotReady rather
@@ -193,6 +206,12 @@ pub fn run() {
                             bridge,
                             relay_bytes,
                         });
+
+                        // Only once the mesh is actually participating. The
+                        // lock keeps the Wi-Fi radio in a higher-power state,
+                        // so taking it before there is anything to discover
+                        // would be a battery cost with no benefit.
+                        multicast::refresh(&app_handle);
                     }
                     Err(e) => {
                         tracing::error!("❌ Bootstrap Failed: {}", e);

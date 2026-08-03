@@ -99,6 +99,14 @@ tokio = { version = "1", features = ["full"] }
 # NB: 0.13 renamed the rustls feature from `rustls-tls` to `rustls`.
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "http2"] }
 
+# The resolver behind libp2p's DNS transport, pinned to the version libp2p-dns
+# 0.42 uses so the config types are the same ones its builder accepts.
+#
+# Direct because the swarm reads the system resolver itself: libp2p's
+# `with_dns()` treats a missing `/etc/resolv.conf` as fatal, which is every
+# Android device. See `resolver_settings` in src/mesh.rs.
+hickory-resolver = { version = "0.24", default-features = false, features = ["system-config"] }
+
 # Structured, span-aware diagnostics. Libraries emit through the facade only;
 # the app crate is the single place a subscriber is installed.
 tracing = { workspace = true }
@@ -161,6 +169,17 @@ tracing-oslog = "0.3"
 # Android routes to logcat, the equivalent there.
 [target.'cfg(target_os = "android")'.dependencies]
 tracing-android = "0.2"
+
+# Android is the only platform where rustls has to be handed a trust store.
+#
+# Every rustls feature of reqwest 0.13 pulls in rustls-platform-verifier, and on
+# Android that crate reads the system trust store through the JVM. It panics on
+# first use until initialized, so these exist to perform that handshake — see
+# src/tls.rs. `jni` is pinned to 0.22 to match the verifier's; tauri is on 0.21
+# and the two are not interchangeable.
+rustls-platform-verifier = "0.7"
+jni = "0.22"
+ndk-context = "0.1"
 
 [dev-dependencies]
 chrono = { version = "0.4", features = ["serde"] }

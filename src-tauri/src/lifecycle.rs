@@ -64,6 +64,10 @@ pub fn on_suspend<R: Runtime>(app: &AppHandle<R>) {
             });
         }
     }
+
+    // Released rather than held across the background, because the lock keeps
+    // the Wi-Fi radio awake and a paused app has nothing to discover with it.
+    crate::multicast::release(app);
 }
 
 /// Handles the app returning to the foreground.
@@ -78,6 +82,10 @@ pub fn on_resume<R: Runtime>(app: &AppHandle<R>) {
     };
 
     tracing::info!(target: "cabalmesh::lifecycle", "resumed");
+
+    // Re-read, not restored from what we believed on suspend: the permission
+    // can be revoked from Settings while the app is backgrounded.
+    crate::multicast::refresh(app);
 
     if let Ok(services) = state.services() {
         if let Some(mesh) = services.mesh.clone() {
@@ -96,7 +104,6 @@ pub fn on_resume<R: Runtime>(app: &AppHandle<R>) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::state::AppState;
 
     #[test]

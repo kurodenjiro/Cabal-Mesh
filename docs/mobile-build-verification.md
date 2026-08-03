@@ -994,6 +994,147 @@ output — and only a screenshot catches it.
 
 ---
 
-## Android — not yet attempted (ticket 08)
+## Android — toolchain, build, and four device-only bugs (2026-08-03, tickets 08 + 21)
 
-No Rust targets, no SDK, no NDK, and none of `JAVA_HOME` / `ANDROID_HOME` / `NDK_HOME` set. The iOS result is encouraging but does not transfer: Android is where the TLS backend actually matters, since it ships no system OpenSSL. That is why ticket 02 moved to rustls, but it is unproven until an Android build runs.
+The suspicion recorded here — that "the iOS result is encouraging but does not
+transfer" — was right, and understated. Android found **four** defects that
+every desktop and iOS build had been green through.
+
+### Toolchain
+
+Installed headlessly; no Android Studio involved.
+
+| Component | Version |
+|---|---|
+| Command-line tools | 11076708 |
+| Platform | android-34, compiled against 36 |
+| Build-Tools | 34.0.0 |
+| NDK | 27.0.12077973 |
+| Platform-Tools | 37.0.1 |
+| JDK | **Temurin 21.0.12** |
+| Gradle | 8.14.3 (vendored by the generated project) |
+
+**The JDK version is not a free choice.** The machine's only JDK was Temurin 26,
+and Gradle 8.14.3 rejects it outright:
+
+```
+BUG! exception in phase 'semantic analysis' in source unit '_BuildScript_'
+Unsupported class file major version 70
+```
+
+Class file 70 is Java 26. A 21 LTS was installed into
+`~/Library/Java/JavaVirtualMachines/` — user-level, no sudo — and `JAVA_HOME`
+points at it for Android builds only.
+
+The four Rust triples are in `rust-toolchain.toml`, so rustup installs them
+without anyone remembering to.
+
+### Bug 1 — rustls has no trust store on Android
+
+The first HTTPS request panicked:
+
+```
+thread 'tokio-runtime-worker' panicked at rustls-platform-verifier-0.7.0/src/android.rs:90:10:
+Expect rustls-platform-verifier to be initialized
+```
+
+reqwest 0.13 wires `rustls-platform-verifier` into **every** rustls feature —
+`rustls`, `rustls-no-provider`, both — and there is no webpki-roots alternative
+to select. So it cannot be avoided, only initialized. That needs two halves: the
+verifier's Kotlin component in the Gradle build, and a Rust call handing it a
+`Context`. Either alone still panics.
+
+Two things about this were only learnable by running it:
+
+- **`ndk_context` is never populated in a Tauri app.** It is the documented way
+  to reach the JVM from Rust, and it does not work here: tao's Android glue
+  keeps the VM and activity in private state and never calls
+  `initialize_android_context`. `android_context()` panics with "android context
+  was not initialized" — it cannot even be null-checked. The Context is
+  therefore pushed *in* from Kotlin at plugin load (`TlsPlugin`), which is the
+  first moment one exists.
+- **`latest.release` does not resolve** against the bundled Maven repository,
+  which ships no `maven-metadata.xml`. The version is read from `cargo metadata`
+  alongside the path, so neither is written down twice.
+
+The panic was on a background thread, which is the nasty part: the app launched,
+the mesh came up, and only the balance was missing. It read as a network
+problem.
+
+Verified fixed — `✅ [Bridge] Fetched balance for 0x04465C31…` over real HTTPS
+to `api.avax-test.network`.
+
+### Bug 2 — the swarm would not build, for want of `/etc/resolv.conf`
+
+```
+Mesh Failed: io error: No such file or directory (os error 2)
+```
+
+libp2p's `.with_dns()` reads the system resolver configuration and treats
+failure as fatal. Android has no `/etc/resolv.conf` — DNS goes through `netd` —
+so the **entire swarm** failed to construct. Nothing in that message says DNS,
+and the mesh was dead over a resolver it had nothing to resolve with: the relay
+list is empty until ticket 23.
+
+Now read explicitly, with a fallback (Cloudflare, not the crate default of
+Google — this app argues about privacy). Verified: swarm active, listening on
+TCP and QUIC.
+
+### Bug 3 — `env(safe-area-inset-*)` is not the whole story on Android
+
+The tab labels rendered underneath the gesture pill.
+
+Android's WebView reports **only a display cutout** through
+`env(safe-area-inset-*)`. The status bar and the gesture pill are *window
+insets*, which it does not surface at all, so `safe-area-inset-bottom` is `0px`
+on every phone without a notch. iOS reports the home indicator there; Android
+does not.
+
+`MainActivity` now publishes the real insets as `--android-inset-*`, which
+`mobile.css` folds in with `max()`. Each platform contributes what it knows and
+nothing downstream is special-cased.
+
+**The first attempt looked like it worked and did not.** Insets arrive during
+the first layout pass, *before Tauri navigates*, so `evaluateJavascript` ran
+against `about:blank` and the inline style was discarded by the navigation that
+followed — indistinguishable from insets that never applied. Diagnosed by having
+the injected script return `document.readyState + location.href`:
+
+```
+CabalMeshInsets: top=51 bottom=24 readyState="complete about:blank"
+```
+
+Registered as a document-start script instead, so it runs for the real document
+and every reload after it.
+
+### Bug 4 — Gradle's inset listener hands back a `View`, not a `WebView`
+
+Caught by the compiler (`Unresolved reference: evaluateJavascript`), noted only
+because it is the one of the four that a build could catch.
+
+### Multicast lock — the other half of ticket 21
+
+The manifest permissions are declared and the lock is acquired when the mesh
+starts participating, released on suspend. Confirmed on the emulator:
+
+```
+cabalmesh::state: runtime capabilities changed mdns_granted=true relay_reachable=false online=false
+```
+
+`mdns_granted` had never been `true` on any platform before this — nothing wrote
+it. `LocalNetwork` is deliberately three-valued so iOS is not made to *claim* a
+permission it has no API to query: `NotApplicable` leaves the flag alone rather
+than asserting a grant nobody checked.
+
+Not proven here: two physical devices discovering each other. An emulator is one
+host on a virtual network, so a green multicast lock is a granted permission, not
+a working discovery.
+
+### What the screens look like
+
+Splash, home, and profile render correctly — Silkscreen, protocol glyphs, the
+blood-red `AVALANCHE FUJI` badge with `TEST FUNDS ONLY.`, real peer id
+`12D3..9gPP` matching the log line, safe areas respected top and bottom.
+
+`REPUTATION SCORE` and `MEMBER SINCE` are em dashes for the same reason they are
+on iOS: ticket 03 has not named a source.

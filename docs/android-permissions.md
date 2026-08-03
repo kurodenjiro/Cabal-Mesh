@@ -1,11 +1,20 @@
-# Android network permissions — ready to apply
+# Android network permissions — applied
 
-Prepared by ticket 21, **not yet applied**: `src-tauri/gen/android/` does not
-exist until ticket 08 runs `tauri android init`, and there is no pre-init hook
-to write into.
+Prepared by ticket 21 and **applied on 2026-08-03**, once ticket 08 ran
+`tauri android init` and there was a project tree to write into.
 
-Apply this immediately after that init, before concluding anything about
-whether Android discovery works.
+What shipped differs from the sketch below in two ways worth knowing:
+
+- The lock is **reference-counted and idempotent** — acquiring while already
+  held reports `Granted` and takes nothing further, so a resume that races
+  bootstrap cannot unbalance the count and silently drop the lock.
+- A refused lock is **reported, not thrown**. A `SecurityException` from a
+  revoked permission or an unusual OEM leaves the mesh running over QUIC, TCP
+  and relays; it just cannot discover peers locally, and the nodes screen needs
+  to be able to say which of those it is.
+
+The Rust side lives in `src-tauri/src/multicast.rs`, the Kotlin in
+`gen/android/app/src/main/java/com/cabalmesh/app/MulticastLockPlugin.kt`.
 
 ## Why this is easy to get wrong
 
