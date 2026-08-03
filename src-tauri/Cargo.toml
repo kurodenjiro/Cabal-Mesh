@@ -52,7 +52,7 @@ default = ["desktop-legacy"]
 # The frozen desktop IPC surface: 50 commands with signatures held byte-identical
 # for the unmaintained desktop UI. See src/legacy/mod.rs.
 desktop-legacy = []
-ts-rs = ["dep:ts-rs"]
+ts-rs = ["dep:ts-rs", "cabal-core/ts-rs"]
 
 [dependencies]
 # The domain model. No I/O, no runtime — see crates/cabal-core/src/lib.rs.

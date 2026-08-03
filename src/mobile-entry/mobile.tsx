@@ -14,6 +14,7 @@ import { Splash } from "../screens/Splash";
 import { Connecting } from "../screens/Connecting";
 import { Home } from "../screens/Home";
 import { Nodes } from "../screens/Nodes";
+import { Intents } from "../screens/Intents";
 import type { Screen } from "../shell/screen";
 
 /**
@@ -67,6 +68,12 @@ function App() {
         <Home />
       ) : screen.name === "nodes" ? (
         <Nodes />
+      ) : screen.name === "intents" ? (
+        <Intents
+          tab={screen.tab}
+          onTabChange={(tab) => setScreen({ name: "intents", tab })}
+          onCompose={() => setScreen({ name: "new" })}
+        />
       ) : (
         <Placeholder screen={screen} />
       )}

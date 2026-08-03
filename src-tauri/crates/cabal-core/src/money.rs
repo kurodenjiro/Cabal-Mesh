@@ -213,6 +213,7 @@ impl fmt::Display for TokenAmount {
 /// A USD price, fixed at two decimal places — the precision the UI shows
 /// (`$94.21`, `UNDER $95`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../../src/types/bindings.ts"))]
 #[serde(transparent)]
 pub struct UsdPrice {
     /// Cents. Avoids the float rounding that makes price comparisons lie.

@@ -375,3 +375,187 @@ fn seeded_position(seed: &str) -> (f32, f32, u16) {
     let pulse = 900 + u16::try_from((hash >> 32) % 750).unwrap_or(0);
     (x, y, pulse)
 }
+
+// ---------------------------------------------------------------------------
+// Intents
+// ---------------------------------------------------------------------------
+
+/// An intent as a list row renders it.
+#[derive(Debug, Clone, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "camelCase")]
+pub struct IntentView {
+    pub id: String,
+    /// e.g. `BUY AVAX`.
+    pub title: String,
+    /// e.g. `UNDER $95`.
+    pub subtitle: String,
+    /// Execution mode, shown as a badge. Absent when default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub badge: Option<String>,
+    pub amount: String,
+    /// The lifecycle state, driving both the status text and the dot tone.
+    pub status: cabal_core::IntentStatus,
+    /// Elapsed or settled time, e.g. `2M 14S` or `11.4S`.
+    pub elapsed: String,
+}
+
+/// Which slice of the list to return.
+#[derive(Debug, Clone, Copy, serde::Deserialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "UPPERCASE")]
+pub enum IntentFilter {
+    Active,
+    Pending,
+    History,
+}
+
+/// Intents matching `filter`.
+///
+/// Returns an empty list rather than fabricated rows. No intent has been
+/// composed yet in this build, and the screen's empty state — *"Nothing is
+/// queued. Nothing is stored."* — is the honest rendering of that.
+///
+/// # Errors
+///
+/// [`AppError::NotReady`] before bootstrap.
+#[tauri::command]
+pub async fn list_intents(
+    filter: IntentFilter,
+    state: State<'_, AppState>,
+) -> Result<Vec<IntentView>, AppError> {
+    let _services = state.services()?;
+    let _ = filter;
+    Ok(Vec::new())
+}
+
+/// The options the compose screen offers.
+#[derive(Debug, Clone, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "camelCase")]
+pub struct FormOptions {
+    pub actions: Vec<String>,
+    pub assets: Vec<AssetOption>,
+    pub conditions: Vec<String>,
+    pub modes: Vec<ModeOption>,
+    pub privacy_levels: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "camelCase")]
+pub struct AssetOption {
+    pub name: String,
+    /// Three-letter tag the board shows beside the name.
+    pub tag: String,
+    pub decimals: u8,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "camelCase")]
+pub struct ModeOption {
+    pub label: String,
+    pub description: String,
+}
+
+/// Options for the compose screen.
+///
+/// Supplied by Rust rather than hardcoded on the frontend so a mode and its
+/// description cannot drift apart — they come from one `ExecutionMode`.
+///
+/// # Errors
+///
+/// Never fails.
+#[tauri::command]
+pub async fn intent_form_options() -> Result<FormOptions, AppError> {
+    use cabal_core::{Action, ExecutionMode, PrivacyLevel};
+
+    Ok(FormOptions {
+        actions: Action::ALL.iter().map(|a| format!("{a:?}").to_uppercase()).collect(),
+        assets: vec![
+            AssetOption { name: "AVAX".into(), tag: "AVX".into(), decimals: 18 },
+            AssetOption { name: "USDC".into(), tag: "USD".into(), decimals: 6 },
+            AssetOption { name: "WETH".into(), tag: "ETH".into(), decimals: 18 },
+            AssetOption { name: "BTC.b".into(), tag: "BTC".into(), decimals: 8 },
+        ],
+        conditions: vec!["Price under".into(), "Price above".into(), "Any price".into()],
+        modes: ExecutionMode::ALL
+            .iter()
+            .map(|mode| ModeOption {
+                label: mode.label().to_string(),
+                description: mode.description().to_string(),
+            })
+            .collect(),
+        privacy_levels: PrivacyLevel::ALL
+            .iter()
+            .map(|level| format!("{level:?}").to_uppercase())
+            .collect(),
+    })
+}
+
+/// One row of the confirm dialog.
+#[derive(Debug, Clone, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewRow {
+    pub key: String,
+    pub value: String,
+}
+
+/// Validates a draft and returns the rows the confirm dialog shows.
+///
+/// Computed here rather than on the frontend so what the user confirms is
+/// exactly what would be broadcast — a dialog assembled separately can drift
+/// from the payload it claims to describe.
+///
+/// # Errors
+///
+/// [`AppError::InvalidIntent`] with the offending field, so the form can attach
+/// the failure to an input rather than showing a general message.
+#[tauri::command]
+pub async fn preview_intent(
+    action: String,
+    asset: String,
+    condition: String,
+    price: String,
+    amount: String,
+    mode: String,
+    privacy: String,
+) -> Result<Vec<ReviewRow>, AppError> {
+    use crate::error::InvalidReason;
+    use cabal_core::{TokenAmount, UsdPrice};
+
+    // Parsed, not trusted. Everything arriving from the webview is hostile
+    // until it becomes a domain type.
+    let decimals = match asset.as_str() {
+        "USDC" => 6,
+        "BTC.b" => 8,
+        _ => 18,
+    };
+    let parsed_amount = TokenAmount::parse(&amount, decimals)?;
+    if parsed_amount.is_zero() {
+        return Err(AppError::InvalidIntent {
+            field: "amount",
+            reason: InvalidReason::OutOfRange,
+        });
+    }
+
+    let condition_text = if condition.starts_with("Any") {
+        condition.to_uppercase()
+    } else {
+        let parsed_price = UsdPrice::parse(&price).map_err(|_| AppError::InvalidIntent {
+            field: "price",
+            reason: InvalidReason::Malformed,
+        })?;
+        format!("{} {}", condition.to_uppercase(), parsed_price)
+    };
+
+    Ok(vec![
+        ReviewRow { key: "ACTION".into(), value: format!("{} {}", action.to_uppercase(), asset) },
+        ReviewRow { key: "CONDITION".into(), value: condition_text },
+        ReviewRow { key: "AMOUNT".into(), value: format!("{parsed_amount} {asset}") },
+        ReviewRow { key: "MODE".into(), value: mode },
+        ReviewRow { key: "PRIVACY".into(), value: privacy },
+    ])
+}

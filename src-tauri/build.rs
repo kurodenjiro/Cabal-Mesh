@@ -22,6 +22,9 @@ const COMMANDS: &[&str] = &[
     "mesh_snapshot",
     "subscribe_mesh_log",
     "list_nearby_nodes",
+    "list_intents",
+    "intent_form_options",
+    "preview_intent",
     // mesh
     "send_intent_to_mesh",
     "get_relay_stats",
