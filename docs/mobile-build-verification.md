@@ -551,9 +551,8 @@ implementation rather than one per screen.
 
 `StatTile::plain` omits the delta entirely rather than emitting `+0.0%` — a
 fabricated trend for an unmeasured figure would violate the same exactness
-rule. The reputation tile used it while ticket 03 was open; since that ticket
-resolved to a mock (2026-08-03) the tile carries a delta, and falls back to
-this shape only when there is no mesh to derive from.
+rule. `INTENTS SETTLED` uses exactly this shape until a prior week exists to
+compare against — a percentage change from zero is undefined, not infinite.
 
 Test count: **150**.
 
@@ -974,6 +973,11 @@ REPUTATION SCORE —
 
 ### The reputation tile renders an em dash
 
+> **Historical — the field no longer exists.** Ticket 39 replaced it with
+> `INTENTS SETTLED`, a real count. Kept because the reasoning below is why the
+> em dash was right at the time, and that reasoning is what eventually produced
+> a real signal instead of a plausible-looking number.
+
 Ticket 03 has not resolved where a reputation score would come from. The
 prototype shows `87.6 (+5.3%)`, which is a constant. Rendering it would be a
 fabricated trust signal in a product whose entire pitch is proving things, and
@@ -1140,10 +1144,11 @@ blood-red `AVALANCHE FUJI` badge with `TEST FUNDS ONLY.`, real peer id
 `REPUTATION SCORE` and `MEMBER SINCE` are em dashes for the same reason they are
 on iOS: ticket 03 has not named a source.
 
-**Superseded 2026-08-03.** Both now render. Reputation is a mock derived in
-`src-tauri/src/reputation.rs` (ticket 03's decision, replaced by ticket 39);
-member-since is a real first-run timestamp from `src-tauri/src/install.rs`. The
-screenshots above predate both.
+**Superseded 2026-08-03.** Both now render, and both are real. The reputation
+score is gone entirely — ticket 39 replaced it with `INTENTS SETTLED`, a count
+from the intent ledger (`src-tauri/src/standing.rs`). Member-since is a real
+first-run timestamp (`src-tauri/src/install.rs`). The screenshots above predate
+both.
 
 ---
 

@@ -577,12 +577,11 @@ Physical iPhone + Android: font rendering, glyph crispness, tap targets, keyboar
 | 4 | Node map layout | **Deterministic, seeded by peer id** — stable across renders and restarts. Detail in Phase C. |
 | — | `nodes` distances | **Removed.** No location source exists and none will be requested. Latency / hops / transport instead (§4, architecture §6.1). |
 | — | Confirm-dialog copy | **Two strings, picked by connection state** (ticket 04, 2026-08-03). Online: *"This intent broadcasts to the mesh and settles on-chain. No identity is attached."* Offline: *"Queued locally. Broadcast and settlement follow reconnection. No identity is attached."* Recorded in `src/ds/BRAND.md`; the retired string is listed there as off-voice with its reason. |
-| — | `REPUTATION SCORE` | **Mocked, in one place** (ticket 03, 2026-08-03). Derived from the peer identifier in `src-tauri/src/reputation.rs` so it is stable across polls and differs between devices; renders `87.6 (+5.3%)` on profile and a tile with a delta on home. An em dash remains whenever there is no mesh. Ticket 39 replaces it with a real signal. |
+| — | `REPUTATION SCORE` | **Replaced by `INTENTS SETTLED`** (ticket 39, 2026-08-03). The mock from ticket 03 is deleted. The tile and the profile row now show a lifetime settled count from the intent ledger, with a seven-day-over-seven-day delta, and no delta at all until there is a prior week to compare with. |
 
 ### Still open
 
 1. **Pixel Operator binaries.** `PixelOperator.ttf` + `PixelOperator-Bold.ttf` were never delivered; Silkscreen is a substitute. Every uppercase display string in the app — wordmark, headings, buttons, nav, all numeric figures — is currently rendering in the wrong face. `fonts.css` has the swap block ready; it is a two-line change once the files arrive. Not blocking, but it is the single largest gap between the shipped app and the board.
-2. **A real reputation signal.** The score now renders, but it is a mock (see §10). What it should measure — settled-intent count, uptime, stake, some derived score — is still unanswered, and the mock is a number the system cannot back. Tracked as ticket 39.
 
 ---
 

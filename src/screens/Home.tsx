@@ -15,11 +15,11 @@ const RETAINED = 200;
  * numbers, so implementing the separator rules per screen would guarantee they
  * drift.
  *
- * The reputation tile is a mock. Ticket 03 decided to ship a placeholder value
- * rather than an em dash until a real signal exists; it is derived from the
- * peer identifier in Rust so it stays stable across the five-second poll, and
- * ticket 39 tracks replacing it. Nothing here knows that — the tile renders
- * whatever Rust sends, like every other figure on the screen.
+ * The third tile is the only one about this node rather than the network: how
+ * many intents it has settled, with the last seven days compared against the
+ * seven before. Ticket 39 replaced a mocked "reputation score" with it. Nothing
+ * here knows that — the tile renders whatever Rust sends, like every other
+ * figure on the screen.
  */
 export function Home() {
   const [snapshot, setSnapshot] = useState<MeshSnapshotView | null>(null);

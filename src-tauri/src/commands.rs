@@ -199,23 +199,25 @@ pub async fn mesh_snapshot(state: State<'_, AppState>) -> Result<MeshSnapshotVie
     // compare against yet, and the brand's copy rules demand exact figures —
     // a made-up "+12.4%" would be a fabricated trust signal in a product whose
     // whole pitch is proving things.
-    // The exception is the reputation score, which ticket 03 resolved as a
-    // mock until a real signal exists. It is derived rather than constant so
-    // it does not jitter between polls — see src/reputation.rs, which is the
-    // only place the value is produced, and ticket 39 to replace it.
-    let reputation = crate::reputation::Reputation::of(&snapshot.peer_id);
-    let reputation_tile = match reputation {
-        Some(reading) => {
-            StatTile::with_delta("REPUTATION SCORE", reading.value(), reading.delta_percent)
-        }
-        // No mesh, no peer identifier, nothing to derive from.
-        None => StatTile::plain("REPUTATION SCORE", "—"),
+    // The third tile is the one figure here that is about this node rather
+    // than the network: what it has settled. Ticket 39 replaced ticket 03's
+    // mocked "reputation score" with it — see src/standing.rs for why the
+    // label changed rather than the definition.
+    //
+    // It reads the local ledger, so unlike the other two it is just as true
+    // with no mesh as with one.
+    let standing = crate::standing::Standing::of(state.intents(), crate::intents::now_ms());
+    let settled_tile = match standing.delta_percent {
+        Some(delta) => StatTile::with_delta("INTENTS SETTLED", standing.value(), delta),
+        // No prior window, so no baseline. `plain` omits the delta rather than
+        // rendering `+0.0%` for a trend that was never measured.
+        None => StatTile::plain("INTENTS SETTLED", standing.value()),
     };
 
     let stats = vec![
         StatTile::plain("NETWORK NODES", separated(snapshot.peer_count as u64)),
         StatTile::plain("RELAYED BYTES", separated(snapshot.relay_bytes)),
-        reputation_tile,
+        settled_tile,
     ];
 
     Ok(MeshSnapshotView {
@@ -1714,9 +1716,12 @@ pub async fn vault_keys(state: State<'_, AppState>) -> Result<Vec<VaultRow>, App
 #[serde(rename_all = "camelCase")]
 pub struct ProfileView {
     pub node_id: String,
-    /// `87.6 (+5.3%)`, or an em dash with no mesh. Mocked per ticket 03 — see
-    /// src/reputation.rs for what that means and ticket 39 to replace it.
-    pub reputation: String,
+    /// `14 (+55.6%)`, or just `14` with no prior window to compare against.
+    ///
+    /// Was a mocked `reputation` until ticket 39. Renamed along with the value
+    /// because a count called a "score" is a figure whose name promises more
+    /// than its definition delivers.
+    pub settled: String,
     /// `2026.08.03` — when this installation first ran.
     pub member_since: String,
     pub offline: bool,
@@ -1753,16 +1758,13 @@ pub async fn profile_summary(state: State<'_, AppState>) -> Result<ProfileView, 
     // switch for a mesh that is not there.
     let offline = snapshot.as_ref().is_none_or(|s| s.offline);
 
-    // Mocked per ticket 03, derived from the same peer identifier the home
-    // tile uses so the two screens never disagree. See src/reputation.rs.
-    let reputation = snapshot
-        .as_ref()
-        .and_then(|s| crate::reputation::Reputation::of(&s.peer_id))
-        .map_or_else(|| "—".into(), |reading| reading.combined());
+    // The same ledger the home tile reads, so the two screens cannot disagree.
+    // No mesh is needed: this is local history, not network state.
+    let settled = crate::standing::Standing::of(state.intents(), crate::intents::now_ms()).combined();
 
     Ok(ProfileView {
         node_id,
-        reputation,
+        settled,
         // Written on the first read and never again — see src/install.rs for
         // why neither the ephemeral mesh identity nor a file's creation time
         // could answer this.

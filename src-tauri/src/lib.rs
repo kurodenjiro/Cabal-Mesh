@@ -33,8 +33,8 @@ pub mod multicast;
 /// See src/tls.rs.
 pub mod tls;
 
-/// The mocked reputation score, in one place. See src/reputation.rs.
-pub mod reputation;
+/// What this node has actually settled. See src/standing.rs.
+pub mod standing;
 
 /// Every intent this device has composed. See src/intents.rs.
 pub mod intents;

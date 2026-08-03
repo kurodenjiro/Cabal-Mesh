@@ -187,10 +187,17 @@ pulseMs: number, };
  */
 export type ProfileView = { nodeId: string, 
 /**
- * `87.6 (+5.3%)`, or an em dash with no mesh. Mocked per ticket 03 — see
- * src/reputation.rs for what that means and ticket 39 to replace it.
+ * `14 (+55.6%)`, or just `14` with no prior window to compare against.
+ *
+ * Was a mocked `reputation` until ticket 39. Renamed along with the value
+ * because a count called a "score" is a figure whose name promises more
+ * than its definition delivers.
  */
-reputation: string, memberSince: string, offline: boolean, network: string, 
+settled: string, 
+/**
+ * `2026.08.03` — when this installation first ran.
+ */
+memberSince: string, offline: boolean, network: string, 
 /**
  * Whether transactions here move real value.
  */
