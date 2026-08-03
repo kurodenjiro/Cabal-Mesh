@@ -132,6 +132,11 @@ struct Inner {
     /// the connecting screen subscribes to the handshake log *before* services
     /// are published, so the registry has to outlive that gap.
     subscriptions: Registry,
+    /// Every intent composed on this device. Also outside `Services`, and for
+    /// a sharper reason: an intent queued while offline exists precisely
+    /// because the mesh does not, and putting the ledger behind bootstrap
+    /// would make the queue unreadable in the state it was built for.
+    intents: crate::intents::Ledger,
 }
 
 /// Managed application state.
@@ -157,6 +162,9 @@ impl AppState {
                 caps: PlatformCaps::current(),
                 started: std::time::Instant::now(),
                 subscriptions: Registry::new(),
+                intents: crate::intents::Ledger::open(cabal_store::JsonStore::new(
+                    crate::app_paths::in_data_dir("intents.json"),
+                )),
             }),
         }
     }
@@ -206,6 +214,16 @@ impl AppState {
     #[must_use]
     pub fn subscriptions(&self) -> &Registry {
         &self.inner.subscriptions
+    }
+
+    /// Every intent composed on this device.
+    ///
+    /// Available before bootstrap on purpose: the intents that matter most —
+    /// the ones queued while offline — are exactly the ones composed when
+    /// there is no mesh to be ready.
+    #[must_use]
+    pub fn intents(&self) -> &crate::intents::Ledger {
+        &self.inner.intents
     }
 
     /// Seconds since the process started.

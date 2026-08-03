@@ -1,6 +1,7 @@
 import React from "react";
 import { Icon } from "../ds";
 import { TABS, activeTab, back, hasChrome, title, type Screen, type TabKey } from "./screen";
+import { modalOpen } from "./modalStack";
 import { useTypeScale } from "../state/useTypeScale";
 
 /**
@@ -212,10 +213,16 @@ function screenForTab(tab: TabKey): Screen {
 /**
  * Android's hardware back, bound to the same function as the header affordance
  * so the two can never disagree.
+ *
+ * Declines the press while a modal is open. Both this and the dialog listen for
+ * the same `popstate`, and without the check one press would close the dialog
+ * *and* leave the screen behind it. See shell/modalStack.ts.
  */
 function useHardwareBack(screen: Screen, onNavigate: (next: Screen) => void): void {
   React.useEffect(() => {
     const handler = (event: PopStateEvent) => {
+      if (modalOpen()) return;
+
       event.preventDefault();
       const target = back(screen);
       if (target !== screen) onNavigate(target);

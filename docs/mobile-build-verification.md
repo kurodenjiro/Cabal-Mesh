@@ -551,8 +551,8 @@ implementation rather than one per screen.
 
 `StatTile::plain` omits the delta entirely rather than emitting `+0.0%` — a
 fabricated trend for an unmeasured figure would violate the same exactness
-rule. That is the honest rendering for the reputation score while ticket 03 is
-open.
+rule. `INTENTS SETTLED` uses exactly this shape until a prior week exists to
+compare against — a percentage change from zero is undefined, not infinite.
 
 Test count: **150**.
 
@@ -973,6 +973,11 @@ REPUTATION SCORE —
 
 ### The reputation tile renders an em dash
 
+> **Historical — the field no longer exists.** Ticket 39 replaced it with
+> `INTENTS SETTLED`, a real count. Kept because the reasoning below is why the
+> em dash was right at the time, and that reasoning is what eventually produced
+> a real signal instead of a plausible-looking number.
+
 Ticket 03 has not resolved where a reputation score would come from. The
 prototype shows `87.6 (+5.3%)`, which is a constant. Rendering it would be a
 fabricated trust signal in a product whose entire pitch is proving things, and
@@ -1138,3 +1143,77 @@ blood-red `AVALANCHE FUJI` badge with `TEST FUNDS ONLY.`, real peer id
 
 `REPUTATION SCORE` and `MEMBER SINCE` are em dashes for the same reason they are
 on iOS: ticket 03 has not named a source.
+
+**Superseded 2026-08-03.** Both now render, and both are real. The reputation
+score is gone entirely — ticket 39 replaced it with `INTENTS SETTLED`, a count
+from the intent ledger (`src-tauri/src/standing.rs`). Member-since is a real
+first-run timestamp (`src-tauri/src/install.rs`). The screenshots above predate
+both.
+
+---
+
+## Compose and confirm on iOS (2026-08-03, tickets 33 + 34)
+
+Built for `aarch64-apple-ios-sim` and run on an iPhone 15 simulator, iOS 17.5.
+The app launches clean:
+
+```
+ledger opened  count=0
+Booting Libp2p Swarm...  phase="PHASE_3_NETWORK" progress=70
+System Bootstrap Complete. Mesh Swarm Active.
+no bootstrap relays configured — discovery is limited to this network
+```
+
+### What could not be verified this way, and why
+
+**This environment has no way to tap.** `simctl` has no input command, `idb` is
+not installed, and AppleScript is refused assistive access (`osascript is not
+allowed assistive access. (-1719)`). So the screens below were reached by
+building **throwaway variants** that open on the target screen — reverted
+immediately, and the reverted tree is what is committed.
+
+That means the following are asserted by tests and by reading, not by a finger
+on glass, and should be checked on a real device before release:
+
+- the focus trap and focus restore in `shell/ModalDialog.tsx`
+- the back gesture closing the dialog without also leaving the screen
+- the keyboard-avoidance offset, which needs a real on-screen keyboard
+- everything in ticket 34 downstream of a peer accepting an intent
+
+### Compose — every option from Rust
+
+![New intent at 100%](screenshots/new-intent-100.png)
+
+`BUY SELL SWAP STAKE`, `AVAX USDC WETH BTC.b`, and the three conditions all
+arrive from `intent_form_options`. Nothing on this screen is a frontend
+constant.
+
+### The segmented controls wrap at 200%
+
+![New intent at 200%](screenshots/new-intent-200.png)
+
+`--type-scale: 2`, forced — the native content-size plugin is not built yet, so
+`preferredContentSizeCategory` does not reach the webview and `simctl ui
+content_size` cannot move it.
+
+`BUY SELL SWAP` wrap to a second row carrying `STAKE`; `AVAX USDC` wrap to
+`WETH BTC.b`. **Every option stays reachable and the page does not scroll
+sideways**, which is the criterion. The tab bar's labels clip rather than wrap,
+as ticket 28 decided — the glyph carries the meaning and `aria-label` carries
+the name.
+
+### The confirm dialog, against real Rust
+
+![Confirm intent, offline](screenshots/confirm-intent-offline.png)
+
+Every row here was computed by `preview_intent` from the parsed draft:
+`BUY AVAX`, `UNDER $95.00`, `1.5 AVAX`, `SHARK MODE`, `LOW`.
+
+The closing line is ticket 04's **offline** string — *"Queued locally. Broadcast
+and settlement follow reconnection. No identity is attached."* — which is
+correct, because the simulator has no mesh peers, and the button says
+`QUEUE LOCALLY` rather than `BROADCAST`. The prose and the verb come from the
+same answer, so they cannot disagree.
+
+This is the string the prototype got wrong. Seeing the accurate one appear
+*because* the mesh is genuinely unreachable is the whole point of that ticket.

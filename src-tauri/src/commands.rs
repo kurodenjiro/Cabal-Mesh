@@ -199,23 +199,25 @@ pub async fn mesh_snapshot(state: State<'_, AppState>) -> Result<MeshSnapshotVie
     // compare against yet, and the brand's copy rules demand exact figures —
     // a made-up "+12.4%" would be a fabricated trust signal in a product whose
     // whole pitch is proving things.
-    // The exception is the reputation score, which ticket 03 resolved as a
-    // mock until a real signal exists. It is derived rather than constant so
-    // it does not jitter between polls — see src/reputation.rs, which is the
-    // only place the value is produced, and ticket 39 to replace it.
-    let reputation = crate::reputation::Reputation::of(&snapshot.peer_id);
-    let reputation_tile = match reputation {
-        Some(reading) => {
-            StatTile::with_delta("REPUTATION SCORE", reading.value(), reading.delta_percent)
-        }
-        // No mesh, no peer identifier, nothing to derive from.
-        None => StatTile::plain("REPUTATION SCORE", "—"),
+    // The third tile is the one figure here that is about this node rather
+    // than the network: what it has settled. Ticket 39 replaced ticket 03's
+    // mocked "reputation score" with it — see src/standing.rs for why the
+    // label changed rather than the definition.
+    //
+    // It reads the local ledger, so unlike the other two it is just as true
+    // with no mesh as with one.
+    let standing = crate::standing::Standing::of(state.intents(), crate::intents::now_ms());
+    let settled_tile = match standing.delta_percent {
+        Some(delta) => StatTile::with_delta("INTENTS SETTLED", standing.value(), delta),
+        // No prior window, so no baseline. `plain` omits the delta rather than
+        // rendering `+0.0%` for a trend that was never measured.
+        None => StatTile::plain("INTENTS SETTLED", standing.value()),
     };
 
     let stats = vec![
         StatTile::plain("NETWORK NODES", separated(snapshot.peer_count as u64)),
         StatTile::plain("RELAYED BYTES", separated(snapshot.relay_bytes)),
-        reputation_tile,
+        settled_tile,
     ];
 
     Ok(MeshSnapshotView {
@@ -420,23 +422,65 @@ pub enum IntentFilter {
     History,
 }
 
-/// Intents matching `filter`.
-///
-/// Returns an empty list rather than fabricated rows. No intent has been
-/// composed yet in this build, and the screen's empty state — *"Nothing is
-/// queued. Nothing is stored."* — is the honest rendering of that.
+impl IntentFilter {
+    /// Whether an intent belongs in this slice.
+    ///
+    /// `Pending` is the queue: composed but never broadcast, which is exactly
+    /// what an intent created offline looks like. Mapping it to anything else
+    /// would hide the queue the offline path exists to build.
+    fn admits(self, status: &cabal_core::IntentStatus) -> bool {
+        match self {
+            Self::Active => status.is_active(),
+            Self::Pending => matches!(status, cabal_core::IntentStatus::Draft),
+            Self::History => status.is_terminal(),
+        }
+    }
+}
+
+/// Renders one ledger entry as a list row.
+fn row_for(intent: &crate::intents::Intent, now_ms: u64) -> IntentView {
+    let action = format!("{:?}", intent.draft.action).to_uppercase();
+    let subtitle = match intent.draft.condition {
+        cabal_core::Condition::Under { price } => format!("UNDER {price}"),
+        cabal_core::Condition::Above { price } => format!("ABOVE {price}"),
+        cabal_core::Condition::Any => "ANY PRICE".into(),
+    };
+
+    IntentView {
+        id: intent.id.to_string(),
+        title: format!("{action} {}", intent.draft.asset),
+        subtitle,
+        // Shark is the default, so badging it would put a badge on almost
+        // every row and stop the badge meaning anything.
+        badge: match intent.draft.mode {
+            cabal_core::ExecutionMode::Shark => None,
+            other => Some(other.label().to_string()),
+        },
+        amount: format!("{} {}", intent.draft.amount, intent.draft.asset),
+        status: intent.status.clone(),
+        elapsed: crate::intents::format_elapsed(intent.elapsed_ms(now_ms)),
+    }
+}
+
+/// Intents matching `filter`, newest first.
 ///
 /// # Errors
 ///
-/// [`AppError::NotReady`] before bootstrap.
+/// Never fails. Deliberately does **not** require bootstrap: the intents most
+/// worth showing are the ones queued while there was no mesh to boot.
 #[tauri::command]
 pub async fn list_intents(
     filter: IntentFilter,
     state: State<'_, AppState>,
 ) -> Result<Vec<IntentView>, AppError> {
-    let _services = state.services()?;
-    let _ = filter;
-    Ok(Vec::new())
+    let now = crate::intents::now_ms();
+    Ok(state
+        .intents()
+        .all()
+        .iter()
+        .filter(|intent| filter.admits(&intent.status))
+        .map(|intent| row_for(intent, now))
+        .collect())
 }
 
 /// The options the compose screen offers.
@@ -459,6 +503,14 @@ pub struct AssetOption {
     /// Three-letter tag the board shows beside the name.
     pub tag: String,
     pub decimals: u8,
+    /// The spendable balance, pre-formatted — what MAX fills in.
+    ///
+    /// Absent rather than zero when the balance is unknown, which is what an
+    /// asset this wallet has never held looks like. Rendering an unknown
+    /// balance as `0` would tell the user they have none, which is a different
+    /// claim entirely.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub available: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -469,26 +521,72 @@ pub struct ModeOption {
     pub description: String,
 }
 
+/// The assets the compose screen offers, and their precision.
+///
+/// One table, so the decimals used to parse an amount and the decimals shown
+/// beside it cannot disagree.
+const ASSETS: [(&str, &str, u8); 4] = [
+    ("AVAX", "AVX", 18),
+    ("USDC", "USD", 6),
+    ("WETH", "ETH", 18),
+    ("BTC.b", "BTC", 8),
+];
+
+/// How many decimals an asset carries, or `None` if it is not one we offer.
+fn decimals_for(asset: &str) -> Option<u8> {
+    ASSETS
+        .iter()
+        .find(|(name, _, _)| *name == asset)
+        .map(|(_, _, decimals)| *decimals)
+}
+
 /// Options for the compose screen.
 ///
 /// Supplied by Rust rather than hardcoded on the frontend so a mode and its
-/// description cannot drift apart — they come from one `ExecutionMode`.
+/// description cannot drift apart — they come from one `ExecutionMode` — and
+/// so the maximum comes from the same balance the vault screen shows.
 ///
 /// # Errors
 ///
-/// Never fails.
+/// Never fails. An unavailable balance omits the maximum rather than failing
+/// the whole form: composing an intent offline is a supported path.
 #[tauri::command]
-pub async fn intent_form_options() -> Result<FormOptions, AppError> {
+pub async fn intent_form_options(state: State<'_, AppState>) -> Result<FormOptions, AppError> {
     use cabal_core::{Action, ExecutionMode, PrivacyLevel};
+
+    // Balances are best-effort. Before bootstrap, or with no chain snapshot,
+    // every asset simply has no maximum.
+    let balances = match state.services() {
+        Ok(services) => {
+            let bridge = services.bridge.lock().await;
+            bridge
+                .get_latest_snapshot()
+                .map(|snapshot| {
+                    snapshot
+                        .assets
+                        .into_iter()
+                        .map(|asset| (asset.symbol, asset.amount))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        }
+        Err(_) => Vec::new(),
+    };
 
     Ok(FormOptions {
         actions: Action::ALL.iter().map(|a| format!("{a:?}").to_uppercase()).collect(),
-        assets: vec![
-            AssetOption { name: "AVAX".into(), tag: "AVX".into(), decimals: 18 },
-            AssetOption { name: "USDC".into(), tag: "USD".into(), decimals: 6 },
-            AssetOption { name: "WETH".into(), tag: "ETH".into(), decimals: 18 },
-            AssetOption { name: "BTC.b".into(), tag: "BTC".into(), decimals: 8 },
-        ],
+        assets: ASSETS
+            .iter()
+            .map(|(name, tag, decimals)| AssetOption {
+                name: (*name).to_string(),
+                tag: (*tag).to_string(),
+                decimals: *decimals,
+                available: balances
+                    .iter()
+                    .find(|(symbol, _)| symbol.eq_ignore_ascii_case(name))
+                    .map(|(_, amount)| amount.clone()),
+            })
+            .collect(),
         conditions: vec!["Price under".into(), "Price above".into(), "Any price".into()],
         modes: ExecutionMode::ALL
             .iter()
@@ -513,7 +611,179 @@ pub struct ReviewRow {
     pub value: String,
 }
 
-/// Validates a draft and returns the rows the confirm dialog shows.
+/// What the confirm dialog renders.
+#[derive(Debug, Clone, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "camelCase")]
+pub struct IntentPreview {
+    pub rows: Vec<ReviewRow>,
+    /// The dialog's closing line, chosen by whether this will broadcast now.
+    pub confirm: String,
+    /// Whether confirming broadcasts immediately or queues locally. Drives the
+    /// button's own verb, so the dialog does not promise one thing in prose and
+    /// another on the control.
+    pub will_broadcast: bool,
+}
+
+/// The confirm dialog's closing line when the intent goes out now.
+///
+/// Ticket 04. Two strings rather than one vague enough to be true in both
+/// states, and both live here beside the rows so the dialog cannot describe a
+/// path this command will not take.
+const CONFIRM_ONLINE: &str =
+    "This intent broadcasts to the mesh and settles on-chain. No identity is attached.";
+
+/// The closing line when there is no mesh to broadcast to.
+///
+/// The prototype claimed offline intents execute and settle. They do not: the
+/// architecture is queue-then-drain.
+const CONFIRM_QUEUED: &str =
+    "Queued locally. Broadcast and settlement follow reconnection. No identity is attached.";
+
+/// The compose form's fields, exactly as the screen holds them.
+///
+/// One type rather than seven parameters on two commands. That is what makes
+/// "preview and broadcast see the same input" a property of the signature
+/// instead of something a caller has to get right twice.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "camelCase")]
+pub struct IntentFields {
+    pub action: String,
+    pub asset: String,
+    pub condition: String,
+    /// Ignored when the condition carries no price.
+    pub price: String,
+    pub amount: String,
+    pub mode: String,
+    pub privacy: String,
+}
+
+/// Turns raw form fields into a domain draft.
+///
+/// The single parse for both preview and broadcast. That is what makes the
+/// review rows honest: they are rendered *from the draft*, so the dialog cannot
+/// describe one thing while the broadcast sends another.
+fn parse_draft(fields: &IntentFields) -> Result<cabal_core::IntentDraft, AppError> {
+    use crate::error::InvalidReason;
+    use cabal_core::{Action, Condition, ExecutionMode, IntentDraft, PrivacyLevel, TokenAmount, UsdPrice};
+
+    let IntentFields { action, asset, condition, price, amount, mode, privacy } = fields;
+
+    // Parsed, not trusted. Everything arriving from the webview is hostile
+    // until it becomes a domain type.
+    let decimals = decimals_for(asset).ok_or(AppError::InvalidIntent {
+        field: "asset",
+        reason: InvalidReason::Malformed,
+    })?;
+
+    let action = match action.to_ascii_uppercase().as_str() {
+        "BUY" => Action::Buy,
+        "SELL" => Action::Sell,
+        "SWAP" => Action::Swap,
+        "STAKE" => Action::Stake,
+        _ => {
+            return Err(AppError::InvalidIntent {
+                field: "action",
+                reason: InvalidReason::Malformed,
+            })
+        }
+    };
+
+    let parsed_amount = TokenAmount::parse(amount, decimals)?;
+    if parsed_amount.is_zero() {
+        return Err(AppError::InvalidIntent {
+            field: "amount",
+            reason: InvalidReason::OutOfRange,
+        });
+    }
+
+    let condition = if condition.to_ascii_lowercase().starts_with("any") {
+        Condition::Any
+    } else {
+        let parsed_price = UsdPrice::parse(price).map_err(|_| AppError::InvalidIntent {
+            field: "price",
+            reason: InvalidReason::Malformed,
+        })?;
+        if condition.to_ascii_lowercase().contains("above") {
+            Condition::Above { price: parsed_price }
+        } else {
+            Condition::Under { price: parsed_price }
+        }
+    };
+
+    let mode = ExecutionMode::ALL
+        .into_iter()
+        .find(|candidate| candidate.label().eq_ignore_ascii_case(mode))
+        .ok_or(AppError::InvalidIntent {
+            field: "mode",
+            reason: InvalidReason::Malformed,
+        })?;
+
+    let privacy = PrivacyLevel::ALL
+        .into_iter()
+        .find(|candidate| format!("{candidate:?}").eq_ignore_ascii_case(privacy))
+        .ok_or(AppError::InvalidIntent {
+            field: "privacy",
+            reason: InvalidReason::Malformed,
+        })?;
+
+    Ok(IntentDraft {
+        action,
+        asset: asset.as_str().into(),
+        condition,
+        amount: parsed_amount,
+        mode,
+        privacy,
+    })
+}
+
+/// The five rows the confirm dialog shows, rendered from the draft itself.
+fn review_rows(draft: &cabal_core::IntentDraft) -> Vec<ReviewRow> {
+    use cabal_core::Condition;
+
+    let condition = match draft.condition {
+        Condition::Under { price } => format!("UNDER {price}"),
+        Condition::Above { price } => format!("ABOVE {price}"),
+        Condition::Any => "ANY PRICE".into(),
+    };
+
+    vec![
+        ReviewRow {
+            key: "ACTION".into(),
+            value: format!("{:?} {}", draft.action, draft.asset).to_uppercase(),
+        },
+        ReviewRow { key: "CONDITION".into(), value: condition },
+        ReviewRow {
+            key: "AMOUNT".into(),
+            value: format!("{} {}", draft.amount, draft.asset),
+        },
+        ReviewRow { key: "MODE".into(), value: draft.mode.label().to_string() },
+        ReviewRow {
+            key: "PRIVACY".into(),
+            value: format!("{:?}", draft.privacy).to_uppercase(),
+        },
+    ]
+}
+
+/// Whether an intent composed right now would leave the device.
+///
+/// Peer count is part of the answer, not an afterthought: gossipsub with no
+/// peers has nobody to publish to, so promising a broadcast there would be the
+/// same class of lie ticket 04 retired.
+async fn will_broadcast(state: &AppState) -> bool {
+    let Ok(services) = state.services() else {
+        return false;
+    };
+    let Some(mesh) = services.mesh.as_ref() else {
+        return false;
+    };
+    mesh.snapshot()
+        .await
+        .is_ok_and(|snapshot| !snapshot.offline && snapshot.peer_count > 0)
+}
+
+/// Validates a draft and returns what the confirm dialog shows.
 ///
 /// Computed here rather than on the frontend so what the user confirms is
 /// exactly what would be broadcast — a dialog assembled separately can drift
@@ -525,49 +795,811 @@ pub struct ReviewRow {
 /// the failure to an input rather than showing a general message.
 #[tauri::command]
 pub async fn preview_intent(
-    action: String,
-    asset: String,
-    condition: String,
-    price: String,
-    amount: String,
-    mode: String,
-    privacy: String,
-) -> Result<Vec<ReviewRow>, AppError> {
-    use crate::error::InvalidReason;
-    use cabal_core::{TokenAmount, UsdPrice};
+    fields: IntentFields,
+    state: State<'_, AppState>,
+) -> Result<IntentPreview, AppError> {
+    let draft = parse_draft(&fields)?;
+    let live = will_broadcast(&state).await;
 
-    // Parsed, not trusted. Everything arriving from the webview is hostile
-    // until it becomes a domain type.
-    let decimals = match asset.as_str() {
-        "USDC" => 6,
-        "BTC.b" => 8,
-        _ => 18,
+    Ok(IntentPreview {
+        rows: review_rows(&draft),
+        confirm: if live { CONFIRM_ONLINE } else { CONFIRM_QUEUED }.to_string(),
+        will_broadcast: live,
+    })
+}
+
+/// Composes an intent and, if there is a mesh, sends it.
+///
+/// Re-parses from the same fields through the same function the preview used,
+/// rather than trusting a payload the frontend assembled from the dialog. The
+/// dialog is a rendering of the draft; it is not the draft.
+///
+/// Returns the new identifier so the caller can open its detail screen.
+///
+/// # Errors
+///
+/// [`AppError::InvalidIntent`] if the draft no longer validates.
+#[tauri::command]
+pub async fn broadcast_intent(
+    fields: IntentFields,
+    state: State<'_, AppState>,
+) -> Result<String, AppError> {
+    use crate::bindings::LogTone;
+    use crate::intents::line;
+
+    let draft = parse_draft(&fields)?;
+    let ledger = state.intents();
+    let intent = ledger.create(draft, crate::intents::now_ms());
+
+    ledger.record(&intent.id, line("INTENT COMPOSED.", LogTone::Dim));
+
+    // Composing always succeeds; publishing is what can fail. Keeping them as
+    // separate steps is what lets the queue exist at all.
+    let published = publish(&state, &intent).await;
+
+    match published {
+        Ok(peers) => {
+            ledger.record(&intent.id, line("BROADCAST TO MESH.", LogTone::Ok));
+            let route_len = u8::try_from(peers).unwrap_or(u8::MAX);
+            let _ = ledger.advance(
+                &intent.id,
+                cabal_core::IntentStatus::Broadcast { route_len },
+                crate::intents::now_ms(),
+            );
+        }
+        Err(reason) => {
+            // Stays a draft, which is the queue. Not an error state: this is
+            // the offline path working, and the confirm dialog already said so.
+            ledger.record(&intent.id, line(reason, LogTone::Dim));
+        }
+    }
+
+    Ok(intent.id.to_string())
+}
+
+/// Publishes an intent to the mesh, reporting the peer count it reached.
+///
+/// The error is the on-voice line to record, not a message to show raw —
+/// every path through here ends up in the terminal the user is reading.
+async fn publish(state: &AppState, intent: &crate::intents::Intent) -> Result<usize, &'static str> {
+    let services = state.services().map_err(|_| "MESH NOT READY. QUEUED LOCALLY.")?;
+    let mesh = services.mesh.as_ref().ok_or("NO MESH. QUEUED LOCALLY.")?;
+
+    let snapshot = mesh.snapshot().await.map_err(|_| "MESH UNREACHABLE. QUEUED LOCALLY.")?;
+    if snapshot.offline {
+        return Err("OFFLINE MODE. QUEUED LOCALLY.");
+    }
+    if snapshot.peer_count == 0 {
+        return Err("NO PEERS IN RANGE. QUEUED LOCALLY.");
+    }
+
+    // The payload is the draft, serialized. Encryption is the transport's job:
+    // Noise already covers every hop, and a second layer here would be
+    // ceremony rather than protection.
+    let payload = serde_json::to_string(&intent.draft).map_err(|_| "COULD NOT ENCODE. QUEUED LOCALLY.")?;
+    mesh.publish(crate::mesh::PrivacyIntent {
+        intent_type: "intent".into(),
+        payload,
+        encrypted: false,
+        relay_path: Vec::new(),
+        relay_fee: None,
+    })
+    .await
+    .map_err(|_| "PUBLISH REFUSED. QUEUED LOCALLY.")?;
+
+    Ok(snapshot.peer_count)
+}
+
+/// Everything the detail screen renders.
+#[derive(Debug, Clone, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "camelCase")]
+pub struct IntentDetailView {
+    pub id: String,
+    pub title: String,
+    pub status: cabal_core::IntentStatus,
+    /// Counts up while live, freezes at the terminal state.
+    pub elapsed: String,
+    /// The seven-row breakdown.
+    pub rows: Vec<ReviewRow>,
+    /// Whether settling is possible right now.
+    pub can_settle: bool,
+    /// Why not, in brand voice, when it is not. Absent when it is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settle_blocked: Option<String>,
+    /// Whether the intent can still be cancelled.
+    pub can_cancel: bool,
+}
+
+/// The seventh and sixth rows the detail screen adds to the five reviewed.
+///
+/// Route renders what was actually recorded — an empty route says so rather
+/// than inventing hops, because the proof screen shows the same value and
+/// calls it evidence.
+fn detail_rows(intent: &crate::intents::Intent) -> Vec<ReviewRow> {
+    let mut rows = review_rows(&intent.draft);
+
+    rows.push(ReviewRow {
+        key: "ROUTE".into(),
+        value: if intent.route.is_empty() {
+            "NOT YET ROUTED".into()
+        } else {
+            intent
+                .route
+                .iter()
+                .map(|hop| hop.truncated())
+                .collect::<Vec<_>>()
+                .join(" · ")
+        },
+    });
+
+    rows.push(ReviewRow {
+        key: "COUNTERPARTY".into(),
+        value: intent
+            .counterparty
+            .as_deref()
+            .map_or_else(|| "NONE YET".into(), |address| cabal_core::NodeId::new(address).truncated()),
+    });
+
+    rows
+}
+
+/// One intent in full.
+///
+/// # Errors
+///
+/// [`AppError::InvalidIntent`] if the identifier is unknown, which means the
+/// frontend navigated to something that does not exist.
+#[tauri::command]
+pub async fn intent_detail(
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<IntentDetailView, AppError> {
+    use crate::error::InvalidReason;
+
+    let intent = state
+        .intents()
+        .get(&cabal_core::IntentId::new(id))
+        .ok_or(AppError::InvalidIntent {
+            field: "id",
+            reason: InvalidReason::Missing,
+        })?;
+
+    // Settlement locks escrow *for* a specific address. Without a peer that
+    // accepted, there is nobody to lock it for, and offering the button anyway
+    // would promise something the command must refuse.
+    let settle_blocked = if intent.status.is_terminal() {
+        Some("Already finished. Nothing left to settle.".to_string())
+    } else if matches!(intent.status, cabal_core::IntentStatus::Draft) {
+        Some("Queued locally. Settlement follows reconnection.".to_string())
+    } else if intent.counterparty.is_none() {
+        Some("No node has accepted yet. Settlement needs a counterparty.".to_string())
+    } else {
+        None
     };
-    let parsed_amount = TokenAmount::parse(&amount, decimals)?;
-    if parsed_amount.is_zero() {
+
+    Ok(IntentDetailView {
+        id: intent.id.to_string(),
+        title: format!("{:?} {}", intent.draft.action, intent.draft.asset).to_uppercase(),
+        status: intent.status.clone(),
+        elapsed: crate::intents::format_elapsed(intent.elapsed_ms(crate::intents::now_ms())),
+        rows: detail_rows(&intent),
+        can_settle: settle_blocked.is_none(),
+        settle_blocked,
+        can_cancel: !intent.status.is_terminal(),
+    })
+}
+
+/// Streams an intent's verification log.
+///
+/// Replays what was already recorded, then follows. **Cancelling this stops
+/// delivery and nothing else** — the settlement writes into the ledger and
+/// holds no token from here, which is the property `src/intents.rs` is built
+/// around and `src/subscriptions.rs` documents.
+///
+/// # Errors
+///
+/// [`AppError::TooManySubscriptions`] at the registry's limit.
+#[tauri::command]
+pub async fn subscribe_settlement_log(
+    id: String,
+    on_line: tauri::ipc::Channel<crate::bindings::LogLine>,
+    state: State<'_, AppState>,
+) -> Result<String, AppError> {
+    let intent_id = cabal_core::IntentId::new(id);
+    let registry = state.subscriptions().clone();
+    let (handle, token) = registry.register("settlement")?;
+
+    let (replay, mut receiver) = state.intents().watch(&intent_id);
+
+    let stream = handle.clone();
+    tauri::async_runtime::spawn(async move {
+        for recorded in replay {
+            if on_line.send(recorded).is_err() {
+                registry.finished(&stream);
+                return;
+            }
+        }
+
+        loop {
+            tokio::select! {
+                () = token.cancelled() => break,
+                received = receiver.recv() => match received {
+                    Ok((who, line)) => {
+                        if who != intent_id {
+                            continue;
+                        }
+                        if on_line.send(line).is_err() {
+                            // The webview is gone; nothing left to deliver to.
+                            break;
+                        }
+                    }
+                    // Lagged means this subscriber fell behind, not that the
+                    // settlement stopped. The retained log is the record, so
+                    // keep following rather than tearing the stream down.
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                },
+            }
+        }
+
+        registry.finished(&stream);
+    });
+
+    Ok(handle.to_string())
+}
+
+/// Settles an intent on-chain.
+///
+/// Returns as soon as the work is **started**, not when it finishes. The
+/// settlement runs in a task that holds only the ledger, so navigating away —
+/// or cancelling the log — cannot abort it. That is a correctness property with
+/// money attached, and it is structural rather than a matter of discipline.
+///
+/// # Errors
+///
+/// [`AppError::InvalidIntent`] if the intent is unknown, already finished, or
+/// has no counterparty to pay.
+#[tauri::command]
+pub async fn settle_intent(id: String, state: State<'_, AppState>) -> Result<(), AppError> {
+    use crate::error::InvalidReason;
+
+    let intent_id = cabal_core::IntentId::new(id);
+    let intent = state
+        .intents()
+        .get(&intent_id)
+        .ok_or(AppError::InvalidIntent {
+            field: "id",
+            reason: InvalidReason::Missing,
+        })?;
+
+    if intent.status.is_terminal() || matches!(intent.status, cabal_core::IntentStatus::Draft) {
         return Err(AppError::InvalidIntent {
-            field: "amount",
+            field: "status",
             reason: InvalidReason::OutOfRange,
         });
     }
 
-    let condition_text = if condition.starts_with("Any") {
-        condition.to_uppercase()
-    } else {
-        let parsed_price = UsdPrice::parse(&price).map_err(|_| AppError::InvalidIntent {
-            field: "price",
-            reason: InvalidReason::Malformed,
-        })?;
-        format!("{} {}", condition.to_uppercase(), parsed_price)
+    let counterparty = intent.counterparty.clone().ok_or(AppError::InvalidIntent {
+        field: "counterparty",
+        reason: InvalidReason::Missing,
+    })?;
+
+    let services = state.services()?;
+    let ledger = state.intents().clone();
+
+    tauri::async_runtime::spawn(async move {
+        run_settlement(ledger, services, intent_id, counterparty, intent.draft.clone()).await;
+    });
+
+    Ok(())
+}
+
+/// The settlement itself.
+///
+/// Takes no cancellation token by construction. Adding one would be the bug
+/// ticket 34 exists to prevent — there would then be a way for a UI navigation
+/// to abort an in-flight on-chain operation.
+async fn run_settlement(
+    ledger: crate::intents::Ledger,
+    services: crate::state::Services,
+    id: cabal_core::IntentId,
+    counterparty: String,
+    draft: cabal_core::IntentDraft,
+) {
+    use crate::bindings::LogTone;
+    use crate::blockchain_bridge::EscrowOutcome;
+    use crate::intents::line;
+    use cabal_core::{FailureReason, IntentStatus};
+
+    let started = std::time::Instant::now();
+
+    ledger.record(&id, line("VERIFYING ROUTE.", LogTone::Out));
+    // Routing precedes settlement in the domain: settling straight from
+    // broadcast would mean settling through a route that was never found.
+    let _ = ledger.advance(&id, IntentStatus::FindingRoute, crate::intents::now_ms());
+
+    ledger.record(&id, line(format!("COUNTERPARTY {counterparty}."), LogTone::Dim));
+    ledger.record(&id, line("LOCKING ESCROW.", LogTone::Out));
+
+    // An hour is the window the counterparty has to deliver before the escrow
+    // can be refunded. Long enough for a slow mesh route, short enough that
+    // funds are not stranded for a day.
+    let expiry = crate::intents::now_ms() / 1_000 + 3_600;
+    let amount = alloy::primitives::U256::from(draft.amount.raw());
+
+    let outcome = {
+        let bridge = services.bridge.lock().await;
+        bridge.create_escrow_detailed(&counterparty, amount, expiry).await
     };
 
-    Ok(vec![
-        ReviewRow { key: "ACTION".into(), value: format!("{} {}", action.to_uppercase(), asset) },
-        ReviewRow { key: "CONDITION".into(), value: condition_text },
-        ReviewRow { key: "AMOUNT".into(), value: format!("{parsed_amount} {asset}") },
-        ReviewRow { key: "MODE".into(), value: mode },
-        ReviewRow { key: "PRIVACY".into(), value: privacy },
-    ])
+    let elapsed_ms = u32::try_from(started.elapsed().as_millis()).unwrap_or(u32::MAX);
+
+    match outcome {
+        Ok(EscrowOutcome::Confirmed { escrow_id, tx_hash }) => {
+            ledger.record(&id, line(format!("ESCROW {escrow_id} MINED."), LogTone::Ok));
+            ledger.record(&id, line(format!("PROOF {tx_hash}"), LogTone::Loud));
+            ledger.set_escrow(
+                &id,
+                crate::intents::EscrowRef::Confirmed { id: escrow_id, tx: tx_hash.clone() },
+            );
+
+            // The filled price is the condition's own price where one exists.
+            // `Any` carries none, and inventing one for the proof screen would
+            // fabricate the single figure that screen is there to prove.
+            let filled_at = draft
+                .condition
+                .price()
+                .unwrap_or_else(|| cabal_core::UsdPrice::from_cents(0));
+
+            let _ = ledger.advance(
+                &id,
+                IntentStatus::Settled {
+                    proof: cabal_core::ProofHash::new(tx_hash),
+                    filled_at,
+                    elapsed_ms,
+                },
+                crate::intents::now_ms(),
+            );
+        }
+        Ok(EscrowOutcome::Queued { queue_id }) => {
+            // Not a failure. The transaction is signed and waiting for a peer
+            // with a route to the chain, which is the offline path working.
+            ledger.record(&id, line("NO ROUTE TO CHAIN. SIGNED OFFLINE.", LogTone::Dim));
+            ledger.record(&id, line(format!("QUEUED FOR RELAY: {queue_id}."), LogTone::Dim));
+            ledger.set_escrow(&id, crate::intents::EscrowRef::Queued { queue_id });
+            let _ = ledger.advance(&id, IntentStatus::Waiting, crate::intents::now_ms());
+        }
+        Err(error) => {
+            // Logged with detail, surfaced without: RPC errors routinely carry
+            // the endpoint URL, which the webview has no business holding.
+            tracing::error!(target: "cabalmesh::intents", %id, %error, "settlement failed");
+            ledger.record(&id, line("SETTLEMENT REJECTED ON-CHAIN.", LogTone::Err));
+            let _ = ledger.advance(
+                &id,
+                IntentStatus::Failed { reason: FailureReason::SettlementRejected },
+                crate::intents::now_ms(),
+            );
+        }
+    }
+}
+
+/// Cancels an intent, releasing any escrow it holds.
+///
+/// A deliberate, separate action from cancelling a log subscription. Overloading
+/// the two is the mistake ticket 34 names explicitly.
+///
+/// # Errors
+///
+/// [`AppError::InvalidIntent`] if the intent is unknown or already finished.
+#[tauri::command]
+pub async fn cancel_intent(id: String, state: State<'_, AppState>) -> Result<(), AppError> {
+    use crate::bindings::LogTone;
+    use crate::intents::line;
+
+    let intent_id = cabal_core::IntentId::new(id);
+    let ledger = state.intents();
+
+    // The transition check does the validating: a terminal intent refuses, and
+    // an unknown identifier refuses, both with a typed error.
+    let intent = ledger.get(&intent_id).ok_or(AppError::InvalidIntent {
+        field: "id",
+        reason: crate::error::InvalidReason::Missing,
+    })?;
+
+    // Escrow first, then the status. Releasing after marking it cancelled would
+    // leave funds locked behind an intent the UI says is over.
+    if let Some(crate::intents::EscrowRef::Confirmed { id: escrow_id, .. }) = intent.escrow {
+        ledger.record(&intent_id, line("RELEASING ESCROW.", LogTone::Out));
+        match state.services() {
+            Ok(services) => {
+                let bridge = services.bridge.lock().await;
+                match bridge.release_escrow(escrow_id).await {
+                    Ok(tx) => ledger.record(&intent_id, line(format!("ESCROW RELEASED. {tx}"), LogTone::Ok)),
+                    Err(error) => {
+                        tracing::error!(target: "cabalmesh::intents", %error, "escrow release failed");
+                        ledger.record(&intent_id, line("ESCROW STILL LOCKED. RETRY FROM VAULT.", LogTone::Err));
+                        return Err(AppError::Chain { retryable: true });
+                    }
+                }
+            }
+            Err(_) => return Err(AppError::NotReady { subsystem: "bootstrap" }),
+        }
+    }
+
+    ledger.advance(&intent_id, cabal_core::IntentStatus::Cancelled, crate::intents::now_ms())?;
+    ledger.record(&intent_id, line("INTENT CANCELLED. NOTHING WRITTEN.", LogTone::Dim));
+    Ok(())
+}
+
+/// What the proof screen renders.
+#[derive(Debug, Clone, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "camelCase")]
+pub struct ProofView {
+    pub id: String,
+    /// The settling transaction's hash.
+    pub hash: String,
+    /// How long settlement took, e.g. `11.4S`.
+    pub timing: String,
+    /// The hops the intent travelled. Empty when it settled directly.
+    pub route: Vec<String>,
+    /// The price it filled at. Absent for an unconditioned intent, which has
+    /// no price to have filled at.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filled_at: Option<String>,
+}
+
+/// The proof for a settled intent.
+///
+/// # Errors
+///
+/// [`AppError::InvalidIntent`] if the intent is unknown or has not settled —
+/// there is no proof of something that did not happen.
+#[tauri::command]
+pub async fn intent_proof(id: String, state: State<'_, AppState>) -> Result<ProofView, AppError> {
+    use crate::error::InvalidReason;
+
+    let intent = state
+        .intents()
+        .get(&cabal_core::IntentId::new(id))
+        .ok_or(AppError::InvalidIntent {
+            field: "id",
+            reason: InvalidReason::Missing,
+        })?;
+
+    let cabal_core::IntentStatus::Settled { proof, filled_at, elapsed_ms } = &intent.status else {
+        return Err(AppError::InvalidIntent {
+            field: "status",
+            reason: InvalidReason::OutOfRange,
+        });
+    };
+
+    Ok(ProofView {
+        id: intent.id.to_string(),
+        hash: proof.to_string(),
+        timing: crate::intents::format_elapsed(u64::from(*elapsed_ms)),
+        route: intent.route.iter().map(cabal_core::NodeId::truncated).collect(),
+        // Zero cents means the intent carried no condition, so there is no
+        // price it filled at. Rendering `$0.00` would be a figure, and a wrong
+        // one.
+        filled_at: (filled_at.cents() > 0).then(|| filled_at.to_string()),
+    })
+}
+
+#[cfg(test)]
+mod intent_tests {
+    use super::*;
+    use crate::bindings::LogTone;
+    use crate::intents::{line, Ledger};
+    use cabal_core::{IntentStatus, ProofHash, UsdPrice};
+
+    fn ledger() -> (Ledger, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = cabal_store::JsonStore::new(dir.path().join("intents.json"));
+        (Ledger::open(store), dir)
+    }
+
+    fn fields(action: &str, asset: &str, condition: &str, price: &str, amount: &str, mode: &str, privacy: &str) -> IntentFields {
+        IntentFields {
+            action: action.into(),
+            asset: asset.into(),
+            condition: condition.into(),
+            price: price.into(),
+            amount: amount.into(),
+            mode: mode.into(),
+            privacy: privacy.into(),
+        }
+    }
+
+    fn draft() -> cabal_core::IntentDraft {
+        parse_draft(&fields("BUY", "AVAX", "Price under", "95", "1.5", "SHARK MODE", "HIGH")).unwrap()
+    }
+
+    // -- what the dialog shows is what goes out ----------------------------
+
+    #[test]
+    fn the_review_rows_come_from_the_parsed_draft() {
+        // The property ticket 33 asks for: the dialog is a rendering *of the
+        // draft*, so it cannot describe an intent different from the one that
+        // would be broadcast.
+        let rows = review_rows(&draft());
+        let value = |key: &str| {
+            rows.iter()
+                .find(|row| row.key == key)
+                .map(|row| row.value.clone())
+                .unwrap()
+        };
+
+        assert_eq!(value("ACTION"), "BUY AVAX");
+        assert_eq!(value("CONDITION"), "UNDER $95.00");
+        assert_eq!(value("AMOUNT"), "1.5 AVAX");
+        assert_eq!(value("MODE"), "SHARK MODE");
+        assert_eq!(value("PRIVACY"), "HIGH");
+    }
+
+    #[test]
+    fn an_unconditioned_intent_shows_no_price() {
+        // `Condition::Any` carries no price by construction, so there is none
+        // to render — and rendering `$0.00` would be a claim about a limit the
+        // user never set.
+        let draft = parse_draft(&fields("SELL", "USDC", "Any price", "", "10", "GHOST MODE", "LOW")).unwrap();
+        let rows = review_rows(&draft);
+        assert_eq!(rows[1].value, "ANY PRICE");
+    }
+
+    #[test]
+    fn precision_beyond_the_asset_is_refused_rather_than_truncated() {
+        // USDC has six decimals. Silently dropping the seventh would lose money.
+        let refused = parse_draft(&fields("BUY", "USDC", "Any price", "", "1.1234567", "SHARK MODE", "HIGH"));
+        assert!(matches!(
+            refused,
+            Err(AppError::InvalidIntent { field: "amount", .. })
+        ));
+    }
+
+    #[test]
+    fn a_zero_amount_is_refused() {
+        let refused = parse_draft(&fields("BUY", "AVAX", "Any price", "", "0", "SHARK MODE", "HIGH"));
+        assert!(matches!(
+            refused,
+            Err(AppError::InvalidIntent {
+                field: "amount",
+                reason: crate::error::InvalidReason::OutOfRange
+            })
+        ));
+    }
+
+    #[test]
+    fn an_unknown_asset_is_refused_rather_than_defaulted() {
+        // Defaulting to eighteen decimals for an unrecognised asset would parse
+        // a USDC amount as if it were AVAX — off by a factor of a trillion.
+        let refused = parse_draft(&fields("BUY", "DOGE", "Any price", "", "1", "SHARK MODE", "HIGH"));
+        assert!(matches!(
+            refused,
+            Err(AppError::InvalidIntent { field: "asset", .. })
+        ));
+    }
+
+    #[test]
+    fn every_offered_asset_parses() {
+        // The form offers these, so every one of them has to survive the round
+        // trip. A mismatch here is a form that offers something Rust rejects.
+        for (name, _, _) in ASSETS {
+            assert!(
+                parse_draft(&fields("BUY", name, "Any price", "", "1", "SHARK MODE", "HIGH")).is_ok(),
+                "{name} did not parse"
+            );
+        }
+    }
+
+    #[test]
+    fn the_confirm_lines_describe_different_things() {
+        // Ticket 04. The retired string claimed offline intents settle
+        // on-chain; the queued line must not say anything of the kind.
+        assert!(CONFIRM_ONLINE.contains("broadcasts to the mesh"));
+        assert!(CONFIRM_QUEUED.contains("Queued locally"));
+        assert!(!CONFIRM_QUEUED.contains("settles on-chain"));
+        // The identity claim holds in both, which is the part that stayed true.
+        assert!(CONFIRM_ONLINE.contains("No identity is attached."));
+        assert!(CONFIRM_QUEUED.contains("No identity is attached."));
+    }
+
+    // -- list slicing -------------------------------------------------------
+
+    #[test]
+    fn a_queued_intent_is_pending_not_active() {
+        // A draft is the queue. Filing it under ACTIVE would claim it is on the
+        // mesh; filing it under HISTORY would claim it is over.
+        let draft = IntentStatus::Draft;
+        assert!(IntentFilter::Pending.admits(&draft));
+        assert!(!IntentFilter::Active.admits(&draft));
+        assert!(!IntentFilter::History.admits(&draft));
+    }
+
+    #[test]
+    fn every_status_lands_in_exactly_one_slice() {
+        let statuses = [
+            IntentStatus::Draft,
+            IntentStatus::Broadcast { route_len: 2 },
+            IntentStatus::Negotiating { bids: 1, best: None },
+            IntentStatus::FindingRoute,
+            IntentStatus::Waiting,
+            IntentStatus::Settled {
+                proof: ProofHash::new("0xabc"),
+                filled_at: UsdPrice::from_cents(9421),
+                elapsed_ms: 11_400,
+            },
+            IntentStatus::Failed { reason: cabal_core::FailureReason::NoRoute },
+            IntentStatus::Cancelled,
+        ];
+
+        for status in statuses {
+            let matches = [IntentFilter::Active, IntentFilter::Pending, IntentFilter::History]
+                .into_iter()
+                .filter(|filter| filter.admits(&status))
+                .count();
+            assert_eq!(matches, 1, "{status:?} landed in {matches} slices");
+        }
+    }
+
+    #[test]
+    fn a_row_renders_the_intent_it_was_given() {
+        let (ledger, _dir) = ledger();
+        let intent = ledger.create(draft(), 1_000);
+        let row = row_for(&intent, 12_400);
+
+        assert_eq!(row.title, "BUY AVAX");
+        assert_eq!(row.subtitle, "UNDER $95.00");
+        assert_eq!(row.amount, "1.5 AVAX");
+        assert_eq!(row.elapsed, "11.4S");
+        // Shark is the default, so badging it would put a badge on nearly every
+        // row and stop the badge carrying information.
+        assert_eq!(row.badge, None);
+    }
+
+    #[test]
+    fn a_non_default_mode_is_badged() {
+        let (ledger, _dir) = ledger();
+        let ghost = parse_draft(&fields("BUY", "AVAX", "Any price", "", "1", "GHOST MODE", "HIGH")).unwrap();
+        let intent = ledger.create(ghost, 1_000);
+        assert_eq!(row_for(&intent, 1_000).badge.as_deref(), Some("GHOST MODE"));
+    }
+
+    // -- the seven-row breakdown -------------------------------------------
+
+    #[test]
+    fn the_breakdown_has_seven_rows_and_invents_no_route() {
+        let (ledger, _dir) = ledger();
+        let intent = ledger.create(draft(), 1_000);
+        let rows = detail_rows(&intent);
+
+        assert_eq!(rows.len(), 7);
+        assert_eq!(rows[5].key, "ROUTE");
+        // Says so rather than inventing hops — the proof screen renders the
+        // same value and calls it evidence.
+        assert_eq!(rows[5].value, "NOT YET ROUTED");
+        assert_eq!(rows[6].value, "NONE YET");
+    }
+
+    // -- ticket 34's load-bearing rule -------------------------------------
+
+    #[tokio::test]
+    async fn cancelling_the_log_subscription_does_not_abort_the_settlement() {
+        // The explicit test ticket 34 asks for, run against the real
+        // subscription registry rather than a stand-in.
+        //
+        // The structural claim is that a settlement task holds *no* token from
+        // the registry. This exercises it: a task shaped exactly like
+        // `run_settlement` — a ledger and nothing else — keeps writing after
+        // the subscription that was watching it is cancelled, and reaches its
+        // terminal state.
+        let (ledger, _dir) = ledger();
+        let registry = crate::subscriptions::Registry::new();
+        let intent = ledger.create(draft(), 1_000);
+
+        let (handle, token) = registry.register("settlement").unwrap();
+        let (_replay, _receiver) = ledger.watch(&intent.id);
+
+        ledger
+            .advance(&intent.id, IntentStatus::Broadcast { route_len: 2 }, 1_100)
+            .unwrap();
+
+        let writer = {
+            let ledger = ledger.clone();
+            let id = intent.id.clone();
+            tokio::spawn(async move {
+                ledger.record(&id, line("VERIFYING ROUTE.", LogTone::Out));
+                let _ = ledger.advance(&id, IntentStatus::FindingRoute, 1_200);
+
+                // The navigation happens here, in the middle.
+                tokio::task::yield_now().await;
+
+                ledger.record(&id, line("ESCROW MINED.", LogTone::Ok));
+                let _ = ledger.advance(
+                    &id,
+                    IntentStatus::Settled {
+                        proof: ProofHash::new("0xdeadbeef"),
+                        filled_at: UsdPrice::from_cents(9421),
+                        elapsed_ms: 11_400,
+                    },
+                    1_300,
+                );
+            })
+        };
+
+        // Navigating away: the registry cancels delivery.
+        registry.cancel(&handle);
+        assert!(token.is_cancelled());
+        assert!(registry.is_empty());
+
+        writer.await.unwrap();
+
+        let after = ledger.get(&intent.id).unwrap();
+        assert!(
+            matches!(after.status, IntentStatus::Settled { .. }),
+            "settlement was aborted by a UI navigation: {:?}",
+            after.status
+        );
+        // And the record is complete, so coming back replays everything that
+        // happened while away.
+        assert_eq!(after.log.len(), 2);
+        assert_eq!(&*after.log[1].text, "ESCROW MINED.");
+    }
+
+    #[tokio::test]
+    async fn cancelling_the_intent_is_a_different_thing_entirely() {
+        // The other half of the same rule: cancelling the *intent* is
+        // deliberate and does end it. If these two ever became the same
+        // operation, a navigation would start releasing escrow.
+        let (ledger, _dir) = ledger();
+        let intent = ledger.create(draft(), 1_000);
+        ledger
+            .advance(&intent.id, IntentStatus::Broadcast { route_len: 2 }, 1_100)
+            .unwrap();
+
+        ledger
+            .advance(&intent.id, IntentStatus::Cancelled, 2_000)
+            .unwrap();
+
+        assert_eq!(ledger.get(&intent.id).unwrap().status, IntentStatus::Cancelled);
+    }
+
+    // -- the proof ----------------------------------------------------------
+
+    #[test]
+    fn a_settled_intent_yields_the_hash_it_settled_with() {
+        let (ledger, _dir) = ledger();
+        let intent = ledger.create(draft(), 1_000);
+        ledger
+            .advance(&intent.id, IntentStatus::Broadcast { route_len: 1 }, 1_100)
+            .unwrap();
+        ledger
+            .advance(&intent.id, IntentStatus::FindingRoute, 1_200)
+            .unwrap();
+        ledger.set_route(&intent.id, vec![cabal_core::NodeId::new("7F3A00000000008C2E")]);
+        ledger
+            .advance(
+                &intent.id,
+                IntentStatus::Settled {
+                    proof: ProofHash::new("0xa4f2c9e1b70d5533"),
+                    filled_at: UsdPrice::from_cents(9421),
+                    elapsed_ms: 11_400,
+                },
+                12_400,
+            )
+            .unwrap();
+
+        let settled = ledger.get(&intent.id).unwrap();
+        let IntentStatus::Settled { proof, filled_at, elapsed_ms } = &settled.status else {
+            panic!("expected settled");
+        };
+
+        assert_eq!(proof.as_str(), "0xa4f2c9e1b70d5533");
+        assert_eq!(filled_at.to_string(), "$94.21");
+        assert_eq!(crate::intents::format_elapsed(u64::from(*elapsed_ms)), "11.4S");
+        assert_eq!(settled.route[0].truncated(), "7F3A..8C2E");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -684,9 +1716,13 @@ pub async fn vault_keys(state: State<'_, AppState>) -> Result<Vec<VaultRow>, App
 #[serde(rename_all = "camelCase")]
 pub struct ProfileView {
     pub node_id: String,
-    /// `87.6 (+5.3%)`, or an em dash with no mesh. Mocked per ticket 03 — see
-    /// src/reputation.rs for what that means and ticket 39 to replace it.
-    pub reputation: String,
+    /// `14 (+55.6%)`, or just `14` with no prior window to compare against.
+    ///
+    /// Was a mocked `reputation` until ticket 39. Renamed along with the value
+    /// because a count called a "score" is a figure whose name promises more
+    /// than its definition delivers.
+    pub settled: String,
+    /// `2026.08.03` — when this installation first ran.
     pub member_since: String,
     pub offline: bool,
     pub network: String,
@@ -722,17 +1758,19 @@ pub async fn profile_summary(state: State<'_, AppState>) -> Result<ProfileView, 
     // switch for a mesh that is not there.
     let offline = snapshot.as_ref().is_none_or(|s| s.offline);
 
-    // Mocked per ticket 03, derived from the same peer identifier the home
-    // tile uses so the two screens never disagree. See src/reputation.rs.
-    let reputation = snapshot
-        .as_ref()
-        .and_then(|s| crate::reputation::Reputation::of(&s.peer_id))
-        .map_or_else(|| "—".into(), |reading| reading.combined());
+    // The same ledger the home tile reads, so the two screens cannot disagree.
+    // No mesh is needed: this is local history, not network state.
+    let settled = crate::standing::Standing::of(state.intents(), crate::intents::now_ms()).combined();
 
     Ok(ProfileView {
         node_id,
-        reputation,
-        member_since: "—".into(),
+        settled,
+        // Written on the first read and never again — see src/install.rs for
+        // why neither the ephemeral mesh identity nor a file's creation time
+        // could answer this.
+        member_since: crate::install::format_date(crate::install::first_seen_ms(
+            crate::intents::now_ms(),
+        )),
         offline,
         network: network.network.label().to_string(),
         is_testnet: network.network.is_testnet(),

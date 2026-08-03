@@ -137,6 +137,21 @@ pub struct ChainStateCache {
     pub cached_at: DateTime<Utc>,
 }
 
+/// What creating an escrow actually produced.
+///
+/// Richer than [`TxResult`], which carries only the escrow id. The proof screen
+/// renders a transaction hash and calls it genuine, so the hash has to come
+/// from the receipt this call held rather than from a later lookup.
+///
+/// `Queued` is not a failure: with no route to the RPC the transaction is
+/// signed locally and handed to a peer, which is the architecture working as
+/// designed rather than settlement going wrong.
+#[derive(Debug, Clone)]
+pub enum EscrowOutcome {
+    Confirmed { escrow_id: u64, tx_hash: String },
+    Queued { queue_id: String },
+}
+
 /// A transaction signed locally while offline, queued for a mesh peer with
 /// real connectivity to submit on our behalf.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -788,8 +803,23 @@ impl BlockchainBridge {
     /// signing the transaction offline and queuing it for mesh relay.
     /// `skip(self)` keeps the bridge — which holds signers — out of the span,
     /// while the escrow parameters stay visible.
-    #[tracing::instrument(skip(self), fields(payee = %payee, expiry = expiry_unix))]
     pub async fn create_escrow(&self, payee: &str, amount_wei: U256, expiry_unix: u64) -> Result<TxResult, Box<dyn Error>> {
+        // A thin wrapper so the frozen desktop surface keeps the exact
+        // signature ticket 09 snapshotted. Everything below is shared.
+        Ok(match self.create_escrow_detailed(payee, amount_wei, expiry_unix).await? {
+            EscrowOutcome::Confirmed { escrow_id, .. } => TxResult::Confirmed { id: escrow_id },
+            EscrowOutcome::Queued { queue_id } => TxResult::Queued { queue_id },
+        })
+    }
+
+    /// Creates an escrow and reports the transaction hash alongside the id.
+    ///
+    /// Exists because `TxResult` carries only the escrow id, and the proof
+    /// screen renders a hash it claims is genuine. Reading the hash back with a
+    /// second call would be a different transaction's worth of trust — the
+    /// receipt in hand is the only thing that actually proves this settlement.
+    #[tracing::instrument(skip(self), fields(payee = %payee, expiry = expiry_unix))]
+    pub async fn create_escrow_detailed(&self, payee: &str, amount_wei: U256, expiry_unix: u64) -> Result<EscrowOutcome, Box<dyn Error>> {
         let signer = self.primary_signer()?;
         let escrow_address = self.escrow_address.ok_or("ESCROW_CONTRACT_ADDRESS not configured")?;
         let payee_addr = Address::from_str(payee)?;
@@ -823,7 +853,7 @@ impl BlockchainBridge {
             Err(_timed_out) => {
                 tracing::warn!("⚠️  [Bridge] RPC unreachable — signing create_escrow offline for mesh relay.");
                 let queued = self.sign_offline(escrow_address, calldata, amount_wei, "Create escrow").await?;
-                return Ok(TxResult::Queued { queue_id: queued.id });
+                return Ok(EscrowOutcome::Queued { queue_id: queued.id });
             }
         };
 
@@ -835,7 +865,10 @@ impl BlockchainBridge {
             .ok_or("EscrowCreated event not found in receipt")?;
 
         tracing::info!("✅ [Bridge] Escrow {} created. Tx: {:?}", escrow_id, receipt.transaction_hash);
-        Ok(TxResult::Confirmed { id: escrow_id })
+        Ok(EscrowOutcome::Confirmed {
+            escrow_id,
+            tx_hash: format!("{:?}", receipt.transaction_hash),
+        })
     }
 
     pub async fn release_escrow(&self, escrow_id: u64) -> Result<String, Box<dyn Error>> {

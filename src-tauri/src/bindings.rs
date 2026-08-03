@@ -21,7 +21,11 @@
 //! interfaces against a moving API is a drift generator; generating them makes
 //! a mismatch a build failure instead of a runtime `undefined`.
 
-use serde::Serialize;
+// `Deserialize` on the log types because the intent ledger persists settlement
+// logs — a queued intent has to still have its verification lines after the app
+// is killed. Nothing deserializes these from the webview; the ACL does not
+// admit them as command input.
+use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "ts-rs")]
 use ts_rs::TS;
@@ -39,7 +43,7 @@ pub enum StatusTone {
 }
 
 /// Terminal line tone. Domain matches `TerminalLine`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts-rs", derive(TS), ts(export, export_to = "../../src/types/bindings.ts"))]
 #[serde(rename_all = "lowercase")]
 pub enum LogTone {
@@ -76,7 +80,7 @@ pub enum ToastTone {
 ///
 /// `Box<str>` rather than `String`: these are built once, never mutated, and
 /// arrive in the hundreds, so `String`'s spare-capacity word is dead weight.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts-rs", derive(TS), ts(export, export_to = "../../src/types/bindings.ts"))]
 pub struct LogLine {
     pub text: Box<str>,
@@ -201,8 +205,8 @@ mod tests {
     fn a_tile_without_a_baseline_omits_its_delta() {
         // Rendering "+0.0%" for an unmeasured figure would be a fabricated
         // trend, which the brand's exactness rule forbids. `RELAYED BYTES` has
-        // no prior window to compare against, and the reputation tile falls
-        // back to this shape whenever there is no mesh to derive from.
+        // no prior window to compare against, and `INTENTS SETTLED` falls back
+        // to this shape until there is a previous week to compare with.
         let tile = StatTile::plain("RELAYED BYTES", "—");
         let json = serde_json::to_string(&tile).unwrap();
         assert!(!json.contains("delta\""), "absent delta must be omitted: {json}");

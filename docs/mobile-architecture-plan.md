@@ -1143,7 +1143,7 @@ Reshaped from 47 ad-hoc commands to an exact **28-handler contract**: 25 screen/
 | vault | `vault_identities` | `() -> Vec<VaultRow>` |
 | vault | `vault_keys` | `() -> Vec<VaultRow>` |
 | vault | `vault_total_value` | `() -> FormattedAmount` — only called on reveal; decimal string, never JSON `u128` |
-| profile | `profile_summary` | `() -> ProfileView` (node id, reputation + delta, member since) |
+| profile | `profile_summary` | `() -> ProfileView` (node id, settled count + delta, member since) |
 | profile | `set_offline_mode` | `(offline: bool) -> ()` |
 | profile | `leave_mesh` | `() -> ()` — shreds session, returns to splash |
 | all | `platform_caps` | `() -> PlatformCaps` — static build facts only |
@@ -1382,7 +1382,7 @@ Everything from Phase 2 onward changes services *behind* this adapter. The snaps
 | 5 | Marketplace/voucher/content commands | **Kept**, relocated to `cabal-legacy`, desktop-only registration. Required anyway by the frozen desktop UI. |
 | — | Desktop RPG UI | **Frozen** — which makes the §2.10 adapter mandatory, not optional. |
 | — | Confirm-dialog copy | **Two strings, chosen by connection state** (ticket 04, 2026-08-03). Online: *"This intent broadcasts to the mesh and settles on-chain. No identity is attached."* Offline: *"Queued locally. Broadcast and settlement follow reconnection. No identity is attached."* The prototype's single string claimed offline execution, which the queue-then-drain architecture does not do. Both live in Rust alongside the review rows so the dialog cannot describe a path the command will not take. |
-| — | Reputation score | **Mocked in `src-tauri/src/reputation.rs`** (ticket 03, 2026-08-03), derived from the peer identifier rather than constant or random, so it is stable per identity and differs between devices. Both `mesh_snapshot` and `profile_summary` read that one function. Ticket 39 replaces it with a measured signal; until then it is a number the product cannot back, and that is recorded rather than hidden. |
+| — | Reputation score | **Removed and replaced** (ticket 39, 2026-08-03). Ticket 03 had shipped a mock derived from the peer identifier; it is deleted. The field is now `INTENTS SETTLED` — a lifetime count from the intent ledger, with the last seven days compared against the seven before. Renamed as well as redefined: a count labelled "score" would be the same overclaim in a different place. `src-tauri/src/standing.rs`. |
 
 ### Defaulted without asking (change if wrong)
 
@@ -1390,8 +1390,7 @@ Everything from Phase 2 onward changes services *behind* this adapter. The snaps
 
 ### Still open
 
-1. **What the reputation score should measure.** The field renders (see §11), but from a mock. Whether the real signal is settled-intent count, uptime, stake or something derived is unanswered, and shipping the mock past a demo means shipping a trust signal with nothing behind it. Ticket 39.
-2. **The product's one-line positioning still says "executed offline."** Ticket 04 fixed the dialog and flagged this: the tagline in `src/ds/BRAND.md` makes the same claim the dialog string was retired for. It ships nowhere in the app today, so it is flagged rather than rewritten — the positioning line is the design owner's, not a dialog string.
+1. **The product's one-line positioning still says "executed offline."** Ticket 04 fixed the dialog and flagged this: the tagline in `src/ds/BRAND.md` makes the same claim the dialog string was retired for. It ships nowhere in the app today, so it is flagged rather than rewritten — the positioning line is the design owner's, not a dialog string.
 
 ---
 

@@ -15,42 +15,12 @@ import { Connecting } from "../screens/Connecting";
 import { Home } from "../screens/Home";
 import { Nodes } from "../screens/Nodes";
 import { Intents } from "../screens/Intents";
+import { New } from "../screens/New";
+import { Detail } from "../screens/Detail";
+import { Settled } from "../screens/Settled";
 import { Vault } from "../screens/Vault";
 import { Profile } from "../screens/Profile";
 import type { Screen } from "../shell/screen";
-
-/**
- * Per-screen bodies land from ticket 29. Until then each renders its own name,
- * which is enough to verify navigation, safe areas, tab semantics and the type
- * scale on a device.
- */
-function Placeholder({ screen }: { screen: Screen }) {
-  return (
-    <section
-      style={{
-        padding: "var(--space-8)",
-        display: "flex",
-        flexDirection: "column",
-        gap: "var(--space-5)",
-      }}
-    >
-      <p
-        style={{
-          fontFamily: "var(--type-label-family)",
-          fontSize: "var(--text-2xs)",
-          letterSpacing: "var(--tracking-widest)",
-          color: "var(--text-muted)",
-          textTransform: "uppercase",
-        }}
-      >
-        {screen.name}
-      </p>
-      <p style={{ fontSize: "var(--text-base)" }}>
-        Shell in place. This screen lands in ticket 29.
-      </p>
-    </section>
-  );
-}
 
 function App() {
   // Starts at splash: the app has no session until the user asks for one, and
@@ -76,13 +46,20 @@ function App() {
           onTabChange={(tab) => setScreen({ name: "intents", tab })}
           onCompose={() => setScreen({ name: "new" })}
         />
+      ) : screen.name === "new" ? (
+        <New onBroadcast={(id) => setScreen({ name: "detail", id })} />
+      ) : screen.name === "detail" ? (
+        // Settling navigates on, but only forward: the detail screen reports
+        // that it settled and this decides, so a stale render cannot bounce a
+        // user off a screen they navigated back to.
+        <Detail id={screen.id} onSettled={(id) => setScreen({ name: "settled", id })} />
+      ) : screen.name === "settled" ? (
+        <Settled id={screen.id} onDone={() => setScreen({ name: "intents", tab: "HISTORY" })} />
       ) : screen.name === "vault" ? (
         <Vault tab={screen.tab} onTabChange={(tab) => setScreen({ name: "vault", tab })} />
       ) : screen.name === "profile" ? (
         <Profile onLeave={() => setScreen({ name: "splash" })} />
-      ) : (
-        <Placeholder screen={screen} />
-      )}
+      ) : null}
     </AppShell>
   );
 }

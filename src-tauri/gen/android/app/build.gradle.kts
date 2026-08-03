@@ -13,6 +13,26 @@ val tauriProperties = Properties().apply {
     }
 }
 
+/**
+ * Release signing, loaded from a file that is never committed.
+ *
+ * `keystore.properties` is in this directory's .gitignore alongside
+ * `key.properties`, and the keystore itself lives outside the repository
+ * entirely. See docs/android-release.md.
+ *
+ * When it is absent the release build is left **unsigned** rather than falling
+ * back to the debug key. A release APK signed with the debug key installs, runs
+ * and looks correct — and is rejected by Play with a message about the wrong
+ * certificate, long after the point where the mistake was cheap to notice.
+ */
+val keystoreProperties = Properties().apply {
+    val propFile = rootProject.file("keystore.properties")
+    if (propFile.exists()) {
+        propFile.inputStream().use { load(it) }
+    }
+}
+val hasReleaseSigning = keystoreProperties.getProperty("storeFile") != null
+
 android {
     compileSdk = 36
     namespace = "com.cabalmesh.app"
@@ -24,6 +44,37 @@ android {
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
         versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
     }
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = file(keystoreProperties.getProperty("storeFile"))
+                storePassword = keystoreProperties.getProperty("storePassword")
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+
+                // v1 too: minSdk is 24, and v2-only signing is not verifiable
+                // before API 24. Both are cheap and the pair covers every
+                // device this ships to.
+                enableV1Signing = true
+                enableV2Signing = true
+            }
+        }
+    }
+
+    // Per-architecture APKs, for measuring what a device actually downloads.
+    //
+    // The universal APK is the sum of four native libraries and tells nobody
+    // anything about install size. `--split-per-abi` builds these; the bundle
+    // is what Play receives, and Play does the same split itself.
+    splits {
+        abi {
+            isEnable = project.hasProperty("splitApks")
+            reset()
+            include("arm64-v8a", "armeabi-v7a", "x86", "x86_64")
+            isUniversalApk = false
+        }
+    }
+
     buildTypes {
         getByName("debug") {
             manifestPlaceholders["usesCleartextTraffic"] = "true"
@@ -37,6 +88,12 @@ android {
             }
         }
         getByName("release") {
+            // Left unsigned rather than debug-signed when the properties file
+            // is absent — see the comment on keystoreProperties for why that
+            // failure is worth making loud.
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             isMinifyEnabled = true
             proguardFiles(
                 *fileTree(".") { include("**/*.pro") }

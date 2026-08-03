@@ -14,12 +14,13 @@ const ROWS: ReadonlyArray<{ label: string; icon: GlyphName }> = [
 /**
  * Identity, settings and leaving the mesh.
  *
- * **The reputation row is a mock.** Ticket 03 decided to ship a placeholder
- * value; it is derived from the peer identifier in Rust, in the same place the
- * home tile reads from, so the two screens cannot disagree. Ticket 39 tracks
- * pointing it at a real signal. With no mesh it stays an em dash — there is no
- * identifier to derive from, and a constant would put one score on every
- * device.
+ * **The settled row is a real count**, read from the intent ledger — the same
+ * place the home tile and the intents list read from, so no two screens can
+ * disagree. It replaced a mocked "reputation score" in ticket 39; the label
+ * changed along with the value, because a count called a score is a figure
+ * whose name promises more than its definition delivers.
+ *
+ * It needs no mesh: this is local history, not network state.
  *
  * The network is shown plainly, with testnet marked, so nobody mistakes a test
  * balance for a real one.
@@ -71,7 +72,7 @@ export function Profile({ onLeave }: { onLeave: () => void }) {
       <Panel label="IDENTITY">
         <div style={{ padding: "var(--space-6)", display: "flex", flexDirection: "column", gap: "var(--space-5)" }}>
           <Field label="NODE ID" value={profile?.nodeId ?? "—"} />
-          <Field label="REPUTATION SCORE" value={profile?.reputation ?? "—"} />
+          <Field label="INTENTS SETTLED" value={profile?.settled ?? "—"} />
           <Field label="MEMBER SINCE" value={profile?.memberSince ?? "—"} />
           <div style={{ display: "flex", alignItems: "center", gap: "var(--space-4)" }}>
             <Badge tone={profile?.isTestnet ? "alert" : "quiet"} size="sm">

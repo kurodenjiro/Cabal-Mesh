@@ -37,6 +37,7 @@ use serde::Serialize;
 /// downstream matches, and `tag = "kind"` so TypeScript gets a union it can
 /// switch on.
 #[derive(Debug, thiserror::Error, Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
 #[serde(tag = "kind", content = "detail", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum AppError {
@@ -98,6 +99,7 @@ pub enum AppError {
 /// Why an intent was rejected. A variant rather than a sentence, so the form
 /// can render on-voice copy per field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum InvalidReason {
