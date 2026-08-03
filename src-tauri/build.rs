@@ -25,6 +25,11 @@ const COMMANDS: &[&str] = &[
     "list_intents",
     "intent_form_options",
     "preview_intent",
+    "vault_assets",
+    "vault_identities",
+    "vault_keys",
+    "profile_summary",
+    "set_offline_mode",
     // mesh
     "send_intent_to_mesh",
     "get_relay_stats",

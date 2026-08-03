@@ -71,6 +71,11 @@
     "allow-list-nearby-nodes",
     "allow-list-intents",
     "allow-intent-form-options",
-    "allow-preview-intent"
+    "allow-preview-intent",
+    "allow-vault-assets",
+    "allow-vault-identities",
+    "allow-vault-keys",
+    "allow-profile-summary",
+    "allow-set-offline-mode"
   ]
 }

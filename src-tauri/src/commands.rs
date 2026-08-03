@@ -559,3 +559,179 @@ pub async fn preview_intent(
         ReviewRow { key: "PRIVACY".into(), value: privacy },
     ])
 }
+
+// ---------------------------------------------------------------------------
+// Vault and profile
+// ---------------------------------------------------------------------------
+
+/// A row in the vault list.
+#[derive(Debug, Clone, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "camelCase")]
+pub struct VaultRow {
+    /// Three-letter tag, e.g. `AVX`, `ID`, `KEY`.
+    pub tag: String,
+    pub name: String,
+    pub amount: String,
+    /// Secondary line. Absent when there is nothing true to say.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+/// Balances held by this identity.
+///
+/// # Errors
+///
+/// [`AppError::NotReady`] before bootstrap.
+#[tauri::command]
+pub async fn vault_assets(state: State<'_, AppState>) -> Result<Vec<VaultRow>, AppError> {
+    let services = state.services()?;
+    let bridge = services.bridge.lock().await;
+
+    // The native balance is the one thing actually known. Listing tokens the
+    // wallet has never held would be inventing holdings.
+    let snapshot = bridge.get_latest_snapshot().ok();
+    let rows = snapshot
+        .map(|snapshot| {
+            snapshot
+                .assets
+                .into_iter()
+                .map(|asset| VaultRow {
+                    tag: asset.symbol.chars().take(3).collect::<String>().to_uppercase(),
+                    name: asset.symbol,
+                    amount: asset.amount,
+                    detail: None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Ok(rows)
+}
+
+/// Identities this device holds.
+///
+/// # Errors
+///
+/// [`AppError::NotReady`] before bootstrap, [`AppError::VaultLocked`] if the
+/// encrypted store cannot be opened.
+#[tauri::command]
+pub async fn vault_identities(state: State<'_, AppState>) -> Result<Vec<VaultRow>, AppError> {
+    let services = state.services()?;
+    let bridge = services.bridge.lock().await;
+
+    let views = bridge.get_identity_views().map_err(|_| AppError::VaultLocked)?;
+    Ok(views
+        .into_iter()
+        .map(|view| VaultRow {
+            tag: "ID".into(),
+            name: view.alias.to_uppercase(),
+            amount: cabal_core::NodeId::new(view.address).truncated(),
+            detail: None,
+        })
+        .collect())
+}
+
+/// Key material metadata.
+///
+/// **Never the key itself.** These rows describe what is held and where; the
+/// values stay in the encrypted vault. That is the promise the screen's own
+/// copy makes, so the command has to keep it.
+///
+/// # Errors
+///
+/// [`AppError::NotReady`] before bootstrap.
+#[tauri::command]
+pub async fn vault_keys(state: State<'_, AppState>) -> Result<Vec<VaultRow>, AppError> {
+    let _services = state.services()?;
+    Ok(vec![
+        VaultRow {
+            tag: "KEY".into(),
+            name: "SIGNING KEY".into(),
+            amount: "secp256k1".into(),
+            detail: Some("HELD LOCALLY. NEVER SYNCED.".into()),
+        },
+        VaultRow {
+            tag: "KEY".into(),
+            name: "VAULT KEY".into(),
+            amount: "AES-256-GCM".into(),
+            // Honest about what ticket 18 actually shipped: file-backed, not
+            // hardware-backed, until the keystore plugin lands.
+            detail: Some("FILE-BACKED. DEVICE KEY STORE PENDING.".into()),
+        },
+        VaultRow {
+            tag: "KEY".into(),
+            name: "RECOVERY PHRASE".into(),
+            amount: "NONE".into(),
+            detail: Some("NOT BACKED UP.".into()),
+        },
+    ])
+}
+
+/// What the profile screen shows.
+#[derive(Debug, Clone, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileView {
+    pub node_id: String,
+    /// Em dash until ticket 03 names a source. Not a fabricated number.
+    pub reputation: String,
+    pub member_since: String,
+    pub offline: bool,
+    pub network: String,
+    /// Whether transactions here move real value.
+    pub is_testnet: bool,
+}
+
+/// Identity and settings for the profile screen.
+///
+/// # Errors
+///
+/// [`AppError::NotReady`] before bootstrap.
+#[tauri::command]
+pub async fn profile_summary(state: State<'_, AppState>) -> Result<ProfileView, AppError> {
+    let services = state.services()?;
+    let network = crate::network_config::NetworkConfig::load(&cabal_store::JsonStore::new(
+        crate::app_paths::in_data_dir("network.json"),
+    ));
+
+    let node_id = match services.mesh.as_ref() {
+        Some(mesh) => mesh
+            .snapshot()
+            .await
+            .map(|snapshot| cabal_core::NodeId::new(snapshot.peer_id).truncated())
+            .unwrap_or_else(|_| "—".into()),
+        None => "—".into(),
+    };
+
+    let offline = match services.mesh.as_ref() {
+        Some(mesh) => mesh.snapshot().await.map(|s| s.offline).unwrap_or(true),
+        None => true,
+    };
+
+    Ok(ProfileView {
+        node_id,
+        // Ticket 03 has not named a source. An em dash is the honest
+        // rendering; 87.6 would be a fabricated trust signal.
+        reputation: "—".into(),
+        member_since: "—".into(),
+        offline,
+        network: network.network.label().to_string(),
+        is_testnet: network.network.is_testnet(),
+    })
+}
+
+/// Stops or resumes mesh participation.
+///
+/// The switch's own copy promises intents queue locally and nothing leaves the
+/// device. The actor enforces that itself rather than trusting callers.
+///
+/// # Errors
+///
+/// [`AppError::MeshOffline`] if the mesh actor is gone.
+#[tauri::command]
+pub async fn set_offline_mode(offline: bool, state: State<'_, AppState>) -> Result<(), AppError> {
+    let services = state.services()?;
+    let mesh = services.mesh.as_ref().ok_or(AppError::MeshOffline)?;
+    mesh.set_offline(offline).await.map_err(|_| AppError::MeshOffline)
+}

@@ -15,6 +15,8 @@ import { Connecting } from "../screens/Connecting";
 import { Home } from "../screens/Home";
 import { Nodes } from "../screens/Nodes";
 import { Intents } from "../screens/Intents";
+import { Vault } from "../screens/Vault";
+import { Profile } from "../screens/Profile";
 import type { Screen } from "../shell/screen";
 
 /**
@@ -74,6 +76,10 @@ function App() {
           onTabChange={(tab) => setScreen({ name: "intents", tab })}
           onCompose={() => setScreen({ name: "new" })}
         />
+      ) : screen.name === "vault" ? (
+        <Vault tab={screen.tab} onTabChange={(tab) => setScreen({ name: "vault", tab })} />
+      ) : screen.name === "profile" ? (
+        <Profile onLeave={() => setScreen({ name: "splash" })} />
       ) : (
         <Placeholder screen={screen} />
       )}

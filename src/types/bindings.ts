@@ -106,6 +106,19 @@ x: number, y: number,
 pulseMs: number, };
 
 /**
+ * What the profile screen shows.
+ */
+export type ProfileView = { nodeId: string, 
+/**
+ * Em dash until ticket 03 names a source. Not a fabricated number.
+ */
+reputation: string, memberSince: string, offline: boolean, network: string, 
+/**
+ * Whether transactions here move real value.
+ */
+isTestnet: boolean, };
+
+/**
  * One row of the confirm dialog.
  */
 export type ReviewRow = { key: string, value: string, };
@@ -158,3 +171,16 @@ export type ToastTone = "neutral" | "info" | "success" | "alert";
  * How a peer is reached.
  */
 export type Transport = "mdns" | "quic" | "relayed";
+
+/**
+ * A row in the vault list.
+ */
+export type VaultRow = { 
+/**
+ * Three-letter tag, e.g. `AVX`, `ID`, `KEY`.
+ */
+tag: string, name: string, amount: string, 
+/**
+ * Secondary line. Absent when there is nothing true to say.
+ */
+detail: string | null, };
