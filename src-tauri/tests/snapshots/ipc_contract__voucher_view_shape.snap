@@ -1,0 +1,10 @@
+---
+source: tests/ipc_contract.rs
+---
+{
+  "token_id": 42,
+  "voucher_type": "compute",
+  "description": "AI compute credit",
+  "owner": "0xfF8dd6dbB7B97b44044573cFE843dE1F463637a9",
+  "minted_by": "0xfF8dd6dbB7B97b44044573cFE843dE1F463637a9"
+}

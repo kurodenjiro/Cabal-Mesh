@@ -1,6 +1,7 @@
 use futures::StreamExt;
+use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::{
-    gossipsub, mdns, noise,
+    dcutr, gossipsub, identify, mdns, noise, ping, relay,
     swarm::{NetworkBehaviour, SwarmEvent},
     tcp, yamux, Swarm, SwarmBuilder,
 };
@@ -16,19 +17,62 @@ use tokio::sync::mpsc;
 #[derive(NetworkBehaviour)]
 #[behaviour(to_swarm = "MeshBehaviourEvent")]
 pub struct MeshBehaviour {
-    pub mdns: mdns::tokio::Behaviour,
+    /// `Toggle` because local-network discovery is a **permission**, not a
+    /// capability. iOS and Android can both refuse it, and a node that failed
+    /// to start because the user declined a prompt would be worse than one
+    /// that quietly falls back to bootstrap peers.
+    pub mdns: Toggle<mdns::tokio::Behaviour>,
     pub gossipsub: gossipsub::Behaviour,
+    /// Tells peers our addresses and learns theirs — a precondition for relay
+    /// reservations and for hole punching.
+    pub identify: identify::Behaviour,
+    /// Liveness. Also keeps NAT bindings warm, which matters on cellular.
+    pub ping: ping::Behaviour,
+    /// Lets this node be reached through a relay when it cannot be dialled
+    /// directly, which on mobile is most of the time.
+    pub relay: relay::client::Behaviour,
+    /// Upgrades a relayed connection to a direct one when hole punching
+    /// succeeds, so the relay carries handshakes rather than the whole mesh.
+    pub dcutr: dcutr::Behaviour,
 }
 
 #[derive(Debug)]
 pub enum MeshBehaviourEvent {
     Mdns(mdns::Event),
     Gossipsub(gossipsub::Event),
+    Identify(identify::Event),
+    Ping(ping::Event),
+    Relay(relay::client::Event),
+    Dcutr(dcutr::Event),
 }
 
 impl From<mdns::Event> for MeshBehaviourEvent {
     fn from(event: mdns::Event) -> Self {
         MeshBehaviourEvent::Mdns(event)
+    }
+}
+
+impl From<identify::Event> for MeshBehaviourEvent {
+    fn from(event: identify::Event) -> Self {
+        MeshBehaviourEvent::Identify(event)
+    }
+}
+
+impl From<ping::Event> for MeshBehaviourEvent {
+    fn from(event: ping::Event) -> Self {
+        MeshBehaviourEvent::Ping(event)
+    }
+}
+
+impl From<relay::client::Event> for MeshBehaviourEvent {
+    fn from(event: relay::client::Event) -> Self {
+        MeshBehaviourEvent::Relay(event)
+    }
+}
+
+impl From<dcutr::Event> for MeshBehaviourEvent {
+    fn from(event: dcutr::Event) -> Self {
+        MeshBehaviourEvent::Dcutr(event)
     }
 }
 
@@ -56,13 +100,43 @@ pub struct MeshNetwork {
     pub relay_bytes: Arc<AtomicU64>,
 }
 
+/// The DNS resolver the swarm should use, read from the system where possible.
+///
+/// libp2p's `with_dns()` calls this same system lookup and treats failure as
+/// fatal. On Android there is no `/etc/resolv.conf` — DNS goes through `netd` —
+/// so the lookup always fails and the entire swarm failed to build with a bare
+/// `io error: No such file or directory (os error 2)`. Nothing in that message
+/// says "DNS", and the mesh was dead for want of a resolver it had nothing to
+/// resolve yet.
+///
+/// The fallback is Cloudflare rather than the crate default of Google, chosen
+/// deliberately for an app that argues about privacy. It resolves only `/dns/`
+/// multiaddrs in the relay list, so today — with that list empty — it is never
+/// consulted at all. Once ticket 23 puts real relays in, this deserves to be
+/// configurable alongside them.
+fn resolver_settings() -> (libp2p::dns::ResolverConfig, libp2p::dns::ResolverOpts) {
+    match hickory_resolver::system_conf::read_system_conf() {
+        Ok(settings) => settings,
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                "no system resolver configuration; falling back to Cloudflare DNS"
+            );
+            (
+                libp2p::dns::ResolverConfig::cloudflare(),
+                libp2p::dns::ResolverOpts::default(),
+            )
+        }
+    }
+}
+
 impl MeshNetwork {
     pub async fn new() -> Result<Self, Box<dyn Error>> {
         // Generate ephemeral keypair for "Nobody" identity
         let local_key = libp2p::identity::Keypair::generate_ed25519();
         let local_peer_id = local_key.public().to_peer_id();
         
-        println!("🔐 Ephemeral PeerID generated: {}", local_peer_id);
+        tracing::info!(peer_id = %local_peer_id, "ephemeral peer id generated");
 
         // Configure Gossipsub for Privacy Intent broadcasting
         let message_id_fn = |message: &gossipsub::Message| {
@@ -87,12 +161,27 @@ impl MeshNetwork {
         let topic = gossipsub::IdentTopic::new("cabalmesh-privacy-intents");
         gossipsub.subscribe(&topic)?;
 
-        // Set up mDNS for local peer discovery (ShadowWire mesh)
-        let mdns = mdns::tokio::Behaviour::new(mdns::Config::default(), local_peer_id)?;
+        // Local discovery is a permission on both mobile platforms. A refusal
+        // disables it rather than failing to start: discovery then degrades to
+        // bootstrap peers instead of the node being dead.
+        let mdns = match mdns::tokio::Behaviour::new(mdns::Config::default(), local_peer_id) {
+            Ok(behaviour) => Toggle::from(Some(behaviour)),
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "local-network discovery unavailable; falling back to bootstrap peers"
+                );
+                Toggle::from(None)
+            }
+        };
 
-        let behaviour = MeshBehaviour { mdns, gossipsub };
+        let identify_config = identify::Config::new(
+            "/cabalmesh/1.0.0".to_string(),
+            local_key.public(),
+        );
 
-        // Build the Swarm with Noise encryption (ShadowWire philosophy)
+        let (resolver_config, resolver_opts) = resolver_settings();
+
         let swarm = SwarmBuilder::with_existing_identity(local_key)
             .with_tokio()
             .with_tcp(
@@ -100,28 +189,108 @@ impl MeshNetwork {
                 noise::Config::new,
                 yamux::Config::default,
             )?
-            .with_behaviour(|_| behaviour)?
+            // QUIC alongside TCP. Connection migration survives a Wi-Fi to
+            // cellular handoff, which a TCP socket does not, and 0-RTT
+            // resumption makes returning from background cheap.
+            .with_quic()
+            // Configured explicitly rather than via `with_dns()`, which reads
+            // `/etc/resolv.conf` — a file Android does not have. There the
+            // whole swarm failed to build with a bare `os error 2`, taking the
+            // mesh down over a resolver it had nothing to resolve with yet.
+            .with_dns_config(resolver_config, resolver_opts)
+            .with_relay_client(noise::Config::new, yamux::Config::default)?
+            .with_behaviour(|key, relay_behaviour| MeshBehaviour {
+                mdns,
+                gossipsub,
+                identify: identify::Behaviour::new(identify_config),
+                ping: ping::Behaviour::new(ping::Config::new()),
+                relay: relay_behaviour,
+                dcutr: dcutr::Behaviour::new(key.public().to_peer_id()),
+            })?
             .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(60)))
             .build();
 
         Ok(MeshNetwork { swarm, topic, relay_bytes: Arc::new(AtomicU64::new(0)) })
     }
 
+    /// The swarm event loop. Everything the mesh logs happens inside this span,
+    /// so device output is attributable to the node rather than floating free.
+    #[tracing::instrument(skip_all, fields(peer_id = %self.swarm.local_peer_id()))]
     pub async fn start(
-        &mut self, 
+        &mut self,
         tx: mpsc::UnboundedSender<MeshEvent>,
-        mut intent_rx: mpsc::UnboundedReceiver<PrivacyIntent>
+        mut commands: tokio::sync::mpsc::Receiver<crate::mesh_handle::MeshCommand>,
     ) -> Result<(), Box<dyn Error>> {
-        // Listen on all interfaces (offline-first mesh)
+        use crate::mesh_handle::{MeshCommand, MeshError, MeshSnapshot};
+
+        // Listen on both transports. QUIC is preferred by peers that support
+        // it; TCP remains for those that do not and for networks that block
+        // UDP.
         self.swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
+        if let Err(error) = self.swarm.listen_on("/ip4/0.0.0.0/udp/0/quic-v1".parse()?) {
+            // Some networks block UDP outright. TCP alone still works, so this
+            // degrades rather than fails.
+            tracing::warn!(%error, "QUIC listener unavailable; continuing on TCP");
+        }
+
+        // Dial bootstrap peers so discovery is not limited to this network.
+        let bootstrap = crate::bootstrap_config::BootstrapConfig::load(
+            &cabal_store::JsonStore::new(crate::app_paths::in_data_dir("bootstrap.json")),
+        );
+        if bootstrap.has_relays() {
+            for address in bootstrap.parsed() {
+                match self.swarm.dial(address.clone()) {
+                    Ok(()) => tracing::info!(%address, "dialling bootstrap peer"),
+                    Err(error) => tracing::warn!(%address, %error, "bootstrap dial failed"),
+                }
+            }
+        } else {
+            tracing::info!(
+                "no bootstrap relays configured — discovery is limited to this network"
+            );
+        }
+
+        // Answered from the loop rather than tracked elsewhere, so a snapshot
+        // always reflects what the swarm is actually doing.
+        let mut listening_on: Vec<String> = Vec::new();
+        let mut offline = false;
 
         loop {
             tokio::select! {
-                // Handle incoming intents to broadcast
-                Some(intent) = intent_rx.recv() => {
-                    println!("📤 Broadcasting intent to mesh: {:?}", intent);
-                    if let Err(e) = self.broadcast_intent(intent) {
-                        eprintln!("❌ Failed to broadcast intent: {}", e);
+                Some(command) = commands.recv() => {
+                    match command {
+                        MeshCommand::Snapshot { reply } => {
+                            let _ = reply.send(MeshSnapshot {
+                                peer_id: self.swarm.local_peer_id().to_string(),
+                                peer_count: self.swarm.connected_peers().count(),
+                                listening_on: listening_on.clone(),
+                                offline,
+                                relay_bytes: self.relay_bytes.load(std::sync::atomic::Ordering::Relaxed),
+                            });
+                            continue;
+                        }
+                        MeshCommand::SetOffline { offline: next, reply } => {
+                            // Deliberately does not tear the swarm down:
+                            // rebuilding on resume would drop every established
+                            // connection and re-run discovery from nothing.
+                            offline = next;
+                            tracing::info!(offline, "mesh participation toggled");
+                            let _ = reply.send(());
+                            continue;
+                        }
+                        MeshCommand::Publish { intent, reply } => {
+                            if offline {
+                                // The offline switch promises nothing leaves the
+                                // device. Honour it here rather than relying on
+                                // callers to check first.
+                                let _ = reply.send(Err(MeshError::Publish));
+                                continue;
+                            }
+                            let intent = *intent;
+                            let outcome = self.broadcast_intent(intent);
+                            let _ = reply.send(outcome.map_err(|_| MeshError::Publish));
+                            continue;
+                        }
                     }
                 }
 
@@ -129,13 +298,14 @@ impl MeshNetwork {
                 event = self.swarm.select_next_some() => {
                     match event {
                         SwarmEvent::NewListenAddr { address, .. } => {
-                            println!("📡 Listening on {}", address);
+                            tracing::info!(address = %address, "listening");
+                            listening_on.push(address.to_string());
                             let _ = tx.send(MeshEvent::ListeningStarted { address: address.to_string() });
                         }
                         SwarmEvent::Behaviour(event) => match event {
                             MeshBehaviourEvent::Mdns(mdns::Event::Discovered(list)) => {
                                 for (peer_id, multiaddr) in list {
-                                    println!("🔍 Peer discovered: {} at {}", peer_id, multiaddr);
+                                    tracing::info!(peer_id = %peer_id, address = %multiaddr, "peer discovered");
                                     self.swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
                                     let _ = tx.send(MeshEvent::PeerDiscovered {
                                         peer_id: peer_id.to_string(),
@@ -145,7 +315,7 @@ impl MeshNetwork {
                             }
                             MeshBehaviourEvent::Mdns(mdns::Event::Expired(list)) => {
                                 for (peer_id, _) in list {
-                                    println!("👻 Peer expired: {}", peer_id);
+                                    tracing::info!("👻 Peer expired: {}", peer_id);
                                     self.swarm.behaviour_mut().gossipsub.remove_explicit_peer(&peer_id);
                                 }
                             }
@@ -160,12 +330,12 @@ impl MeshNetwork {
                                             let msg_type = settlement.get("type").and_then(|v| v.as_str());
 
                                             if msg_type == Some("SettlementComplete") {
-                                                println!("✅ Received Settlement Confirmation: {:?}", settlement);
+                                                tracing::info!("✅ Received Settlement Confirmation: {:?}", settlement);
                                                 let _ = tx.send(MeshEvent::SettlementComplete {
                                                     details: settlement.to_string()
                                                 });
                                             } else if msg_type == Some("DealAccepted") {
-                                                println!("🤝 Received Deal Acceptance: {:?}", settlement);
+                                                tracing::info!("🤝 Received Deal Acceptance: {:?}", settlement);
                                                 let _ = tx.send(MeshEvent::DealAccepted {
                                                     details: settlement.to_string()
                                                 });
@@ -179,7 +349,7 @@ impl MeshNetwork {
                                             let queue_id = payload.get("queue_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
                                             let raw_tx_hex = payload.get("raw_tx_hex").and_then(|v| v.as_str()).unwrap_or("").to_string();
                                             let summary = payload.get("summary").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                                            println!("📡 Received relay_tx request: {} ({})", queue_id, summary);
+                                            tracing::info!("📡 Received relay_tx request: {} ({})", queue_id, summary);
                                             let _ = tx.send(MeshEvent::RelayTxReceived { queue_id, raw_tx_hex, summary });
                                         }
                                     } else if intent.intent_type == "relay_confirmed" {
@@ -188,14 +358,14 @@ impl MeshNetwork {
                                             let queue_id = payload.get("queue_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
                                             let status = payload.get("status").and_then(|v| v.as_str()).unwrap_or("failed").to_string();
                                             let tx_hash = payload.get("tx_hash").and_then(|v| v.as_str()).map(|s| s.to_string());
-                                            println!("📨 Received relay_confirmed: {} -> {}", queue_id, status);
+                                            tracing::info!("📨 Received relay_confirmed: {} -> {}", queue_id, status);
                                             let _ = tx.send(MeshEvent::RelayConfirmed { queue_id, status, tx_hash });
                                         }
                                     } else if intent.intent_type == "content_request" {
                                         // A buyer is asking whoever sold this tokenId to deliver the content.
                                         if let Ok(payload) = serde_json::from_str::<serde_json::Value>(&intent.payload) {
                                             if let Some(token_id) = payload.get("token_id").and_then(|v| v.as_u64()) {
-                                                println!("📨 Received content_request for token #{}", token_id);
+                                                tracing::info!("📨 Received content_request for token #{}", token_id);
                                                 let _ = tx.send(MeshEvent::ContentRequested { token_id });
                                             }
                                         }
@@ -219,12 +389,12 @@ impl MeshNetwork {
                                             let text = payload.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
                                             let signature = payload.get("signature").and_then(|v| v.as_str()).unwrap_or("").to_string();
                                             let signer_address = payload.get("signer_address").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                                            println!("📬 Received content_delivery for token #{}", token_id);
+                                            tracing::info!("📬 Received content_delivery for token #{}", token_id);
                                             let _ = tx.send(MeshEvent::ContentDelivered { token_id, text, signature, signer_address });
                                         }
                                     } else {
                                         // Regular trade intent
-                                        println!("📬 Received Intent: {:?}", intent);
+                                        tracing::info!("📬 Received Intent: {:?}", intent);
                                         let _ = tx.send(MeshEvent::IntentReceived { intent });
                                     }
                                 } else {
@@ -234,12 +404,12 @@ impl MeshNetwork {
                                         let msg_type = settlement.get("type").and_then(|v| v.as_str());
                                         
                                         if msg_type == Some("SettlementComplete") {
-                                            println!("✅ Received Settlement Confirmation: {:?}", settlement);
+                                            tracing::info!("✅ Received Settlement Confirmation: {:?}", settlement);
                                             let _ = tx.send(MeshEvent::SettlementComplete { 
                                                 details: settlement.to_string() 
                                             });
                                         } else if msg_type == Some("DealAccepted") {
-                                            println!("🤝 Received Deal Acceptance: {:?}", settlement);
+                                            tracing::info!("🤝 Received Deal Acceptance: {:?}", settlement);
                                             let _ = tx.send(MeshEvent::DealAccepted { 
                                                 details: settlement.to_string() 
                                             });
@@ -268,11 +438,11 @@ impl MeshNetwork {
             .publish(self.topic.clone(), payload)
         {
             Ok(_) => {
-                println!("📤 Intent broadcasted to mesh (Relay Hop: {})", intent.relay_path.len());
+                tracing::info!(hops = intent.relay_path.len(), intent_type = %intent.intent_type, "intent broadcast");
                 Ok(())
             }
             Err(gossipsub::PublishError::InsufficientPeers) => {
-                println!("⚠️  Note: No peers connected (Single-Node Mode). Intent processed locally.");
+                tracing::warn!("⚠️  Note: No peers connected (Single-Node Mode). Intent processed locally.");
                 Ok(())
             }
             Err(e) => Err(Box::new(e))
@@ -287,11 +457,11 @@ impl MeshNetwork {
             .publish(self.topic.clone(), payload) 
         {
             Ok(_) => {
-                println!("📤 Raw message broadcasted to mesh");
+                tracing::info!("📤 Raw message broadcasted to mesh");
                 Ok(())
             }
             Err(gossipsub::PublishError::InsufficientPeers) => {
-                println!("⚠️  Note: No peers connected (Single-Node Mode).");
+                tracing::warn!("⚠️  Note: No peers connected (Single-Node Mode).");
                 Ok(())
             }
             Err(e) => Err(Box::new(e))
@@ -303,13 +473,13 @@ impl MeshNetwork {
         // 2. Relay fee should be formatted correctly (simple check for now)
         
         if intent.relay_path.is_empty() {
-            println!("❌ Integrity Check Failed: Empty relay path");
+            tracing::error!("❌ Integrity Check Failed: Empty relay path");
             return false;
         }
 
         if let Some(fee) = &intent.relay_fee {
             if !fee.contains("AVAX") {
-                 println!("⚠️  Warning: Unknown fee format: {}", fee);
+                 tracing::warn!("⚠️  Warning: Unknown fee format: {}", fee);
                  // We don't fail validation here for now, just warn
             }
         }

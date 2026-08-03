@@ -32,15 +32,23 @@ pub struct MatchResult {
 /// the same local Ollama model the Shark negotiation agent already uses.
 pub struct MatchAgent {
     client: Client,
-    ollama_url: String,
+    ollama_url: Option<String>,
 }
 
 impl MatchAgent {
     pub fn new(ollama_url: Option<String>) -> Self {
         MatchAgent {
             client: Client::new(),
-            ollama_url: ollama_url.unwrap_or_else(|| "http://localhost:11434".to_string()),
+            ollama_url,
         }
+    }
+
+    /// Resolved per request rather than cached at construction, so a URL set at
+    /// runtime — the only way to reach a model on iOS — applies without a restart.
+    fn url(&self) -> String {
+        self.ollama_url
+            .clone()
+            .unwrap_or_else(crate::ollama_config::url)
     }
 
     pub async fn match_intent(
@@ -87,7 +95,7 @@ Catalog:
 
         let response = self
             .client
-            .post(format!("{}/api/generate", self.ollama_url))
+            .post(format!("{}/api/generate", self.url()))
             .json(&request)
             .send()
             .await?;
@@ -119,7 +127,7 @@ Catalog:
         // Never trust the model on money — verify the price ceiling ourselves.
         let price: f64 = listing.price_avax.parse().unwrap_or(f64::MAX);
         if price > price_ceiling {
-            println!(
+            tracing::info!(
                 "⚠️  Match rejected: listing {} price {} AVAX exceeds ceiling {} AVAX",
                 matched_id, price, price_ceiling
             );

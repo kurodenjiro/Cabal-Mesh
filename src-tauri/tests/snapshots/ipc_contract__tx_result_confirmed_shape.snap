@@ -1,0 +1,7 @@
+---
+source: tests/ipc_contract.rs
+---
+{
+  "kind": "confirmed",
+  "id": 12
+}

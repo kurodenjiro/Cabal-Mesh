@@ -1,0 +1,29 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "mobile",
+  "description": "Main webview on iOS and Android. Grants core only: no app command is reachable from the mobile webview yet, because no mobile screen exists to call one. The mobile build is a compile/launch/render probe until ticket 26 splits the frontends; ticket 29 onward adds exactly the commands each screen uses. Never grant speculatively. See capabilities/README.md.",
+  "platforms": [
+    "iOS",
+    "android"
+  ],
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    "allow-unsubscribe",
+    "allow-session-status",
+    "allow-enter-mesh",
+    "allow-mesh-snapshot",
+    "allow-subscribe-mesh-log",
+    "allow-list-nearby-nodes",
+    "allow-list-intents",
+    "allow-intent-form-options",
+    "allow-preview-intent",
+    "allow-vault-assets",
+    "allow-vault-identities",
+    "allow-vault-keys",
+    "allow-profile-summary",
+    "allow-set-offline-mode"
+  ]
+}

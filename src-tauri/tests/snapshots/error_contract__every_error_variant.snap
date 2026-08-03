@@ -1,0 +1,50 @@
+---
+source: tests/error_contract.rs
+---
+{
+  "kind": "not_ready",
+  "detail": {
+    "subsystem": "mesh"
+  }
+}
+---
+{
+  "kind": "unsupported",
+  "detail": {
+    "feature": "zk_proof"
+  }
+}
+---
+{
+  "kind": "mesh_offline"
+}
+---
+{
+  "kind": "invalid_intent",
+  "detail": {
+    "field": "amount",
+    "reason": "too_precise"
+  }
+}
+---
+{
+  "kind": "chain",
+  "detail": {
+    "retryable": true
+  }
+}
+---
+{
+  "kind": "vault_locked"
+}
+---
+{
+  "kind": "too_many_subscriptions",
+  "detail": {
+    "limit": 16
+  }
+}
+---
+{
+  "kind": "internal"
+}

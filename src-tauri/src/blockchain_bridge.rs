@@ -1,4 +1,6 @@
 use serde::{Deserialize, Serialize};
+use cabal_store::JsonStore;
+use cabal_vault::{Secret, Vault};
 use std::fs;
 use std::path::PathBuf;
 use std::error::Error;
@@ -38,11 +40,17 @@ sol! {
     "abi/CabalMeshVoucher.abi.json"
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct IdentityRecord {
     pub alias: String,
     pub emoji: String,
-    pub private_key_hex: String, // 0x-prefixed secp256k1 private key
+    /// 0x-prefixed secp256k1 private key.
+    ///
+    /// `Secret`, not `String`: this struct derives `Debug`, and any `{:?}` of
+    /// it — a `dbg!`, a tracing field, an error formatting its context — would
+    /// otherwise print the wallet. Encryption at rest protects the file;
+    /// this protects the logs.
+    pub private_key_hex: Secret,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -143,6 +151,14 @@ pub struct QueuedTx {
     /// UI can say so instead of suggesting a retry that can never succeed.
     #[serde(default)]
     pub reason: Option<String>,
+    /// How many times submission has been tried.
+    ///
+    /// `skip_serializing_if` keeps a never-retried entry serializing exactly as
+    /// before, so the frozen desktop contract is unchanged — verified by the
+    /// snapshot suite. `default` lets a queue file written before this field
+    /// existed still load.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub attempts: u8,
 }
 
 /// A transaction this node successfully relayed to the chain on behalf of
@@ -157,6 +173,12 @@ pub struct RelayedTxRecord {
     /// relayer-payment settlement mechanism yet. Labeled as an estimate wherever shown.
     pub reward_avax: String,
     pub relayed_at: DateTime<Utc>,
+}
+
+/// Serde helper: an untried entry omits `attempts` so the on-disk and
+/// on-the-wire shape matches what the frozen UI already expects.
+fn is_zero(value: &u8) -> bool {
+    *value == 0
 }
 
 /// Result of an action that normally hits the chain directly: either it went
@@ -184,7 +206,9 @@ pub struct InstantSession {
 
 pub struct BlockchainBridge {
     pub identities: Vec<IdentityRecord>,
-    pub identity_path: PathBuf,
+    /// Encrypted store for identities. Replaces the plaintext
+    /// `identities.json`, which held private keys in the clear.
+    pub identity_vault: Vault<crate::vault_key::FileKeyProvider>,
     pub storage_path: PathBuf,
     pub chain_cache_path: PathBuf,
     pub pending_relay_path: PathBuf,
@@ -206,34 +230,25 @@ impl BlockchainBridge {
         // No fallback here: an absent/invalid address should surface as a clear
         // runtime error the first time a contract call is attempted, not a
         // silently-wrong placeholder.
-        let escrow_address = std::env::var("ESCROW_CONTRACT_ADDRESS")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .and_then(|s| Address::from_str(&s).ok());
+        // Layered configuration rather than bare environment reads: a mobile
+        // bundle has no environment, so every address used to resolve to None
+        // and every contract call failed looking like a chain problem.
+        let network = crate::network_config::NetworkConfig::load(&JsonStore::new(
+            crate::app_paths::in_data_dir("network.json"),
+        ));
 
-        let marketplace_address = std::env::var("MARKETPLACE_CONTRACT_ADDRESS")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .and_then(|s| Address::from_str(&s).ok());
+        let escrow_address = network.escrow().and_then(|s| Address::from_str(&s).ok());
+        let marketplace_address = network.marketplace().and_then(|s| Address::from_str(&s).ok());
+        let voucher_address = network.voucher().and_then(|s| Address::from_str(&s).ok());
 
-        let voucher_address = std::env::var("VOUCHER_CONTRACT_ADDRESS")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .and_then(|s| Address::from_str(&s).ok());
-
-        // CABALMESH_DATA_DIR lets multiple isolated instances run side by side on
-        // one machine (e.g. for a local 2-node mesh test) without sharing a wallet.
-        let app_dir = match std::env::var("CABALMESH_DATA_DIR") {
-            Ok(dir) if !dir.is_empty() => PathBuf::from(dir),
-            _ => dirs::data_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join("cabalmesh"),
-        };
-        let _ = fs::create_dir_all(&app_dir);
+        let app_dir = crate::app_paths::data_dir();
 
         let mut bridge = Self {
             identities: Vec::new(),
-            identity_path: app_dir.join("identities.json"),
+            identity_vault: Vault::new(
+                app_dir.join("vault.enc"),
+                crate::vault_key::platform_provider(app_dir.join("vault.key")),
+            ),
             storage_path: app_dir.join("snapshot.enc"),
             chain_cache_path: app_dir.join("chain_cache.json"),
             pending_relay_path: app_dir.join("pending_relay_txs.json"),
@@ -252,16 +267,32 @@ impl BlockchainBridge {
     }
 
     fn save_identities(&self) -> Result<(), Box<dyn Error>> {
-        fs::write(&self.identity_path, serde_json::to_string_pretty(&self.identities)?)?;
+        self.identity_vault.save(&self.identities)?;
         Ok(())
     }
 
     pub fn load_identities(&mut self) -> Result<Vec<IdentityView>, Box<dyn Error>> {
-        if self.identity_path.exists() {
-            println!("🔑 Loading Identities from {:?}", self.identity_path);
-            let content = fs::read_to_string(&self.identity_path)?;
+        // Adopt any pre-encryption wallet first. This verifies a full decrypt
+        // round trip before removing the plaintext, so a failure here leaves
+        // the old file exactly where it was.
+        let plaintext = JsonStore::new(self.plaintext_identity_path());
+        match self
+            .identity_vault
+            .migrate_plaintext::<Vec<IdentityRecord>>(&plaintext)
+        {
+            Ok(true) => tracing::info!("🔐 Identities migrated into the encrypted vault"),
+            Ok(false) => {}
+            Err(error) => {
+                // Do not fall through to generating a fresh wallet: that is
+                // how a recoverable problem becomes permanent loss.
+                tracing::error!(%error, "identity migration failed; plaintext left intact");
+                return Err(Box::new(error));
+            }
+        }
 
-            match serde_json::from_str::<Vec<IdentityRecord>>(&content) {
+        if self.identity_vault.exists() {
+            tracing::info!("🔑 Loading identities from the encrypted vault");
+            match self.identity_vault.load::<Vec<IdentityRecord>>() {
                 Ok(records) => {
                     self.identities = records;
                     if self.identities.is_empty() {
@@ -269,21 +300,30 @@ impl BlockchainBridge {
                     }
                     self.get_identity_views()
                 }
-                Err(_) => {
-                    println!("⚠️ Failed to parse identity list, creating new...");
-                    return self.generate_new_identity("Glitch Fox".to_string(), "👾".to_string());
+                Err(error) => {
+                    // A vault that exists but will not open means the key is
+                    // wrong or the file was tampered with. Generating a new
+                    // wallet over it would discard the user's funds, so this
+                    // fails loudly instead.
+                    tracing::error!(%error, "vault exists but cannot be decrypted");
+                    Err(Box::new(error))
                 }
             }
         } else {
-            return self.generate_new_identity("Genesis Fox".to_string(), "🦊".to_string());
+            self.generate_new_identity("Genesis Fox".to_string(), "🦊".to_string())
         }
     }
 
+    /// Where the pre-encryption wallet lived. Only used to migrate away from.
+    fn plaintext_identity_path(&self) -> PathBuf {
+        crate::app_paths::in_data_dir("identities.json")
+    }
+
     pub fn generate_new_identity(&mut self, alias: String, emoji: String) -> Result<Vec<IdentityView>, Box<dyn Error>> {
-        println!("🆕 Generating NEW Identity '{}' [{}]...", alias, emoji);
+        tracing::info!("🆕 Generating NEW Identity '{}' [{}]...", alias, emoji);
         let signer = PrivateKeySigner::random();
         let private_key_hex = format!("0x{}", hex::encode(signer.to_bytes()));
-        self.identities.push(IdentityRecord { alias, emoji, private_key_hex });
+        self.identities.push(IdentityRecord { alias, emoji, private_key_hex: private_key_hex.into() });
         self.save_identities()?;
         self.get_identity_views()
     }
@@ -291,7 +331,7 @@ impl BlockchainBridge {
     pub fn get_identity_views(&self) -> Result<Vec<IdentityView>, Box<dyn Error>> {
         let mut views = Vec::new();
         for id in &self.identities {
-            let signer = PrivateKeySigner::from_str(&id.private_key_hex)?;
+            let signer = PrivateKeySigner::from_str(id.private_key_hex.expose())?;
             views.push(IdentityView {
                 alias: id.alias.clone(),
                 emoji: id.emoji.clone(),
@@ -329,7 +369,7 @@ impl BlockchainBridge {
         };
         PrivateKeySigner::from_str(&normalized)?;
 
-        self.identities = vec![IdentityRecord { alias, emoji, private_key_hex: normalized }];
+        self.identities = vec![IdentityRecord { alias, emoji, private_key_hex: normalized.into() }];
         let _ = self.delete_snapshot();
         let _ = fs::remove_file(&self.relay_boost_path);
         self.save_identities()?;
@@ -341,12 +381,12 @@ impl BlockchainBridge {
     /// way to actually get back to a wallet after switching away from it,
     /// since nothing else persists it anywhere recoverable.
     pub fn get_primary_private_key(&self) -> Option<String> {
-        self.identities.first().map(|id| id.private_key_hex.clone())
+        self.identities.first().map(|id| id.private_key_hex.expose().to_owned())
     }
 
     pub fn get_primary_address(&self) -> String {
         match self.identities.first() {
-            Some(first) => match PrivateKeySigner::from_str(&first.private_key_hex) {
+            Some(first) => match PrivateKeySigner::from_str(first.private_key_hex.expose()) {
                 Ok(signer) => signer.address().to_string(),
                 Err(_) => "unknown".to_string(),
             },
@@ -356,7 +396,7 @@ impl BlockchainBridge {
 
     fn primary_signer(&self) -> Result<PrivateKeySigner, Box<dyn Error>> {
         let first = self.identities.first().ok_or("No identity available")?;
-        Ok(PrivateKeySigner::from_str(&first.private_key_hex)?)
+        Ok(PrivateKeySigner::from_str(first.private_key_hex.expose())?)
     }
 
     // ---- Offline signing + mesh-relay queue -------------------------------
@@ -367,7 +407,7 @@ impl BlockchainBridge {
     }
 
     fn save_chain_cache(&self, cache: &ChainStateCache) -> Result<(), Box<dyn Error>> {
-        fs::write(&self.chain_cache_path, serde_json::to_string_pretty(cache)?)?;
+        JsonStore::new(&self.chain_cache_path).save(cache)?;
         Ok(())
     }
 
@@ -379,7 +419,7 @@ impl BlockchainBridge {
     }
 
     fn save_pending_relay_txs(&self, txs: &[QueuedTx]) -> Result<(), Box<dyn Error>> {
-        fs::write(&self.pending_relay_path, serde_json::to_string_pretty(txs)?)?;
+        JsonStore::new(&self.pending_relay_path).save(&txs)?;
         Ok(())
     }
 
@@ -446,14 +486,80 @@ impl BlockchainBridge {
             status: "queued".to_string(),
             tx_hash: None,
             reason: None,
+            attempts: 0,
         };
 
         let mut pending = self.load_pending_relay_txs();
         pending.push(queued.clone());
         self.save_pending_relay_txs(&pending)?;
 
-        println!("📡 [Bridge] Signed offline, queued for mesh relay: {} ({})", queued.id, summary);
+        tracing::info!("📡 [Bridge] Signed offline, queued for mesh relay: {} ({})", queued.id, summary);
         Ok(queued)
+    }
+
+    /// Maximum submission attempts before an entry is parked as failed.
+    ///
+    /// Retrying forever would drain the battery re-broadcasting a transaction
+    /// the chain will never accept — a bad nonce or an underpriced fee does not
+    /// improve by being tried again.
+    pub const MAX_ATTEMPTS: u8 = 5;
+
+    /// Submits our own queued transactions now that connectivity is back.
+    ///
+    /// The existing path relies on a *peer* with Relay Mode picking them up,
+    /// which never happens for a user who is simply alone and offline. This is
+    /// the self-service path: when the device itself regains connectivity, it
+    /// drains its own queue.
+    ///
+    /// Returns how many were confirmed.
+    ///
+    /// # Errors
+    ///
+    /// Only if the queue cannot be persisted. Individual submission failures
+    /// are recorded against their entry and retried later rather than aborting
+    /// the drain — one bad transaction must not block the rest.
+    pub async fn drain_pending(&self) -> Result<usize, Box<dyn Error>> {
+        let mut pending = self.load_pending_relay_txs();
+        if pending.is_empty() {
+            return Ok(0);
+        }
+
+        let mut confirmed = 0_usize;
+        for entry in &mut pending {
+            if entry.status != "queued" || entry.attempts >= Self::MAX_ATTEMPTS {
+                continue;
+            }
+            entry.attempts = entry.attempts.saturating_add(1);
+
+            match self.submit_raw_transaction(&entry.raw_tx_hex).await {
+                Ok(tx_hash) => {
+                    entry.status = "confirmed".to_string();
+                    entry.tx_hash = Some(tx_hash);
+                    entry.reason = None;
+                    confirmed += 1;
+                    tracing::info!(id = %entry.id, "queued transaction confirmed after reconnect");
+                }
+                Err(error) => {
+                    entry.reason = Some(error.to_string());
+                    if entry.attempts >= Self::MAX_ATTEMPTS {
+                        entry.status = "failed".to_string();
+                        tracing::warn!(
+                            id = %entry.id,
+                            attempts = entry.attempts,
+                            "queued transaction parked after repeated failures"
+                        );
+                    } else {
+                        tracing::debug!(id = %entry.id, attempts = entry.attempts, "retry failed");
+                    }
+                }
+            }
+        }
+
+        // Persisted after every drain, not only on success: attempt counts are
+        // what stop an unminable transaction being retried forever across
+        // restarts.
+        self.save_pending_relay_txs(&pending)?;
+        Ok(confirmed)
     }
 
     /// Broadcasts a raw signed transaction someone else queued while offline.
@@ -465,7 +571,7 @@ impl BlockchainBridge {
         let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
         let receipt = provider.send_raw_transaction(&raw_bytes).await?.get_receipt().await?;
 
-        println!("✅ [Bridge] Relayed transaction confirmed. Tx: {:?}", receipt.transaction_hash);
+        tracing::info!("✅ [Bridge] Relayed transaction confirmed. Tx: {:?}", receipt.transaction_hash);
         Ok(format!("{:?}", receipt.transaction_hash))
     }
 
@@ -532,7 +638,7 @@ impl BlockchainBridge {
     }
 
     fn save_relayed_history(&self, history: &[RelayedTxRecord]) -> Result<(), Box<dyn Error>> {
-        fs::write(&self.relayed_history_path, serde_json::to_string_pretty(history)?)?;
+        JsonStore::new(&self.relayed_history_path).save(&history)?;
         Ok(())
     }
 
@@ -550,7 +656,7 @@ impl BlockchainBridge {
 
     pub fn apply_relay_boost(&self, additional: f64) -> Result<f64, Box<dyn Error>> {
         let updated = self.get_relay_boost_multiplier() + additional;
-        fs::write(&self.relay_boost_path, updated.to_string())?;
+        JsonStore::compact(&self.relay_boost_path).save(&updated)?;
         Ok(updated)
     }
 
@@ -575,22 +681,25 @@ impl BlockchainBridge {
         matches!(timeout(Duration::from_secs(4), provider.get_block_number()).await, Ok(Ok(_)))
     }
 
+    /// Spanned so the RPC round trip and everything it logs is attributable to
+    /// one sync, which matters when several run concurrently after a reconnect.
+    #[tracing::instrument(skip(self), fields(rpc = %self.rpc_url))]
     pub async fn sync_state(&self, wallet_address_override: &str) -> Result<Snapshot, Box<dyn Error>> {
         let primary = self.get_primary_address();
         let target = if primary != "unknown" { primary } else { wallet_address_override.to_string() };
         let address = Address::from_str(&target)?;
 
-        println!("🔄 [Bridge] Fetching native AVAX balance from {}", self.rpc_url);
+        tracing::info!("🔄 [Bridge] Fetching native AVAX balance from {}", self.rpc_url);
 
         let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
         let balance_wei: U256 = provider.get_balance(address).await?;
 
-        println!("✅ [Bridge] Fetched balance for {}", target);
+        tracing::info!("✅ [Bridge] Fetched balance for {}", target);
 
         // Best-effort: refresh the offline-signing cache while we know we're online.
         // Never let this fail the whole sync if the RPC is flaky for just this call.
         if let Err(e) = self.refresh_chain_cache(address).await {
-            eprintln!("⚠️  Failed to refresh chain state cache: {}", e);
+            tracing::warn!("⚠️  Failed to refresh chain state cache: {}", e);
         }
 
         let snapshot = Snapshot {
@@ -617,10 +726,10 @@ impl BlockchainBridge {
     // build gets a different signing identity, so `entry.get_password()` kept
     // failing, generating a *new* key every read and making decryption of a
     // snapshot written moments earlier fail every time) — real private keys
-    // live in `identity_path`, untouched by this.
+    // live in the encrypted vault, untouched by this.
     fn save_snapshot_encrypted(&self, snapshot: &Snapshot) -> Result<(), Box<dyn Error>> {
-        fs::write(&self.storage_path, serde_json::to_vec(&snapshot)?)?;
-        println!("💾 [Bridge] Snapshot saved.");
+        JsonStore::compact(&self.storage_path).save(&snapshot)?;
+        tracing::info!("💾 [Bridge] Snapshot saved.");
         Ok(())
     }
 
@@ -641,9 +750,10 @@ impl BlockchainBridge {
     }
 
     pub fn delete_identity(&self) -> Result<(), Box<dyn Error>> {
-        if self.identity_path.exists() {
-            fs::remove_file(&self.identity_path)?;
-        }
+        // Removes the encrypted vault. The key file is deliberately left: it
+        // is useless without a vault, and deleting it would break any backup
+        // the user made of vault.enc.
+        JsonStore::new(crate::app_paths::in_data_dir("vault.enc")).delete()?;
         Ok(())
     }
 
@@ -676,6 +786,9 @@ impl BlockchainBridge {
     /// Creates an on-chain escrow deal, locking `amount_wei` for `payee`.
     /// If the RPC can't be reached within a few seconds, falls back to
     /// signing the transaction offline and queuing it for mesh relay.
+    /// `skip(self)` keeps the bridge — which holds signers — out of the span,
+    /// while the escrow parameters stay visible.
+    #[tracing::instrument(skip(self), fields(payee = %payee, expiry = expiry_unix))]
     pub async fn create_escrow(&self, payee: &str, amount_wei: U256, expiry_unix: u64) -> Result<TxResult, Box<dyn Error>> {
         let signer = self.primary_signer()?;
         let escrow_address = self.escrow_address.ok_or("ESCROW_CONTRACT_ADDRESS not configured")?;
@@ -708,7 +821,7 @@ impl BlockchainBridge {
             Ok(Ok(receipt)) => receipt,
             Ok(Err(e)) => return Err(e.into()),
             Err(_timed_out) => {
-                println!("⚠️  [Bridge] RPC unreachable — signing create_escrow offline for mesh relay.");
+                tracing::warn!("⚠️  [Bridge] RPC unreachable — signing create_escrow offline for mesh relay.");
                 let queued = self.sign_offline(escrow_address, calldata, amount_wei, "Create escrow").await?;
                 return Ok(TxResult::Queued { queue_id: queued.id });
             }
@@ -721,7 +834,7 @@ impl BlockchainBridge {
             .map(|l| l.inner.data.escrowId.to::<u64>())
             .ok_or("EscrowCreated event not found in receipt")?;
 
-        println!("✅ [Bridge] Escrow {} created. Tx: {:?}", escrow_id, receipt.transaction_hash);
+        tracing::info!("✅ [Bridge] Escrow {} created. Tx: {:?}", escrow_id, receipt.transaction_hash);
         Ok(TxResult::Confirmed { id: escrow_id })
     }
 
@@ -733,7 +846,7 @@ impl BlockchainBridge {
         let contract = IEscrow::new(escrow_address, provider);
 
         let receipt = contract.release(U256::from(escrow_id)).send().await?.get_receipt().await?;
-        println!("✅ [Bridge] Escrow {} released. Tx: {:?}", escrow_id, receipt.transaction_hash);
+        tracing::info!("✅ [Bridge] Escrow {} released. Tx: {:?}", escrow_id, receipt.transaction_hash);
         Ok(format!("{:?}", receipt.transaction_hash))
     }
 
@@ -745,7 +858,7 @@ impl BlockchainBridge {
         let contract = IEscrow::new(escrow_address, provider);
 
         let receipt = contract.refund(U256::from(escrow_id)).send().await?.get_receipt().await?;
-        println!("✅ [Bridge] Escrow {} refunded. Tx: {:?}", escrow_id, receipt.transaction_hash);
+        tracing::info!("✅ [Bridge] Escrow {} refunded. Tx: {:?}", escrow_id, receipt.transaction_hash);
         Ok(format!("{:?}", receipt.transaction_hash))
     }
 
@@ -790,7 +903,7 @@ impl BlockchainBridge {
             .map(|l| l.inner.data.tokenId.to::<u64>())
             .ok_or("VoucherMinted event not found in receipt")?;
 
-        println!("✅ [Bridge] Voucher {} minted. Tx: {:?}", token_id, receipt.transaction_hash);
+        tracing::info!("✅ [Bridge] Voucher {} minted. Tx: {:?}", token_id, receipt.transaction_hash);
         Ok(token_id)
     }
 
@@ -811,7 +924,7 @@ impl BlockchainBridge {
             .get_receipt()
             .await?;
 
-        println!("✅ [Bridge] Voucher {} approved for Marketplace. Tx: {:?}", token_id, receipt.transaction_hash);
+        tracing::info!("✅ [Bridge] Voucher {} approved for Marketplace. Tx: {:?}", token_id, receipt.transaction_hash);
         Ok(format!("{:?}", receipt.transaction_hash))
     }
 
@@ -841,7 +954,7 @@ impl BlockchainBridge {
             .map(|l| l.inner.data.id.to::<u64>())
             .ok_or("ListingCreated event not found in receipt")?;
 
-        println!("✅ [Bridge] Listing {} created. Tx: {:?}", listing_id, receipt.transaction_hash);
+        tracing::info!("✅ [Bridge] Listing {} created. Tx: {:?}", listing_id, receipt.transaction_hash);
         Ok(listing_id)
     }
 
@@ -912,7 +1025,7 @@ impl BlockchainBridge {
         // un-timeout-wrapped listings read used for AI matching). Remove after
         // the offline-flow demo.
         if std::env::var("CABALMESH_FORCE_OFFLINE_BUY").is_ok() {
-            println!("🧪 [Bridge] CABALMESH_FORCE_OFFLINE_BUY set — skipping online attempt.");
+            tracing::info!("🧪 [Bridge] CABALMESH_FORCE_OFFLINE_BUY set — skipping online attempt.");
             let queued = self.sign_offline(marketplace_address, calldata, price_wei, "Buy listing").await?;
             return Ok(TxResult::Queued { queue_id: queued.id });
         }
@@ -932,7 +1045,7 @@ impl BlockchainBridge {
             Ok(Ok(receipt)) => receipt,
             Ok(Err(e)) => return Err(e.into()),
             Err(_timed_out) => {
-                println!("⚠️  [Bridge] RPC unreachable — signing buy_listing offline for mesh relay.");
+                tracing::warn!("⚠️  [Bridge] RPC unreachable — signing buy_listing offline for mesh relay.");
                 let queued = self.sign_offline(marketplace_address, calldata, price_wei, "Buy listing").await?;
                 return Ok(TxResult::Queued { queue_id: queued.id });
             }
@@ -945,7 +1058,7 @@ impl BlockchainBridge {
             .map(|l| l.inner.data.dealId.to::<u64>())
             .ok_or("DealCreated event not found in receipt")?;
 
-        println!("✅ [Bridge] Deal {} created (voucher + AVAX locked). Tx: {:?}", deal_id, receipt.transaction_hash);
+        tracing::info!("✅ [Bridge] Deal {} created (voucher + AVAX locked). Tx: {:?}", deal_id, receipt.transaction_hash);
         Ok(TxResult::Confirmed { id: deal_id })
     }
 
@@ -958,7 +1071,7 @@ impl BlockchainBridge {
         let contract = IMarketplace::new(marketplace_address, provider);
 
         let receipt = contract.releaseDeal(U256::from(deal_id)).send().await?.get_receipt().await?;
-        println!("✅ [Bridge] Deal {} released. Tx: {:?}", deal_id, receipt.transaction_hash);
+        tracing::info!("✅ [Bridge] Deal {} released. Tx: {:?}", deal_id, receipt.transaction_hash);
         Ok(format!("{:?}", receipt.transaction_hash))
     }
 
@@ -971,7 +1084,7 @@ impl BlockchainBridge {
         let contract = IMarketplace::new(marketplace_address, provider);
 
         let receipt = contract.refundDeal(U256::from(deal_id)).send().await?.get_receipt().await?;
-        println!("✅ [Bridge] Deal {} refunded. Tx: {:?}", deal_id, receipt.transaction_hash);
+        tracing::info!("✅ [Bridge] Deal {} refunded. Tx: {:?}", deal_id, receipt.transaction_hash);
         Ok(format!("{:?}", receipt.transaction_hash))
     }
 
@@ -985,7 +1098,7 @@ impl BlockchainBridge {
         let contract = IVoucher::new(voucher_address, provider);
 
         let receipt = contract.redeemVoucher(U256::from(token_id)).send().await?.get_receipt().await?;
-        println!("✅ [Bridge] Voucher {} redeemed. Tx: {:?}", token_id, receipt.transaction_hash);
+        tracing::info!("✅ [Bridge] Voucher {} redeemed. Tx: {:?}", token_id, receipt.transaction_hash);
         Ok(format!("{:?}", receipt.transaction_hash))
     }
 
@@ -1082,7 +1195,7 @@ impl BlockchainBridge {
     }
 
     fn save_content_store(&self, store: &std::collections::HashMap<u64, ContentRecord>) -> Result<(), Box<dyn Error>> {
-        fs::write(&self.content_store_path, serde_json::to_string_pretty(store)?)?;
+        JsonStore::new(&self.content_store_path).save(store)?;
         Ok(())
     }
 
@@ -1094,7 +1207,7 @@ impl BlockchainBridge {
     }
 
     fn save_received_content(&self, store: &std::collections::HashMap<u64, ContentRecord>) -> Result<(), Box<dyn Error>> {
-        fs::write(&self.received_content_path, serde_json::to_string_pretty(store)?)?;
+        JsonStore::new(&self.received_content_path).save(store)?;
         Ok(())
     }
 
@@ -1146,7 +1259,7 @@ impl BlockchainBridge {
         let expected = Address::from_str(expected_seller)?;
 
         if recovered != expected {
-            println!("⚠️  Content delivery rejected: signature recovered {} but expected seller {}", recovered, expected);
+            tracing::warn!("⚠️  Content delivery rejected: signature recovered {} but expected seller {}", recovered, expected);
             return Ok(false);
         }
 
@@ -1184,7 +1297,10 @@ mod offline_signing_tests {
 
         let mut bridge = BlockchainBridge {
             identities: Vec::new(),
-            identity_path: tmp_dir.join("identities.json"),
+            identity_vault: Vault::new(
+                tmp_dir.join("vault.enc"),
+                crate::vault_key::platform_provider(tmp_dir.join("vault.key")),
+            ),
             storage_path: tmp_dir.join("snapshot.enc"),
             chain_cache_path: tmp_dir.join("chain_cache.json"),
             pending_relay_path: tmp_dir.join("pending_relay_txs.json"),
@@ -1243,7 +1359,10 @@ mod content_commitment_tests {
     fn test_bridge(tmp_dir: &PathBuf) -> BlockchainBridge {
         BlockchainBridge {
             identities: Vec::new(),
-            identity_path: tmp_dir.join("identities.json"),
+            identity_vault: Vault::new(
+                tmp_dir.join("vault.enc"),
+                crate::vault_key::platform_provider(tmp_dir.join("vault.key")),
+            ),
             storage_path: tmp_dir.join("snapshot.enc"),
             chain_cache_path: tmp_dir.join("chain_cache.json"),
             pending_relay_path: tmp_dir.join("pending_relay_txs.json"),

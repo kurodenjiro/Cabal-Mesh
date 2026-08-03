@@ -3,6 +3,18 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use crate::ollama_config;
+use crate::platform::CAN_SPAWN_PROCESSES;
+
+fn no_local_ollama() -> String {
+    format!(
+        "This platform cannot run a local Ollama server. Point the app at a remote one by \
+         setting {} or calling set_ollama_url (currently {}).",
+        ollama_config::ENV_VAR,
+        ollama_config::url()
+    )
+}
+
 pub struct OllamaManager {
     process: Arc<Mutex<Option<Child>>>,
     model_name: String,
@@ -18,6 +30,10 @@ impl OllamaManager {
 
     /// Check if Ollama is installed
     pub fn is_installed(&self) -> bool {
+        if !CAN_SPAWN_PROCESSES {
+            return false;
+        }
+
         Command::new("ollama")
             .arg("--version")
             .stdout(Stdio::null())
@@ -28,11 +44,15 @@ impl OllamaManager {
 
     /// Start Ollama service in the background
     pub fn start_service(&self) -> Result<(), String> {
+        if !CAN_SPAWN_PROCESSES {
+            return Err(no_local_ollama());
+        }
+
         if !self.is_installed() {
             return Err("Ollama is not installed. Please install it from https://ollama.ai".to_string());
         }
 
-        println!("🤖 Starting Ollama service...");
+        tracing::info!("🤖 Starting Ollama service...");
 
         // Start ollama serve as a background process
         match Command::new("ollama")
@@ -43,7 +63,7 @@ impl OllamaManager {
         {
             Ok(child) => {
                 *self.process.lock().unwrap() = Some(child);
-                println!("✅ Ollama service started");
+                tracing::info!("✅ Ollama service started");
                 
                 // Give it time to start
                 thread::sleep(Duration::from_secs(2));
@@ -56,7 +76,11 @@ impl OllamaManager {
 
     /// Pull the AI model if not already available
     pub fn pull_model(&self) -> Result<(), String> {
-        println!("📥 Checking for model: {}", self.model_name);
+        if !CAN_SPAWN_PROCESSES {
+            return Err(no_local_ollama());
+        }
+
+        tracing::info!("📥 Checking for model: {}", self.model_name);
 
         // Check if model exists
         let list_output = Command::new("ollama")
@@ -67,12 +91,12 @@ impl OllamaManager {
         let list_str = String::from_utf8_lossy(&list_output.stdout);
         
         if list_str.contains(&self.model_name) {
-            println!("✅ Model {} already available", self.model_name);
+            tracing::info!("✅ Model {} already available", self.model_name);
             return Ok(());
         }
 
         // Pull the model
-        println!("📥 Pulling model {} (this may take a few minutes)...", self.model_name);
+        tracing::info!("📥 Pulling model {} (this may take a few minutes)...", self.model_name);
         
         let output = Command::new("ollama")
             .arg("pull")
@@ -81,7 +105,7 @@ impl OllamaManager {
             .map_err(|e| format!("Failed to pull model: {}", e))?;
 
         if output.status.success() {
-            println!("✅ Model {} downloaded successfully", self.model_name);
+            tracing::info!("✅ Model {} downloaded successfully", self.model_name);
             Ok(())
         } else {
             Err(format!(
@@ -101,7 +125,7 @@ impl OllamaManager {
         tokio::task::spawn_blocking(move || {
             let manager = OllamaManager::new(Some(model_name));
             if let Err(e) = manager.pull_model() {
-                eprintln!("⚠️  Warning: {}", e);
+                tracing::warn!("⚠️  Warning: {}", e);
             }
         });
 
@@ -112,7 +136,7 @@ impl OllamaManager {
     pub async fn health_check(&self) -> bool {
         let client = reqwest::Client::new();
         match client
-            .get("http://localhost:11434/api/tags")
+            .get(format!("{}/api/tags", ollama_config::url()))
             .timeout(Duration::from_secs(2))
             .send()
             .await
@@ -125,7 +149,7 @@ impl OllamaManager {
     /// Stop the Ollama service
     pub fn stop_service(&self) {
         if let Some(mut child) = self.process.lock().unwrap().take() {
-            println!("🛑 Stopping Ollama service...");
+            tracing::info!("🛑 Stopping Ollama service...");
             let _ = child.kill();
             let _ = child.wait();
         }

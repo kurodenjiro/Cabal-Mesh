@@ -1,0 +1,7 @@
+---
+source: tests/ipc_contract.rs
+---
+{
+  "kind": "queued",
+  "queueId": "q-8a3f"
+}

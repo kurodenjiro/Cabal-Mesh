@@ -1,0 +1,9 @@
+---
+source: tests/ipc_contract.rs
+---
+{
+  "session_id": "sess_1785603228",
+  "authority": "0xfF8dd6dbB7B97b44044573cFE843dE1F463637a9",
+  "expiry": "2026-05-18T14:32:00Z",
+  "is_active": true
+}

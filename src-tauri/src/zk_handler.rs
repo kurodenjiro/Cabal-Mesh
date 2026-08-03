@@ -31,10 +31,10 @@ impl ZKHandler {
     /// 1. balance >= bid_amount
     /// 2. bid_amount <= price_ceiling
     pub async fn generate_proof(&self, request: ProofRequest) -> Result<ZKProof, Box<dyn Error>> {
-        println!("🔐 Generating Noir ZK-Proof...");
-        println!("   Balance (private): {}", request.balance);
-        println!("   Bid Amount (public): {}", request.bid_amount);
-        println!("   Price Ceiling (private): {}", request.price_ceiling);
+        tracing::info!("🔐 Generating Noir ZK-Proof...");
+        tracing::info!("   Balance (private): {}", request.balance);
+        tracing::info!("   Bid Amount (public): {}", request.bid_amount);
+        tracing::info!("   Price Ceiling (private): {}", request.price_ceiling);
 
         // Verify locally before generating proof
         if request.balance < request.bid_amount {
@@ -43,6 +43,17 @@ impl ZKHandler {
 
         if request.bid_amount > request.price_ceiling {
             return Err("Bid exceeds price ceiling".into());
+        }
+
+        // Proving shells out to `nargo`, which mobile sandboxes cannot execute.
+        // Say so plainly instead of surfacing a spawn failure that reads like a
+        // missing install the user could go fix.
+        if !crate::platform::CAN_SPAWN_PROCESSES {
+            return Err(
+                "ZK proving is unavailable on this platform: it runs the `nargo` binary, \
+                 which iOS and Android sandboxes cannot execute."
+                    .into(),
+            );
         }
 
         // Execute Noir build command in blocking task to avoid freezing async runtime
@@ -72,7 +83,7 @@ impl ZKHandler {
             _ => {
 
                 let error_msg = "❌ Noir ZK Proof Generation Failed! Ensure 'nargo' is installed and circuit is compiled.";
-                eprintln!("{}", error_msg);
+                tracing::warn!("{}", error_msg);
                 Err(error_msg.into())
             }
             }

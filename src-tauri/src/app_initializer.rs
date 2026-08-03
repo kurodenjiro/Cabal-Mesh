@@ -1,11 +1,10 @@
 use crate::blockchain_bridge::BlockchainBridge;
-use crate::mesh::{MeshNetwork, MeshEvent, PrivacyIntent};
-use crate::AppState;
-use tauri::{AppHandle, Emitter, Manager, State};
+use crate::mesh::{MeshEvent, MeshNetwork};
+use crate::state::AppState;
+use tauri::{AppHandle, Emitter, State};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc;
-use std::time::Duration;
 
 #[derive(Clone, serde::Serialize)]
 struct BootstrapStatus {
@@ -30,7 +29,7 @@ impl SystemBootstrap {
 
             // Use the real identity (argument is ignored if identity exists)
             if let Err(e) = bridge_lock.sync_state("ignored_override").await {
-                eprintln!("Sync failed: {}", e);
+                tracing::warn!("Sync failed: {}", e);
                 Self::emit(app, "PHASE_1_ERROR", &format!("Sync Error: {}", e), 0);
             } else {
                 Self::emit(app, "PHASE_1_SYNC", "Snapshot Secured via Avalanche RPC.", 30);
@@ -50,16 +49,29 @@ impl SystemBootstrap {
 
     /// 3. Phase 3 (Network): Init Libp2p
     /// Returns the initialized MeshNetwork and channels
-    pub async fn phase_3_network(app: &AppHandle) -> Result<(MeshNetwork, mpsc::UnboundedSender<PrivacyIntent>, mpsc::UnboundedReceiver<MeshEvent>, mpsc::UnboundedReceiver<PrivacyIntent>, mpsc::UnboundedSender<MeshEvent>), String> {
+    pub async fn phase_3_network(
+        app: &AppHandle,
+    ) -> Result<
+        (
+            MeshNetwork,
+            crate::mesh_handle::MeshHandle,
+            mpsc::UnboundedReceiver<MeshEvent>,
+            tokio::sync::mpsc::Receiver<crate::mesh_handle::MeshCommand>,
+            mpsc::UnboundedSender<MeshEvent>,
+        ),
+        String,
+    > {
         Self::emit(app, "PHASE_3_NETWORK", "Booting Libp2p Swarm...", 70);
         
         let (event_tx, event_rx) = mpsc::unbounded_channel();
-        let (intent_tx, intent_rx) = mpsc::unbounded_channel();
+        // Bounded: a caller that outruns the actor waits rather than
+        // growing a queue until the process is killed.
+        let (mesh_handle, command_rx) = crate::mesh_handle::MeshHandle::channel();
 
         match MeshNetwork::new().await {
             Ok(mesh) => {
                  Self::emit(app, "PHASE_3_NETWORK", &format!("PeerID Generated: {}", mesh.swarm.local_peer_id()), 85);
-                 Ok((mesh, intent_tx, event_rx, intent_rx, event_tx))
+                 Ok((mesh, mesh_handle, event_rx, command_rx, event_tx))
             }
             Err(e) => {
                 Self::emit(app, "PHASE_3_ERROR", &format!("Mesh Failed: {}", e), 0);
@@ -81,14 +93,14 @@ impl SystemBootstrap {
             message: msg.to_string(),
             progress,
         });
-        println!("[Bootstrap] [{}] {} ({}%)", phase, msg, progress);
+        tracing::info!(target: "cabalmesh::bootstrap", phase, progress, "{msg}");
     }
 }
 
 // 5. Security: Kill Switch Command
 #[tauri::command]
-pub async fn kill_switch(state: State<'_, Arc<Mutex<AppState>>>) -> Result<String, String> {
-    let state = state.lock().await;
+pub async fn kill_switch(state: State<'_, AppState>) -> Result<String, String> {
+    let state = state.services().map_err(crate::error::flatten)?;
     let bridge = state.bridge.lock().await;
     
     // Shred local key
@@ -97,6 +109,6 @@ pub async fn kill_switch(state: State<'_, Arc<Mutex<AppState>>>) -> Result<Strin
     // Revoke Instant Session (Mock revocation logic since strict real implementation details are complex)
     // In real world: this would revoke the session key on-chain
     
-    println!("🚨 KILL SWITCH ACTIVATED: Session Shredded.");
+    tracing::warn!("🚨 KILL SWITCH ACTIVATED: Session Shredded.");
     Ok("SESSION_TERMINATED".to_string())
 }

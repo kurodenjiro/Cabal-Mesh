@@ -29,15 +29,23 @@ pub struct ContentAnalysis {
 
 pub struct SharkAgent {
     client: Client,
-    ollama_url: String,
+    ollama_url: Option<String>,
 }
 
 impl SharkAgent {
     pub fn new(ollama_url: Option<String>) -> Self {
         SharkAgent {
             client: Client::new(),
-            ollama_url: ollama_url.unwrap_or_else(|| "http://localhost:11434".to_string()),
+            ollama_url,
         }
+    }
+
+    /// Resolved per request rather than cached at construction, so a URL set at
+    /// runtime — the only way to reach a model on iOS — applies without a restart.
+    fn url(&self) -> String {
+        self.ollama_url
+            .clone()
+            .unwrap_or_else(crate::ollama_config::url)
     }
 
     /// Asks the local LLM to actually read the extracted PDF text and judge
@@ -65,7 +73,7 @@ Respond ONLY with JSON in this exact format:
 
         let response = self
             .client
-            .post(format!("{}/api/generate", self.ollama_url))
+            .post(format!("{}/api/generate", self.url()))
             .json(&request)
             .send()
             .await?;

@@ -1,0 +1,62 @@
+---
+source: tests/ipc_contract.rs
+---
+[
+  {
+    "type": "ListeningStarted",
+    "address": "/ip4/127.0.0.1/tcp/61854"
+  },
+  {
+    "type": "PeerDiscovered",
+    "peer_id": "12D3KooWJLUV",
+    "address": "/ip4/192.168.1.118/tcp/60744"
+  },
+  {
+    "type": "IntentReceived",
+    "intent": {
+      "intent_type": "trade",
+      "payload": "{}",
+      "encrypted": false,
+      "relay_path": [
+        "origin_node"
+      ],
+      "relay_fee": null
+    }
+  },
+  {
+    "type": "DealAccepted",
+    "details": "deal 3 accepted"
+  },
+  {
+    "type": "SettlementComplete",
+    "details": "settled in 11.4s"
+  },
+  {
+    "type": "RelayTxReceived",
+    "queue_id": "q-8a3f",
+    "raw_tx_hex": "0x02f8",
+    "summary": "Escrow release"
+  },
+  {
+    "type": "RelayConfirmed",
+    "queue_id": "q-8a3f",
+    "status": "confirmed",
+    "tx_hash": "0xc70d"
+  },
+  {
+    "type": "ContentRequested",
+    "token_id": 42
+  },
+  {
+    "type": "ContentDelivered",
+    "token_id": 42,
+    "text": "the quick brown fox",
+    "signature": "0xdeadbeef",
+    "signer_address": "0xfF8dd6dbB7B97b44044573cFE843dE1F463637a9"
+  },
+  {
+    "type": "PeerIdentity",
+    "peer_id": "12D3KooWJLUV",
+    "address": "0xfF8dd6dbB7B97b44044573cFE843dE1F463637a9"
+  }
+]

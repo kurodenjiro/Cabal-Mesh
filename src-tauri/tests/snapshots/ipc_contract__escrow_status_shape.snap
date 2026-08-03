@@ -1,0 +1,10 @@
+---
+source: tests/ipc_contract.rs
+---
+{
+  "amount": "50000000000000000",
+  "depositor": "0xfF8dd6dbB7B97b44044573cFE843dE1F463637a9",
+  "expiry": 1785603228,
+  "payee": "0xC24c000000000000000000000000000000000B2e",
+  "status": 0
+}

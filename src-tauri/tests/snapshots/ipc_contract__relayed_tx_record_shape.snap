@@ -1,0 +1,9 @@
+---
+source: tests/ipc_contract.rs
+---
+{
+  "summary": "Escrow release",
+  "tx_hash": "0xc70d",
+  "reward_avax": "0.005",
+  "relayed_at": "2026-05-18T14:32:00Z"
+}

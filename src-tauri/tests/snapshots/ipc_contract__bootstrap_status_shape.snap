@@ -1,0 +1,8 @@
+---
+source: tests/ipc_contract.rs
+---
+{
+  "message": "Booting Libp2p Swarm...",
+  "phase": "PHASE_3_NETWORK",
+  "progress": 70
+}

@@ -1,0 +1,12 @@
+---
+source: tests/ipc_contract.rs
+---
+{
+  "deal_id": 3,
+  "buyer": "0xfF8dd6dbB7B97b44044573cFE843dE1F463637a9",
+  "seller": "0xC24c000000000000000000000000000000000B2e",
+  "token_id": 42,
+  "amount_avax": "0.05",
+  "status": "active",
+  "role": "buyer"
+}

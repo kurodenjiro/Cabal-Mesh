@@ -1,0 +1,8 @@
+---
+source: tests/ipc_contract.rs
+---
+{
+  "balance": 1000,
+  "bid_amount": 95,
+  "price_ceiling": 100
+}

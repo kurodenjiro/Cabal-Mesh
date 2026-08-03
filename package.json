@@ -6,19 +6,28 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "dev:mobile": "vite --mode mobile",
+    "build:mobile": "tsc && vite build --mode mobile",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "ds:unbundle": "python3 scripts/unbundle-ds.py",
+    "ds:types": "python3 scripts/generate-ds-types.py",
+    "ds:assets": "python3 scripts/resample-ds-assets.py && python3 scripts/stage-ds-assets.py",
+    "bindings": "cd src-tauri && cargo test --features ts-rs export_bindings --quiet",
+    "bindings:check": "npm run bindings && git diff --exit-code -- src/types/bindings.ts",
+    "ios:clean-build": "rm -rf src-tauri/gen/apple/build/arm64-sim src-tauri/gen/apple/build/arm64 src-tauri/gen/apple/build/*.xcarchive",
+    "ios:sim": "npm run ios:clean-build && tauri ios build --debug --target aarch64-sim"
   },
   "dependencies": {
+    "@tauri-apps/api": "2.11.1",
+    "@tauri-apps/plugin-opener": "2.5.4",
     "ethers": "^6.13.4",
-    "@tauri-apps/api": "^2.9.1",
-    "@tauri-apps/plugin-opener": "^2",
     "framer-motion": "^12.29.2",
     "react": "^19.2.4",
     "react-dom": "^19.2.4"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2",
+    "@tauri-apps/cli": "2.11.4",
     "@types/react": "^19.2.10",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.2",
