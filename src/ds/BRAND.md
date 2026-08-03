@@ -108,8 +108,9 @@ prompts, `×` as a close affordance. Never as decoration.
 **Copy examples that are on-voice**
 
 - "Zero identity. Private intents. Verifiable execution."
-- "Cabal Mesh is the autonomous mesh layer that enables private intents to be executed offline and settled on-chain with zero-identity."
-- "This intent executes offline and settles on-chain. No identity is attached."
+- "Cabal Mesh is the autonomous mesh layer that enables private intents to be executed offline and settled on-chain with zero-identity." — *flagged, not changed. Ticket 04's sweep for sibling copy found this makes the same "executed offline" claim the dialog string was retired for. It ships nowhere in the app today, and rewriting the product's one-line positioning is a wider call than a dialog string, so it is left for the design owner rather than corrected here.*
+- "This intent broadcasts to the mesh and settles on-chain. No identity is attached."
+- "Queued locally. Broadcast and settlement follow reconnection. No identity is attached."
 - "We leave no identity, only traces."
 - Empty state: "Nothing to export. Nothing is stored."
 - Error: "Node 0x2f11 failed liveness." (not "Something went wrong")
@@ -119,6 +120,7 @@ prompts, `×` as a close affordance. Never as decoration.
 - "Welcome back! 👋 Ready to send your first intent?"
 - "Blazing-fast, seamless private transactions."
 - "Oops! We couldn't find that page."
+- ~~"This intent executes offline and settles on-chain. No identity is attached."~~ — **retired 2026-08-03, ticket 04.** On voice but not true. The architecture is queue-then-drain: offline, an intent is created and queued *locally*, and broadcast and settlement both happen after reconnection. Nothing executes offline. The two replacements above are the approved wording, and the confirm dialog picks between them by connection state.
 
 ---
 

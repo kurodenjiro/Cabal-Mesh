@@ -576,6 +576,7 @@ Physical iPhone + Android: font rendering, glyph crispness, tap targets, keyboar
 | C6 | Tailwind + framer-motion | **Kept, quarantined.** Two build outputs (`dist-desktop`, `dist-mobile`), each with its own `index.html`; Tailwind's `content` glob and framer-motion imports confined to the frozen desktop tree; import boundary enforced in CI. |
 | 4 | Node map layout | **Deterministic, seeded by peer id** — stable across renders and restarts. Detail in Phase C. |
 | — | `nodes` distances | **Removed.** No location source exists and none will be requested. Latency / hops / transport instead (§4, architecture §6.1). |
+| — | Confirm-dialog copy | **Two strings, picked by connection state** (ticket 04, 2026-08-03). Online: *"This intent broadcasts to the mesh and settles on-chain. No identity is attached."* Offline: *"Queued locally. Broadcast and settlement follow reconnection. No identity is attached."* Recorded in `src/ds/BRAND.md`; the retired string is listed there as off-voice with its reason. |
 | — | `REPUTATION SCORE` | **Mocked, in one place** (ticket 03, 2026-08-03). Derived from the peer identifier in `src-tauri/src/reputation.rs` so it is stable across polls and differs between devices; renders `87.6 (+5.3%)` on profile and a tile with a delta on home. An em dash remains whenever there is no mesh. Ticket 39 replaces it with a real signal. |
 
 ### Still open
