@@ -32,6 +32,36 @@ nodeId: string,
 uptime: string, connected: boolean, stats: Array<StatTile>, };
 
 /**
+ * A peer, as the nodes screen shows it.
+ *
+ * **No distance.** A libp2p peer has an identifier and an address, not
+ * coordinates, and this app requests no location permission — asking for one
+ * would contradict the entire premise. The prototype's `1.2 km` is canned;
+ * rendering it would be a fabricated measurement.
+ */
+export type NodeSummary = { 
+/**
+ * Truncated peer id, e.g. `8A3F..1209`.
+ */
+id: string, 
+/**
+ * Round-trip time where known.
+ */
+latencyMs: number | null, 
+/**
+ * 1 is direct; more means relayed.
+ */
+hops: number, transport: Transport, 
+/**
+ * Deterministic map position in [0,1], seeded by peer id.
+ */
+x: number, y: number, 
+/**
+ * Milliseconds, also seeded, so the field does not pulse in unison.
+ */
+pulseMs: number, };
+
+/**
  * What the splash screen needs to decide what it is offering.
  */
 export type SessionStatus = { 
@@ -74,3 +104,8 @@ export type StatusTone = "online" | "alert" | "info" | "idle" | "offline";
  * Toast tone. Domain matches `Toast`.
  */
 export type ToastTone = "neutral" | "info" | "success" | "alert";
+
+/**
+ * How a peer is reached.
+ */
+export type Transport = "mdns" | "quic" | "relayed";

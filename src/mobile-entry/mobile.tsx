@@ -13,6 +13,7 @@ import { AppShell } from "../shell/AppShell";
 import { Splash } from "../screens/Splash";
 import { Connecting } from "../screens/Connecting";
 import { Home } from "../screens/Home";
+import { Nodes } from "../screens/Nodes";
 import type { Screen } from "../shell/screen";
 
 /**
@@ -62,7 +63,13 @@ function App() {
 
   return (
     <AppShell screen={screen} onNavigate={setScreen}>
-      {screen.name === "home" ? <Home /> : <Placeholder screen={screen} />}
+      {screen.name === "home" ? (
+        <Home />
+      ) : screen.name === "nodes" ? (
+        <Nodes />
+      ) : (
+        <Placeholder screen={screen} />
+      )}
     </AppShell>
   );
 }

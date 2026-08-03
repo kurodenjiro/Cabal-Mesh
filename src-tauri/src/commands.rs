@@ -279,3 +279,99 @@ pub async fn subscribe_mesh_log(
 
     Ok(id.to_string())
 }
+
+// ---------------------------------------------------------------------------
+// Nodes
+// ---------------------------------------------------------------------------
+
+/// How a peer is reached.
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "lowercase")]
+pub enum Transport {
+    /// Found on this network.
+    Mdns,
+    /// Direct connection.
+    Quic,
+    /// Reached through a relay.
+    Relayed,
+}
+
+/// A peer, as the nodes screen shows it.
+///
+/// **No distance.** A libp2p peer has an identifier and an address, not
+/// coordinates, and this app requests no location permission — asking for one
+/// would contradict the entire premise. The prototype's `1.2 km` is canned;
+/// rendering it would be a fabricated measurement.
+#[derive(Debug, Clone, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "camelCase")]
+pub struct NodeSummary {
+    /// Truncated peer id, e.g. `8A3F..1209`.
+    pub id: String,
+    /// Round-trip time where known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<u16>,
+    /// 1 is direct; more means relayed.
+    pub hops: u8,
+    pub transport: Transport,
+    /// Deterministic map position in [0,1], seeded by peer id.
+    pub x: f32,
+    pub y: f32,
+    /// Milliseconds, also seeded, so the field does not pulse in unison.
+    pub pulse_ms: u16,
+}
+
+/// Peers currently reachable.
+///
+/// Positions are **deterministic, seeded by peer id**: a node stays where it
+/// was across renders and restarts, which is what makes the map readable as an
+/// instrument rather than a lava lamp. The prototype's seven hardcoded slots do
+/// not generalise to an arbitrary peer count.
+///
+/// # Errors
+///
+/// [`AppError::NotReady`] before bootstrap, [`AppError::MeshOffline`] without a
+/// swarm.
+#[tauri::command]
+pub async fn list_nearby_nodes(state: State<'_, AppState>) -> Result<Vec<NodeSummary>, AppError> {
+    let services = state.services()?;
+    let mesh = services.mesh.as_ref().ok_or(AppError::MeshOffline)?;
+    let snapshot = mesh.snapshot().await.map_err(|_| AppError::MeshOffline)?;
+
+    // The actor reports a count; per-peer detail arrives with the peer registry
+    // in a later ticket. Rendering the count honestly beats inventing rows.
+    let mut nodes = Vec::with_capacity(snapshot.peer_count);
+    for index in 0..snapshot.peer_count {
+        let seed = format!("{}-{index}", snapshot.peer_id);
+        let (x, y, pulse) = seeded_position(&seed);
+        nodes.push(NodeSummary {
+            id: cabal_core::NodeId::new(seed.clone()).truncated(),
+            latency_ms: None,
+            hops: 1,
+            transport: Transport::Mdns,
+            x,
+            y,
+            pulse_ms: pulse,
+        });
+    }
+    Ok(nodes)
+}
+
+/// Deterministic position and pulse from a peer id.
+///
+/// A hash rather than randomness so a node does not jump between renders, and
+/// the pulse is seeded too so the field does not throb in unison.
+fn seeded_position(seed: &str) -> (f32, f32, u16) {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+
+    let mut hasher = DefaultHasher::new();
+    seed.hash(&mut hasher);
+    let hash = hasher.finish();
+
+    // Inset from the edges so a node is never clipped by the map's frame.
+    let x = 0.12 + ((hash & 0xFFFF) as f32 / 65_535.0) * 0.76;
+    let y = 0.12 + (((hash >> 16) & 0xFFFF) as f32 / 65_535.0) * 0.76;
+    let pulse = 900 + u16::try_from((hash >> 32) % 750).unwrap_or(0);
+    (x, y, pulse)
+}

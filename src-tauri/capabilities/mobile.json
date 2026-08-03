@@ -15,6 +15,7 @@
     "allow-session-status",
     "allow-enter-mesh",
     "allow-mesh-snapshot",
-    "allow-subscribe-mesh-log"
+    "allow-subscribe-mesh-log",
+    "allow-list-nearby-nodes"
   ]
 }
