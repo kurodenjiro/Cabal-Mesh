@@ -53,11 +53,18 @@ targets:
           - UIInterfaceOrientationLandscapeRight
         CFBundleShortVersionString: 0.1.0
         CFBundleVersion: "0.1.0"
+        # Non-exempt: the app ships its own AES-256-GCM vault and Noise
+        # transport rather than calling only the OS. Reasoning, classification
+        # and the two filings this obliges are in docs/export-compliance.md.
+        # ITSEncryptionExportComplianceCode is deliberately absent — Apple
+        # issues it only once the export documentation is accepted.
+        ITSAppUsesNonExemptEncryption: true
         # libp2p mDNS sends raw UDP multicast to 224.0.0.251:5353. iOS gates
         # both the local-network probe and the multicast socket itself.
-        NSLocalNetworkUsageDescription: CabalMesh discovers nearby peers on your local network to form the mesh.
+        NSLocalNetworkUsageDescription: CabalMesh discovers nearby nodes on your local network. No identity is attached.
         NSBonjourServices:
           - _p2p._udp
+          - _p2p._tcp
         # Reaching an Ollama server on the same LAN over plain http. A remote
         # Ollama on the public internet must use https, or this needs a
         # matching NSExceptionDomains entry.
