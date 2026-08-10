@@ -64,12 +64,6 @@ pub mod bindings;
 /// The typed error union that crosses the IPC boundary. See src/error.rs.
 pub mod error;
 
-/// The frozen desktop IPC surface. See `legacy/mod.rs` for why it exists and
-/// what it is not allowed to become.
-#[cfg(all(desktop, feature = "desktop-legacy"))]
-pub mod legacy;
-
-
 use app_initializer::SystemBootstrap;
 use agent::SharkAgent;
 use matcher::MatchAgent;
@@ -295,99 +289,34 @@ pub fn run() {
 
             Ok(())
         })
-        // Handler registration is split by surface.
-        //
-        // The frozen desktop commands are compiled and registered only on
-        // desktop with the `desktop-legacy` feature. The mobile handler never
-        // sees them, which is what keeps `capabilities/mobile.json` able to
-        // grant nothing.
-        //
-        // The reshaped screen commands are added to the mobile arm as they are
-        // built (tickets 29 onward), never speculatively.
-        .invoke_handler({
-            #[cfg(all(desktop, feature = "desktop-legacy"))]
-            {
-                tauri::generate_handler![
-                    commands::unsubscribe,
-                    commands::session_status,
-                    commands::enter_mesh,
-                    commands::mesh_snapshot,
-                    commands::subscribe_mesh_log,
-                    commands::list_nearby_nodes,
-                    commands::ble_status,
-                    commands::list_intents,
-                    commands::intent_form_options,
-                    commands::preview_intent,
-                    commands::broadcast_intent,
-                    commands::intent_detail,
-                    commands::subscribe_settlement_log,
-                    commands::settle_intent,
-                    commands::cancel_intent,
-                    commands::intent_proof,
-                    commands::vault_assets,
-                    commands::vault_identities,
-                    commands::vault_keys,
-                    commands::profile_summary,
-                    commands::set_offline_mode,
-                    app_initializer::kill_switch,
-            legacy::send_intent_to_mesh,
-            legacy::analyze_pdf_content,
-            legacy::generate_zk_proof,
-            legacy::sync_blockchain_state,
-            legacy::enable_instant_session,
-            legacy::create_escrow,
-            legacy::release_escrow,
-            legacy::refund_escrow,
-            legacy::get_escrow_status,
-            legacy::get_bridge_status,
-            legacy::check_rpc_reachable,
-            legacy::get_wallet_snapshot,
-            legacy::delete_wallet_snapshot,
-            legacy::get_identity,
-            legacy::get_primary_private_key,
-            legacy::logout_wallet,
-            legacy::import_wallet,
-            legacy::mint_voucher,
-            legacy::approve_voucher,
-            legacy::create_asset_listing,
-            legacy::get_active_asset_listings,
-            legacy::buy_listing,
-            legacy::release_deal,
-            legacy::refund_deal,
-            legacy::submit_raw_transaction,
-            legacy::get_pending_relay_txs,
-            legacy::prune_stale_relay_txs,
-            legacy::mark_relay_tx_status,
-            legacy::record_relayed_tx,
-            legacy::get_relayed_history,
-            legacy::get_relay_boost,
-            legacy::apply_relay_boost,
-            legacy::redeem_voucher,
-            legacy::get_voucher_owner,
-            legacy::get_owned_vouchers,
-            legacy::get_my_deals,
-            legacy::get_ollama_status,
-            legacy::get_ollama_url,
-            legacy::set_ollama_url,
-            legacy::can_spawn_processes,
-            legacy::extract_pdf_text,
-            legacy::sign_content,
-            legacy::store_content,
-            legacy::get_content,
-            legacy::receive_content,
-            legacy::get_received_content,
-            legacy::match_intent_to_listings,
-            legacy::get_relay_stats,
-            legacy::record_relay_bytes
-                ]
-            }
-            #[cfg(not(all(desktop, feature = "desktop-legacy")))]
-            {
-                // Mobile gets the reshaped surface only. Screen commands join
-                // it as their screens land.
-                tauri::generate_handler![commands::unsubscribe, commands::session_status, commands::enter_mesh, commands::mesh_snapshot, commands::subscribe_mesh_log, commands::list_nearby_nodes, commands::ble_status, commands::list_intents, commands::intent_form_options, commands::preview_intent, commands::broadcast_intent, commands::intent_detail, commands::subscribe_settlement_log, commands::settle_intent, commands::cancel_intent, commands::intent_proof, commands::vault_assets, commands::vault_identities, commands::vault_keys, commands::profile_summary, commands::set_offline_mode]
-            }
-        })
+        // One handler, every platform. Desktop used to carry a second,
+        // frozen arm for the old RPG UI (see git history for `src/legacy/`);
+        // now that UI is gone, desktop and mobile share the same reshaped
+        // command surface — new commands join this single list as their
+        // screens land, never speculatively.
+        .invoke_handler(tauri::generate_handler![
+            commands::unsubscribe,
+            commands::session_status,
+            commands::enter_mesh,
+            commands::mesh_snapshot,
+            commands::subscribe_mesh_log,
+            commands::list_nearby_nodes,
+            commands::ble_status,
+            commands::list_intents,
+            commands::intent_form_options,
+            commands::preview_intent,
+            commands::broadcast_intent,
+            commands::intent_detail,
+            commands::subscribe_settlement_log,
+            commands::settle_intent,
+            commands::cancel_intent,
+            commands::intent_proof,
+            commands::vault_assets,
+            commands::vault_identities,
+            commands::vault_keys,
+            commands::profile_summary,
+            commands::set_offline_mode,
+        ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {

@@ -5,8 +5,13 @@ Two files, one per platform family. There is deliberately **no shared
 
 | File | Applies to | Grants |
 |---|---|---|
-| `desktop.json` | linux, macOS, windows | `core:default`, `opener:default`, all 50 app commands |
-| `mobile.json` | iOS, android | `core:default` **only** — no app command is reachable |
+| `desktop.json` | linux, macOS, windows | `core:default`, `opener:default`, the same 21 app commands as mobile.json |
+| `mobile.json` | iOS, android | `core:default` plus the same 21 app commands as desktop.json |
+
+Desktop and mobile now serve the same frontend (`src/screens/`) through one
+`invoke_handler` in `lib.rs`, so their command grants are kept identical on
+purpose — see `tests/handler_arms.rs`, which fails if either file drifts from
+the reshaped command list.
 
 ## Why the shared capability file was deleted
 
@@ -57,27 +62,20 @@ never over IPC. Granting them to the webview would expose vault key
 unwrapping to anything that achieves script execution. Only `type-scale` will
 ever need a webview grant.
 
-## Mobile grants nothing, on purpose
+## Never grant speculatively
 
-`mobile.json` lists `core:default` and nothing else. **No app command is
-reachable from the mobile webview.**
+Both files list exactly the commands the current screens call — nothing more.
 
-An earlier pass granted mobile the same 50 commands as desktop, reasoning
-that mobile still serves the desktop frontend so it needs them. That was the
-wrong instinct: it hands a surface with *no screens* the full command set,
-including private-key export and raw transaction submission, purely to keep a
-placeholder UI from looking broken. Convenience during development is not a
-reason to widen an authority boundary.
+An earlier pass granted mobile the full 50-command desktop surface, reasoning
+that mobile still served the frozen desktop frontend so it needed them. That
+was the wrong instinct: it handed a surface with *no matching screens* the
+full command set, including private-key export and raw transaction
+submission, purely to keep a placeholder UI from looking broken. Convenience
+during development is not a reason to widen an authority boundary.
 
-What the mobile build proves today is that the Rust and native graph compiles,
-links, launches and renders. That is the whole job of tickets 07 and 08. The
-frontend it happens to display is the desktop one, and its IPC-dependent
-fields come up empty — which is correct, not a defect.
+Desktop carried a similar oversized grant for longer, because it kept the
+frozen desktop UI (and its 50-command `legacy` module) working after mobile
+moved on. Once that UI was deleted, desktop's grant was cut down to match
+mobile's — see git history for the removal.
 
-The surface opens later, per screen:
-
-- Ticket 26 splits the builds so mobile stops serving the desktop frontend.
-- Tickets 29–36 add exactly the commands each screen calls, as that screen
-  lands.
-
-Never add a permission here ahead of a screen that calls it.
+Add a permission here only when a screen actually calls the command.

@@ -1,28 +1,27 @@
-//! Frozen IPC contract for the desktop UI.
+//! Serialization contract for types crossing the IPC and mesh-wire boundary.
 //!
-//! The desktop frontend is frozen — untouched and unmaintained — while every
-//! command signature behind it is about to be reshaped. Without a mechanical
-//! guard, "frozen" is a wish, and the breakage is silent: a renamed field or a
-//! changed enum tag produces `undefined` in the webview, not a compiler error.
+//! Without a mechanical guard, a renamed field or a changed enum tag produces
+//! `undefined` in the webview (or a peer that can't parse the wire message),
+//! not a compiler error.
 //!
 //! # Why shapes, not live output
 //!
-//! Most of the 50 commands need something this suite must not depend on: a
-//! reachable Avalanche RPC, a running Ollama, the `nargo` binary, or a live
-//! libp2p mesh. Snapshotting their runtime output would be neither
+//! Producing these values for real needs something this suite must not depend
+//! on: a reachable Avalanche RPC, a running Ollama, the `nargo` binary, or a
+//! live libp2p mesh. Snapshotting runtime output would be neither
 //! reproducible nor CI-safe, and the results would drift with chain state.
 //!
-//! What the frozen UI actually depends on is the **serialized shape** of the
-//! values crossing the boundary — field names, casing, enum tagging, and how
-//! optionality is represented. That is what these snapshots pin, using
-//! fixtures rather than services.
+//! What matters is the **serialized shape** of the values crossing the
+//! boundary — field names, casing, enum tagging, and how optionality is
+//! represented. That is what these snapshots pin, using fixtures rather than
+//! services.
 //!
 //! # What a failure here means
 //!
 //! A diff is not automatically a bug — but it is always a decision. Either the
-//! change is intentional and the frozen UI needs the compatibility adapter
-//! (ticket 11) to keep emitting the old shape, or it is accidental and should
-//! be reverted. Never accept a snapshot without deciding which.
+//! change is intentional and any consumer of the old shape needs a
+//! compatibility adapter to match, or it is accidental and should be
+//! reverted. Never accept a snapshot without deciding which.
 //!
 //! Run `cargo insta review` to inspect diffs.
 
@@ -375,66 +374,38 @@ fn bootstrap_status_shape() {
 
 /// Guards the command surface itself.
 ///
-/// Kept in step with the `COMMANDS` list in `build.rs`, which generates the ACL
-/// permissions, and with the handler registration in `lib.rs`. A command
-/// removed or renamed without updating all three is a silent 404 for the
-/// frozen UI, and a permission granted for a command that no longer exists
-/// fails the build.
+/// Kept in step with the `COMMANDS` list in `build.rs`, which generates the
+/// ACL permissions, and with the single handler registration in `lib.rs`
+/// (desktop and mobile share it — see `tests/handler_arms.rs` for the
+/// per-platform capability-file check). A command removed or renamed without
+/// updating all three is a silent 404, and a permission granted for a command
+/// that no longer exists fails the build.
 #[test]
 fn command_inventory() {
     let mut commands = vec![
-        "analyze_pdf_content",
-        "apply_relay_boost",
-        "approve_voucher",
-        "buy_listing",
-        "can_spawn_processes",
-        "check_rpc_reachable",
-        "create_asset_listing",
-        "create_escrow",
-        "delete_wallet_snapshot",
-        "enable_instant_session",
-        "extract_pdf_text",
-        "generate_zk_proof",
-        "get_active_asset_listings",
-        "get_bridge_status",
-        "get_content",
-        "get_escrow_status",
-        "get_identity",
-        "get_my_deals",
-        "get_ollama_status",
-        "get_ollama_url",
-        "get_owned_vouchers",
-        "get_pending_relay_txs",
-        "get_primary_private_key",
-        "get_received_content",
-        "get_relay_boost",
-        "get_relay_stats",
-        "get_relayed_history",
-        "get_voucher_owner",
-        "get_wallet_snapshot",
-        "import_wallet",
-        "kill_switch",
-        "logout_wallet",
-        "mark_relay_tx_status",
-        "match_intent_to_listings",
-        "mint_voucher",
-        "prune_stale_relay_txs",
-        "receive_content",
-        "record_relay_bytes",
-        "record_relayed_tx",
-        "redeem_voucher",
-        "refund_deal",
-        "refund_escrow",
-        "release_deal",
-        "release_escrow",
-        "send_intent_to_mesh",
-        "set_ollama_url",
-        "sign_content",
-        "store_content",
-        "submit_raw_transaction",
-        "sync_blockchain_state",
+        "ble_status",
+        "broadcast_intent",
+        "cancel_intent",
+        "enter_mesh",
+        "intent_detail",
+        "intent_form_options",
+        "intent_proof",
+        "list_intents",
+        "list_nearby_nodes",
+        "mesh_snapshot",
+        "preview_intent",
+        "profile_summary",
+        "session_status",
+        "set_offline_mode",
+        "settle_intent",
+        "subscribe_mesh_log",
+        "subscribe_settlement_log",
+        "unsubscribe",
+        "vault_assets",
+        "vault_identities",
+        "vault_keys",
     ];
     commands.sort_unstable();
-    assert_eq!(commands.len(), 50, "command count changed");
+    assert_eq!(commands.len(), 21, "command count changed");
     insta::assert_snapshot!(commands.join("\n"));
 }

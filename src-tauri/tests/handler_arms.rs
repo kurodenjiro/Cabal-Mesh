@@ -1,25 +1,29 @@
-//! Both invoke-handler arms carry the same reshaped commands.
+//! `lib.rs` registers exactly one invoke-handler arm, and it carries every
+//! reshaped command.
 //!
 //! # The failure this exists for
 //!
-//! `run()` builds two `generate_handler!` lists: one for desktop with the
-//! frozen legacy surface, one for mobile without it. A command added to the
-//! desktop arm and forgotten on the mobile one **compiles, passes every test,
-//! and is granted by `capabilities/mobile.json`** — the ACL allows it, the
-//! command simply is not registered, so the invoke fails at runtime on the
-//! phone and nowhere else.
+//! `run()` used to build two `generate_handler!` lists: one for desktop with
+//! the frozen legacy surface, one for mobile without it. A command added to
+//! the desktop arm and forgotten on the mobile one compiled, passed every
+//! test, and was granted by `capabilities/mobile.json` — the ACL allowed it,
+//! the command simply was not registered, so the invoke failed at runtime on
+//! the phone and nowhere else. That is exactly what happened to `ble_status`:
+//! granted, present in the generated ACL schema, and missing from the mobile
+//! arm. The symptom was a panel that silently rendered nothing on device
+//! while every test was green, and it cost a full simulator build to find.
 //!
-//! That is exactly what happened to `ble_status`: it was granted, present in
-//! the generated ACL schema, and missing from the mobile arm. The symptom was
-//! a panel that silently rendered nothing on device while every test was
-//! green, and it cost a full simulator build to find.
+//! The legacy arm and its `desktop-legacy` feature are gone now — desktop and
+//! mobile share one frontend and one handler — but the class of bug they
+//! caused is worth guarding against permanently: this file fails loudly if a
+//! second arm ever reappears, or if the one arm ever drops a command that
+//! `build.rs` or a capability file still expects.
 //!
 //! # Why this reads the source
 //!
 //! A macro's contents are not introspectable at runtime, and building a mock
-//! app per platform arm proves only that the arm the test was compiled for
-//! exists. Reading `lib.rs` is crude, and it is the only thing that actually
-//! compares the two lists.
+//! app proves only that the arm the test was compiled for exists. Reading
+//! `lib.rs` is crude, and it is the only thing that actually checks this.
 
 use std::collections::BTreeSet;
 
@@ -84,35 +88,34 @@ fn handler_arms(source: &str) -> Vec<BTreeSet<String>> {
 }
 
 #[test]
-fn there_are_exactly_two_handler_arms() {
-    // If a third appears, this file's assumption that "both arms" means
-    // "desktop and mobile" needs revisiting rather than silently passing.
+fn there_is_exactly_one_handler_arm() {
+    // If a second appears, desktop and mobile are diverging again — the
+    // exact split that used to hide `ble_status` from the phone.
     let arms = handler_arms(&source());
     assert_eq!(
         arms.len(),
-        2,
-        "expected a desktop arm and a mobile arm, found {}",
+        1,
+        "expected a single handler shared by every platform, found {}",
         arms.len()
     );
 }
 
 #[test]
-fn every_shared_command_is_registered_on_both_platforms() {
+fn the_handler_registers_every_shared_command() {
     let arms = handler_arms(&source());
+    let arm = arms.first().expect("there_is_exactly_one_handler_arm covers absence");
 
-    for (index, arm) in arms.iter().enumerate() {
-        let missing: Vec<&str> = SHARED
-            .iter()
-            .copied()
-            .filter(|command| !arm.contains(*command))
-            .collect();
+    let missing: Vec<&str> = SHARED
+        .iter()
+        .copied()
+        .filter(|command| !arm.contains(*command))
+        .collect();
 
-        assert!(
-            missing.is_empty(),
-            "handler arm {index} is missing {missing:?} — granted by the ACL, \
-             absent from the handler, and therefore broken only on that platform"
-        );
-    }
+    assert!(
+        missing.is_empty(),
+        "the handler is missing {missing:?} — granted by the ACL, \
+         absent from the handler, and therefore broken at runtime"
+    );
 }
 
 #[test]
@@ -146,6 +149,26 @@ fn the_mobile_capability_grants_every_shared_command() {
             capability.contains(&permission),
             "`{permission}` is not granted in capabilities/mobile.json, so `{command}` \
              is denied on the phone however correctly it is registered"
+        );
+    }
+}
+
+#[test]
+fn the_desktop_capability_grants_every_shared_command() {
+    // Desktop used to grant a 50-command legacy surface on top of this list,
+    // which hid drift between the two capability files behind a superset.
+    // Now the grants are meant to be identical, so check desktop directly
+    // rather than relying on "wider than mobile" to happen to still cover it.
+    let capability =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/capabilities/desktop.json"))
+            .expect("desktop.json is readable");
+
+    for command in SHARED {
+        let permission = format!("allow-{}", command.replace('_', "-"));
+        assert!(
+            capability.contains(&permission),
+            "`{permission}` is not granted in capabilities/desktop.json, so `{command}` \
+             is denied on desktop however correctly it is registered"
         );
     }
 }

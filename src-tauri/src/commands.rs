@@ -1,13 +1,10 @@
-//! The reshaped command surface.
+//! The reshaped command surface — the whole IPC surface, shared by desktop
+//! and mobile. Commands here return [`AppError`] rather than `String`, so the
+//! frontend switches on a variant and renders its own copy.
 //!
-//! Distinct from [`crate::legacy`], which is frozen. Commands here return
-//! [`AppError`] rather than `String`, so the frontend switches on a variant
-//! and renders its own copy.
-//!
-//! Screen commands land with their screens, in tickets 29 onward — never
-//! speculatively, because an unreachable command still has to be granted a
-//! permission, and a permission granted ahead of a caller is a permission
-//! nobody is checking.
+//! Screen commands land with their screens — never speculatively, because an
+//! unreachable command still has to be granted a permission, and a permission
+//! granted ahead of a caller is a permission nobody is checking.
 
 use crate::error::AppError;
 use crate::state::AppState;

@@ -1,81 +1,86 @@
 # 🧪 CabalMesh - Testing Guide
 
-Follow this guide to verify all 4 layers of the CabalMesh privacy stack.
+Follow this guide to verify all 4 layers of the CabalMesh privacy stack (see
+the Privacy Layers table in [README.md](README.md)): mesh networking, AI
+negotiation, ZK verification, and on-chain settlement on Avalanche.
 
 ## 🚀 1. Start the Application
 
 ```bash
 npm run tauri dev
 ```
-*Wait for the "Nobody" radar interface to appear.*
+
+Wait for `✅ System Bootstrap Complete. Mesh Swarm Active.` in the terminal —
+the app then opens on the Home screen.
 
 ---
 
 ## 🔒 2. Test Privacy & Zero-Knowledge (ZK) Layer
 
 **Action:**
-1. Type this intent in the bottom command bar:
+1. From Home, open **New** and compose an intent, e.g.:
    ```
-   Buy 10 SOL under $95 using Shark Mode
+   Buy 10 AVAX under $95 using Shark Mode
    ```
-2. Press **Enter**.
+2. Broadcast it. This takes you to the **Detail** screen.
 
-**Verify in UI:**
-- Status changes to: `🔐 Generating Zero-Knowledge Proof...`
-- Log appears: `[Noir] Proof Generated ✓`
+**Verify in UI (Detail):**
+- The status badge moves from `BROADCAST` toward `NEGOTIATING`.
+- The **VERIFICATION LOG** panel fills in as events arrive.
 
 **Verify in Terminal:**
-- You should see: `🔐 Generating Noir ZK-Proof...` followed by checks.
+- `🔐 Generating Noir ZK-Proof...` followed by the balance / bid / price
+  ceiling lines.
 
 ---
 
 ## 🤖 3. Test AI Agent Layer (Ollama)
 
 **Action:**
-- Watch the status after the ZK step.
-
-**Verify in UI:**
-- Status changes to: `🦈 Negotiating with AI Agent...`
-- Log appears: `[Arcium] Strategy optimized`
-- Log appears: `[Arcium] MPC Negotiation started`
+- Watch the Detail screen after broadcasting.
 
 **Verify in Terminal:**
-- You should see the AI's JSON response with a strategy (e.g., "Shark Mode Agent will bid aggressively...").
+- Ollama-backed negotiation activity from the local agent (`agent.rs`). If no
+  Ollama instance is reachable, the terminal logs a warning instead — see
+  Troubleshooting below.
 
 ---
 
 ## 📡 4. Test Mesh Networking Layer
 
-**Action:**
-- Watch the status after the AI step.
-
-**Verify in UI:**
-- Status changes to: `📡 Broadcasting to Mesh Network...`
-- Log appears: `Intent broadcasted to mesh`
-
 **Verify in Terminal:**
-- You should see: `📤 Broadcasting intent to mesh: ...`
-- *Note:* If running alone, you may see a warning `⚠️ Note: No peers connected`, which is expected!
+- `intent broadcast` on the sending node.
+- On a peer: `peer discovered`, then `📬 Received Intent: ...`.
+- Single-node, no peers: `⚠️ Note: No peers connected (Single-Node Mode).
+  Intent processed locally.` — this is expected, not an error.
 
 ---
 
-## ⚡ 5. Test Solana Settlement Layer
+## ⚡ 5. Test Avalanche Settlement Layer
 
 **Action:**
-- Watch the final step.
+- Once negotiation completes, settle the intent from the Detail screen.
 
 **Verify in UI:**
-- Status changes to: `✅ Validating on Solana...`
-- Log appears: `[SilentSwap] Finalizing on Solana...`
+- The app moves to **Settled**, showing the **PROOF** panel with the on-chain
+  transaction hash and settlement time.
+
+**Verify in Terminal:**
+- `✅ [Bridge] Escrow <id> created. Tx: ...`, then `✅ [Bridge] Escrow <id>
+  released. Tx: ...` (or `refunded`, depending on outcome).
 
 ---
 
 ## 🔌 6. Test Offline Mode (Optional)
 
 1. Turn off your Wi-Fi / Internet.
-2. In the app, verify the **Internet** indicator (top-right) turns **RED**.
-3. Submit a new intent.
-4. **Result:** The app should still generate the ZK proof and attempt to broadcast to the local mesh (violet dots), even without internet!
+2. Compose and broadcast a new intent.
+3. **Result:** The app should still generate the ZK proof and attempt to
+   broadcast to the local mesh, even without internet. The transaction is
+   signed offline and queued for mesh relay
+   (`📡 [Bridge] Signed offline, queued for mesh relay: ...`).
+4. Reconnect — the terminal should log `queued transaction confirmed after
+   reconnect` once the queued transaction lands on-chain.
 
 ---
 
@@ -105,7 +110,12 @@ PORT=1421 npm run tauri dev -- --config src-tauri/tauri.node2.conf.json
 
 - **Stuck on "Generating Proof"?**
   - Restart the app. The background process might have desynced.
+  - ZK proving shells out to the `nargo` binary and is desktop-only — it is
+    not available on iOS/Android builds.
 - **Ollama Error?**
-  - Run `ollama serve` manually in a separate terminal to see detailed logs.
+  - Run `ollama serve` manually in a separate terminal to see detailed logs,
+    or point the app at a remote instance with `CABALMESH_OLLAMA_URL`.
 - **"Insufficient Peers"?**
-  - This is normal for single-node testing. To test peer discovery, run `npm run tauri dev` on a second computer on the same Wi-Fi.
+  - This is normal for single-node testing. To test peer discovery, run
+    `npm run tauri dev` on a second machine on the same Wi-Fi, or use the
+    multi-node simulation above.

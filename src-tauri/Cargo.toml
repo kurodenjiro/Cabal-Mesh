@@ -41,17 +41,6 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [features]
-# On by default so an ordinary `cargo build` still produces a working desktop
-# app. Mobile builds get it too, but the module is additionally gated on
-# `cfg(desktop)`, so nothing legacy is compiled or registered for a phone.
-#
-# Turn it off to see the app with only the reshaped command surface — which is
-# the state mobile already ships in.
-default = ["desktop-legacy"]
-
-# The frozen desktop IPC surface: 50 commands with signatures held byte-identical
-# for the unmaintained desktop UI. See src/legacy/mod.rs.
-desktop-legacy = []
 ts-rs = ["dep:ts-rs", "cabal-core/ts-rs"]
 
 [dependencies]

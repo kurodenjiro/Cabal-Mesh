@@ -22,8 +22,6 @@
 //! What remains here is worth keeping: it shows the ACL from ticket 06 is
 //! enforced on the real invoke path, and that commands are registered.
 
-#![cfg(all(desktop, feature = "desktop-legacy"))]
-
 use cabalmesh_lib::state::AppState;
 use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::webview::InvokeRequest;
@@ -32,9 +30,9 @@ use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 fn app_with_state() -> tauri::App<tauri::test::MockRuntime> {
     let app = mock_builder()
         .invoke_handler(tauri::generate_handler![
-            cabalmesh_lib::legacy::get_bridge_status,
-            cabalmesh_lib::legacy::check_rpc_reachable,
-            cabalmesh_lib::legacy::get_relay_stats,
+            cabalmesh_lib::commands::session_status,
+            cabalmesh_lib::commands::mesh_snapshot,
+            cabalmesh_lib::commands::ble_status,
         ])
         .build(mock_context(noop_assets()))
         .expect("mock app builds");
@@ -83,7 +81,7 @@ fn ungranted_commands_are_refused_by_the_acl() {
     let app = app_with_state();
     let webview = webview_of(&app);
 
-    for command in ["get_bridge_status", "check_rpc_reachable", "get_relay_stats"] {
+    for command in ["session_status", "mesh_snapshot", "ble_status"] {
         let error = invoke(&webview, command)
             .expect_err("no capability grants this command, so it must be refused");
         assert!(
