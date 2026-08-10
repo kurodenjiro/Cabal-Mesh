@@ -17,7 +17,6 @@ export type VaultTab = "ASSETS" | "IDENTITIES" | "KEYS";
 
 export type Screen =
   | { name: "splash" }
-  | { name: "connecting" }
   | { name: "home" }
   | { name: "intents"; tab: IntentTab }
   | { name: "new" }
@@ -56,7 +55,6 @@ export const TABS: ReadonlyArray<{ key: TabKey; label: string; icon: GlyphName }
 export function back(screen: Screen): Screen {
   switch (screen.name) {
     case "splash":
-    case "connecting":
     case "home":
       return screen;
     case "intents":
@@ -88,14 +86,13 @@ export function activeTab(screen: Screen): TabKey | null {
     case "profile":
       return "profile";
     case "splash":
-    case "connecting":
       return null;
   }
 }
 
-/** Splash and connecting are full-bleed: no header, no tab bar. */
+/** Splash is full-bleed: no header, no tab bar. */
 export function hasChrome(screen: Screen): boolean {
-  return screen.name !== "splash" && screen.name !== "connecting";
+  return screen.name !== "splash";
 }
 
 /** Header title per screen, matching the prototype. */
@@ -118,7 +115,6 @@ export function title(screen: Screen): string {
     case "profile":
       return "PROFILE";
     case "splash":
-    case "connecting":
       return "";
   }
 }

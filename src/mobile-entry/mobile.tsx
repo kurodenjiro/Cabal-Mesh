@@ -11,7 +11,6 @@ import ReactDOM from "react-dom/client";
 import "../ds/index";
 import { AppShell } from "../shell/AppShell";
 import { Splash } from "../screens/Splash";
-import { Connecting } from "../screens/Connecting";
 import { Home } from "../screens/Home";
 import { Nodes } from "../screens/Nodes";
 import { Intents } from "../screens/Intents";
@@ -23,15 +22,14 @@ import { Profile } from "../screens/Profile";
 import type { Screen } from "../shell/screen";
 
 function App() {
-  // Starts at splash: the app has no session until the user asks for one, and
-  // the prototype's own flow is splash -> connecting -> home.
+  // Starts at splash: the app has no session until the user asks for one.
+  // The mesh itself is already joined by the time this renders — bootstrap
+  // does that at process startup, not on a user action — so there is nothing
+  // to wait for between splash and home.
   const [screen, setScreen] = useState<Screen>({ name: "splash" });
 
   if (screen.name === "splash") {
-    return <Splash onEnter={() => setScreen({ name: "connecting" })} />;
-  }
-  if (screen.name === "connecting") {
-    return <Connecting onJoined={() => setScreen({ name: "home" })} />;
+    return <Splash onEnter={() => setScreen({ name: "home" })} />;
   }
 
   return (
