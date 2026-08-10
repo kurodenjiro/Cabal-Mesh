@@ -15,6 +15,13 @@ pub mod mesh;
 /// Request handle onto the mesh actor. See src/mesh_handle.rs.
 pub mod mesh_handle;
 
+/// The BLE plane: the offline core, when there is no network at all.
+///
+/// Separate from [`mesh`] on purpose. That module is the IP plane — gossipsub,
+/// mDNS, the relay — and it needs a network to exist. This one needs only the
+/// radio in the user's pocket. See docs/ble-mesh-design.md.
+pub mod ble;
+
 /// Bootstrap peer configuration. See src/bootstrap_config.rs.
 pub mod bootstrap_config;
 
@@ -90,6 +97,9 @@ pub fn run() {
         // Registered before anything that can make an HTTPS request: on Android
         // rustls has no trust store until this runs. See src/tls.rs.
         .plugin(tls::init())
+        // The Android BLE radio. Registers a handle on Android and a no-op
+        // elsewhere, so the app builds identically on every platform.
+        .plugin(tauri_plugin_cabal_ble::init())
         .setup(|app| {
             // Synchronously, before the webview exists. Bootstrap fills the
             // services in afterwards; until then commands get NotReady rather
@@ -185,6 +195,36 @@ pub fn run() {
                 SystemBootstrap::phase_2_delegate(&bridge, &app_handle).await;
 
                 // 3. Phase 3 & Network Start
+                // The BLE plane starts independently of the swarm, because it
+                // is independent: it is what the app does when there is no
+                // network for the swarm to use. A failure to start either one
+                // must leave the other running.
+                let chosen = ble::backend::choose_for_app(&app_handle);
+                let ble_transport = chosen
+                    .as_ref()
+                    .map_or_else(String::new, |t| t.describe().to_string());
+                let ble = chosen.map(|transport| {
+                    let (handle, mut events) = ble::spawn(
+                        transport,
+                        ble::fresh_identity(),
+                        cabal_ble::peers::Capabilities::none(),
+                    );
+                    let forward = app_handle.clone();
+                    tokio::spawn(async move {
+                        while let Some(event) = events.recv().await {
+                            let _ = forward.emit("ble-event", format!("{event:?}"));
+                        }
+                    });
+                    handle
+                });
+                if ble.is_none() {
+                    tracing::info!(
+                        "no BLE transport for this build; the offline plane is not running \
+                         (set {} to link two machines over TCP)",
+                        ble::backend::LOOPBACK_ENV
+                    );
+                }
+
                 match SystemBootstrap::phase_3_network(&app_handle).await {
                     Ok((mut mesh, mesh_handle, mut event_rx, command_rx, event_tx)) => {
                         tracing::info!("✅ System Bootstrap Complete. Mesh Swarm Active.");
@@ -216,6 +256,8 @@ pub fn run() {
 
                         state.set_services(state::Services {
                             mesh: Some(mesh_handle),
+                            ble: ble.clone(),
+                            ble_transport: ble_transport.clone(),
                             agent: Arc::new(SharkAgent::new(None)),
                             matcher: Arc::new(MatchAgent::new(None)),
                             zk_handler: Arc::new(ZKHandler::new(None)),
@@ -238,6 +280,8 @@ pub fn run() {
                         // forever, which reads as a hang rather than an error.
                         state.set_services(state::Services {
                             mesh: None,
+                            ble,
+                            ble_transport,
                             agent: Arc::new(SharkAgent::new(None)),
                             matcher: Arc::new(MatchAgent::new(None)),
                             zk_handler: Arc::new(ZKHandler::new(None)),
@@ -270,6 +314,7 @@ pub fn run() {
                     commands::mesh_snapshot,
                     commands::subscribe_mesh_log,
                     commands::list_nearby_nodes,
+                    commands::ble_status,
                     commands::list_intents,
                     commands::intent_form_options,
                     commands::preview_intent,
@@ -340,7 +385,7 @@ pub fn run() {
             {
                 // Mobile gets the reshaped surface only. Screen commands join
                 // it as their screens land.
-                tauri::generate_handler![commands::unsubscribe, commands::session_status, commands::enter_mesh, commands::mesh_snapshot, commands::subscribe_mesh_log, commands::list_nearby_nodes, commands::list_intents, commands::intent_form_options, commands::preview_intent, commands::broadcast_intent, commands::intent_detail, commands::subscribe_settlement_log, commands::settle_intent, commands::cancel_intent, commands::intent_proof, commands::vault_assets, commands::vault_identities, commands::vault_keys, commands::profile_summary, commands::set_offline_mode]
+                tauri::generate_handler![commands::unsubscribe, commands::session_status, commands::enter_mesh, commands::mesh_snapshot, commands::subscribe_mesh_log, commands::list_nearby_nodes, commands::ble_status, commands::list_intents, commands::intent_form_options, commands::preview_intent, commands::broadcast_intent, commands::intent_detail, commands::subscribe_settlement_log, commands::settle_intent, commands::cancel_intent, commands::intent_proof, commands::vault_assets, commands::vault_identities, commands::vault_keys, commands::profile_summary, commands::set_offline_mode]
             }
         })
         .build(tauri::generate_context!())

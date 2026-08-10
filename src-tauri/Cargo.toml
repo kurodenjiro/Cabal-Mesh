@@ -59,6 +59,15 @@ ts-rs = ["dep:ts-rs", "cabal-core/ts-rs"]
 cabal-core = { path = "crates/cabal-core" }
 cabal-store = { path = "crates/cabal-store" }
 cabal-vault = { path = "crates/cabal-vault" }
+# The BLE mesh protocol: wire format, flood routing, sessions. No I/O — the
+# radio-shaped half lives in src/ble/, which is small on purpose.
+cabal-ble = { path = "crates/cabal-ble" }
+# The CoreBluetooth radio. Apple-only inside, and a stub elsewhere, so the app
+# compiles unchanged on every platform and refuses at runtime rather than at
+# link time.
+cabal-ble-macos = { path = "crates/cabal-ble-macos" }
+# The Android radio, as a Tauri mobile plugin: Kotlin behind a Rust handle.
+tauri-plugin-cabal-ble = { path = "tauri-plugin-cabal-ble" }
 
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"

@@ -1,0 +1,36 @@
+-- Merging decision tree log ---
+manifest
+ADDED from /Users/cocdap/Cabal-Mesh/src-tauri/tauri-plugin-cabal-ble/android/src/main/AndroidManifest.xml:2:1-26:12
+INJECTED from /Users/cocdap/Cabal-Mesh/src-tauri/tauri-plugin-cabal-ble/android/src/main/AndroidManifest.xml:2:1-26:12
+	package
+		INJECTED from /Users/cocdap/Cabal-Mesh/src-tauri/tauri-plugin-cabal-ble/android/src/main/AndroidManifest.xml
+	xmlns:android
+		ADDED from /Users/cocdap/Cabal-Mesh/src-tauri/tauri-plugin-cabal-ble/android/src/main/AndroidManifest.xml:2:11-69
+uses-permission#android.permission.BLUETOOTH_CONNECT
+ADDED from /Users/cocdap/Cabal-Mesh/src-tauri/tauri-plugin-cabal-ble/android/src/main/AndroidManifest.xml:10:5-76
+	android:name
+		ADDED from /Users/cocdap/Cabal-Mesh/src-tauri/tauri-plugin-cabal-ble/android/src/main/AndroidManifest.xml:10:22-73
+uses-permission#android.permission.BLUETOOTH_ADVERTISE
+ADDED from /Users/cocdap/Cabal-Mesh/src-tauri/tauri-plugin-cabal-ble/android/src/main/AndroidManifest.xml:11:5-78
+	android:name
+		ADDED from /Users/cocdap/Cabal-Mesh/src-tauri/tauri-plugin-cabal-ble/android/src/main/AndroidManifest.xml:11:22-75
+uses-permission#android.permission.BLUETOOTH_SCAN
+ADDED from /Users/cocdap/Cabal-Mesh/src-tauri/tauri-plugin-cabal-ble/android/src/main/AndroidManifest.xml:19:5-21:58
+	android:usesPermissionFlags
+		ADDED from /Users/cocdap/Cabal-Mesh/src-tauri/tauri-plugin-cabal-ble/android/src/main/AndroidManifest.xml:21:9-55
+	android:name
+		ADDED from /Users/cocdap/Cabal-Mesh/src-tauri/tauri-plugin-cabal-ble/android/src/main/AndroidManifest.xml:20:9-57
+uses-feature#android.hardware.bluetooth_le
+ADDED from /Users/cocdap/Cabal-Mesh/src-tauri/tauri-plugin-cabal-ble/android/src/main/AndroidManifest.xml:23:5-25:35
+	android:required
+		ADDED from /Users/cocdap/Cabal-Mesh/src-tauri/tauri-plugin-cabal-ble/android/src/main/AndroidManifest.xml:25:9-32
+	android:name
+		ADDED from /Users/cocdap/Cabal-Mesh/src-tauri/tauri-plugin-cabal-ble/android/src/main/AndroidManifest.xml:24:9-53
+uses-sdk
+INJECTED from /Users/cocdap/Cabal-Mesh/src-tauri/tauri-plugin-cabal-ble/android/src/main/AndroidManifest.xml reason: use-sdk injection requested
+INJECTED from /Users/cocdap/Cabal-Mesh/src-tauri/tauri-plugin-cabal-ble/android/src/main/AndroidManifest.xml
+INJECTED from /Users/cocdap/Cabal-Mesh/src-tauri/tauri-plugin-cabal-ble/android/src/main/AndroidManifest.xml
+	android:targetSdkVersion
+		INJECTED from /Users/cocdap/Cabal-Mesh/src-tauri/tauri-plugin-cabal-ble/android/src/main/AndroidManifest.xml
+	android:minSdkVersion
+		INJECTED from /Users/cocdap/Cabal-Mesh/src-tauri/tauri-plugin-cabal-ble/android/src/main/AndroidManifest.xml

@@ -55,6 +55,19 @@ pub struct Services {
     /// still work without it, so the UI can say the mesh is down rather than
     /// appearing wholly broken.
     pub mesh: Option<crate::mesh_handle::MeshHandle>,
+    /// The BLE plane. `None` when no radio backend is compiled or configured.
+    ///
+    /// Separate from `mesh` and separately optional, because the two planes
+    /// fail independently: a phone in a basement has BLE and no internet, and
+    /// a desktop with Bluetooth switched off has the reverse. Collapsing them
+    /// into one "is the mesh up" would make both messages wrong.
+    pub ble: Option<crate::ble::BleHandle>,
+    /// Which backend is carrying the BLE plane, verbatim.
+    ///
+    /// Carried rather than derived so the screen can name it exactly —
+    /// `loopback` is not Bluetooth, and a UI that called it that would be
+    /// claiming a capability the build does not have.
+    pub ble_transport: String,
     pub agent: Arc<SharkAgent>,
     pub matcher: Arc<MatchAgent>,
     pub zk_handler: Arc<ZKHandler>,

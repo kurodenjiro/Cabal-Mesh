@@ -1,0 +1,40 @@
+1<?xml version="1.0" encoding="utf-8"?>
+2<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+3    package="com.cabalmesh.ble" >
+4
+5    <uses-sdk android:minSdkVersion="29" />
+6
+7    <!--
+8      Declared by the plugin rather than by the app, so an app that adds the
+9      plugin cannot forget them. A missing BLUETOOTH_SCAN does not fail to
+10      build; it throws SecurityException the first time a scan starts, which
+11      reads as "the radio is broken".
+12    -->
+13    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+13-->/Users/cocdap/Cabal-Mesh/src-tauri/tauri-plugin-cabal-ble/android/src/main/AndroidManifest.xml:10:5-76
+13-->/Users/cocdap/Cabal-Mesh/src-tauri/tauri-plugin-cabal-ble/android/src/main/AndroidManifest.xml:10:22-73
+14    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+14-->/Users/cocdap/Cabal-Mesh/src-tauri/tauri-plugin-cabal-ble/android/src/main/AndroidManifest.xml:11:5-78
+14-->/Users/cocdap/Cabal-Mesh/src-tauri/tauri-plugin-cabal-ble/android/src/main/AndroidManifest.xml:11:22-75
+15
+16    <!--
+17      `neverForLocation` is what avoids dragging ACCESS_FINE_LOCATION in on
+18      API 31+. Without it the app must ask for location to find a peer, which
+19      is both a worse prompt and a worse claim for a product whose first
+20      sentence is about not being identifiable.
+21    -->
+22    <uses-permission
+22-->/Users/cocdap/Cabal-Mesh/src-tauri/tauri-plugin-cabal-ble/android/src/main/AndroidManifest.xml:19:5-21:58
+23        android:name="android.permission.BLUETOOTH_SCAN"
+23-->/Users/cocdap/Cabal-Mesh/src-tauri/tauri-plugin-cabal-ble/android/src/main/AndroidManifest.xml:20:9-57
+24        android:usesPermissionFlags="neverForLocation" />
+24-->/Users/cocdap/Cabal-Mesh/src-tauri/tauri-plugin-cabal-ble/android/src/main/AndroidManifest.xml:21:9-55
+25
+26    <uses-feature
+26-->/Users/cocdap/Cabal-Mesh/src-tauri/tauri-plugin-cabal-ble/android/src/main/AndroidManifest.xml:23:5-25:35
+27        android:name="android.hardware.bluetooth_le"
+27-->/Users/cocdap/Cabal-Mesh/src-tauri/tauri-plugin-cabal-ble/android/src/main/AndroidManifest.xml:24:9-53
+28        android:required="true" />
+28-->/Users/cocdap/Cabal-Mesh/src-tauri/tauri-plugin-cabal-ble/android/src/main/AndroidManifest.xml:25:9-32
+29
+30</manifest>

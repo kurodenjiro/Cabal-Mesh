@@ -22,6 +22,7 @@ const COMMANDS: &[&str] = &[
     "mesh_snapshot",
     "subscribe_mesh_log",
     "list_nearby_nodes",
+    "ble_status",
     "list_intents",
     "intent_form_options",
     "preview_intent",

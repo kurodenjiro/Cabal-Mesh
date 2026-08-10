@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Panel, StatusDot } from "../ds";
-import type { NodeSummary } from "../types/bindings";
+import type { BleStatusView, NodeSummary } from "../types/bindings";
 
 /**
  * The network map and peer list.
@@ -17,12 +17,13 @@ import type { NodeSummary } from "../types/bindings";
  */
 export function Nodes() {
   const [nodes, setNodes] = useState<NodeSummary[] | null>(null);
+  const [ble, setBle] = useState<BleStatusView | null>(null);
   const [denied, setDenied] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
 
-    const refresh = () =>
+    const refresh = () => {
       invoke<NodeSummary[]>("list_nearby_nodes")
         .then((next) => {
           if (!cancelled) {
@@ -33,6 +34,17 @@ export function Nodes() {
         .catch(() => {
           if (!cancelled) setDenied(true);
         });
+
+      // Separately, and failure here does not blank the list: a node with a
+      // radio and no network still has peers worth showing, and the reverse.
+      invoke<BleStatusView>("ble_status")
+        .then((next) => {
+          if (!cancelled) setBle(next);
+        })
+        .catch(() => {
+          if (!cancelled) setBle(null);
+        });
+    };
 
     refresh();
     const timer = window.setInterval(refresh, 4_000);
@@ -72,6 +84,8 @@ export function Nodes() {
         </div>
       </Panel>
 
+      <BleStatus status={ble} />
+
       <Panel label="NEARBY NODES">
         {denied ? (
           <Empty
@@ -92,13 +106,132 @@ export function Nodes() {
   );
 }
 
+/**
+ * The offline plane's own status.
+ *
+ * Every figure here is measured. There is no signal strength and no distance:
+ * the radio reports neither, and this app requests no location permission.
+ *
+ * `SUPPRESSED` sits beside `RELAYED` deliberately — without it, "the mesh is
+ * quiet" and "every packet is arriving twice and being cancelled" render
+ * identically, and only one of those is worth waking up for.
+ */
+function BleStatus({ status }: { status: BleStatusView | null }) {
+  if (status === null) {
+    return null;
+  }
+
+  if (!status.running) {
+    return (
+      <Panel label="OFFLINE PLANE">
+        <Empty
+          title="RADIO NOT RUNNING"
+          body="No Bluetooth backend for this build. Peers can only be found over the network."
+        />
+      </Panel>
+    );
+  }
+
+  const figures: [string, string][] = [
+    ["LINKS", String(status.links)],
+    ["IN RANGE", String(status.directPeers)],
+    ["REACHABLE", String(status.reachablePeers)],
+    ["GATEWAYS", String(status.gateways)],
+    ["RELAYED", String(status.relayed)],
+    ["SUPPRESSED", String(status.suppressed)],
+  ];
+
+  return (
+    <Panel label="OFFLINE PLANE">
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: "var(--space-4)",
+          padding: "var(--space-5) var(--space-6)",
+        }}
+      >
+        {/* Three states, because they mean different things: silenced by the
+            user, up with peers, and up with nobody in range yet. */}
+        <StatusDot tone={status.offline ? "offline" : status.links > 0 ? "online" : "idle"} />
+        <span
+          style={{
+            fontFamily: "var(--type-data-family)",
+            fontSize: "var(--text-sm)",
+            letterSpacing: "var(--type-data-tracking)",
+            color: "var(--text-primary)",
+          }}
+        >
+          {status.nodeId}
+        </span>
+        <span
+          style={{
+            marginLeft: "auto",
+            fontFamily: "var(--type-label-family)",
+            fontSize: "var(--text-2xs)",
+            letterSpacing: "var(--tracking-widest)",
+            color: "var(--text-muted)",
+          }}
+        >
+          {/* Verbatim. `loopback` is not Bluetooth, and calling it that would
+              claim a capability this build does not have. */}
+          {status.offline ? "SILENCED" : status.transport.toUpperCase()}
+        </span>
+      </div>
+
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(3, 1fr)",
+          borderTop: "var(--border-hairline-style)",
+        }}
+      >
+        {figures.map(([label, value]) => (
+          <div
+            key={label}
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: "var(--space-2)",
+              padding: "var(--space-5) var(--space-6)",
+            }}
+          >
+            <span
+              style={{
+                fontFamily: "var(--type-label-family)",
+                fontSize: "var(--text-2xs)",
+                letterSpacing: "var(--tracking-widest)",
+                color: "var(--text-muted)",
+              }}
+            >
+              {label}
+            </span>
+            <span
+              style={{
+                fontFamily: "var(--type-data-family)",
+                fontSize: "var(--text-lg)",
+                color: "var(--text-primary)",
+              }}
+            >
+              {value}
+            </span>
+          </div>
+        ))}
+      </div>
+    </Panel>
+  );
+}
+
 function NodeRow({ node }: { node: NodeSummary }) {
+  // A radio peer is a person in the room and is still there when the Wi-Fi is
+  // not, so the transport is named rather than folded into "DIRECT".
+  const via = node.transport === "ble" ? "RADIO" : node.transport.toUpperCase();
   const detail =
     node.hops > 1
-      ? `RELAYED · ${node.hops} HOPS`
+      ? `${via} · ${node.hops} HOPS`
       : node.latencyMs != null
-        ? `${node.latencyMs}ms · DIRECT`
-        : "DIRECT";
+        ? `${node.latencyMs}ms · ${via}`
+        : `${via} · DIRECT`;
 
   return (
     <div

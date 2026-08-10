@@ -4,6 +4,144 @@ Running log of what has actually been proven to build and run, as opposed to wha
 
 ---
 
+## BLE plane — protocol and runtime **GO**, radio **not started** (2026-08-09)
+
+`crates/cabal-ble` and `src/ble/`. Design in `docs/ble-mesh-design.md`.
+
+**Proven by test, on the host, in CI — 105 tests, under three seconds.**
+
+| Check | Where | Result |
+|---|---|---|
+| Wire format round-trips; every truncation is an error and never a panic | `wire.rs` | ✅ |
+| A TTL decrement does not invalidate a signature | `wire.rs`, `identity.rs` | ✅ |
+| Reserved flags, unknown kinds, lying lengths refused before allocating | `wire.rs`, `framing.rs` | ✅ |
+| A packet split at every possible byte boundary still reassembles | `framing.rs` | ✅ |
+| Flood reaches every node in a chain, star and ring — exactly once | `tests/mesh_simulation.rs` | ✅ |
+| A flood terminates, and costs less than naive flooding in a full mesh | `tests/mesh_simulation.rs` | ✅ |
+| Partition heals when one link returns | `tests/mesh_simulation.rs` | ✅ |
+| Unsigned and identity-spoofing announcements are ignored | `tests/mesh_simulation.rs` | ✅ |
+| The offline switch stops every transmission | both suites | ✅ |
+| Two and three real nodes, real sockets, real timers, over `LoopbackTransport` | `tests/ble_loopback.rs` | ✅ |
+
+**Proven by running two processes** — `cargo run -p cabalmesh --example ble_node`. Two nodes discovered each other, exchanged intents both ways, and reported matching link counts.
+
+**Proven on the simulator, against a real peer process on the host.** A throwaway build opening on the nodes screen, launched with `SIMCTL_CHILD_CABALMESH_BLE_LOOPBACK=listen=127.0.0.1:9702,dial=127.0.0.1:9701` against `ble_node` on port 9701. The nodes screen rendered the peer's real identifier at `RADIO · DIRECT`, and the `OFFLINE PLANE` panel rendered `LINKS 1 · IN RANGE 1`. Screenshot only — the throwaway build was reverted, and no interaction was tested, because this machine cannot tap a simulator.
+
+**The CoreBluetooth radio — written, reached, and not yet linked.**
+
+`crates/cabal-ble-macos`. Dual role, GATT rendezvous for the PSM, L2CAP for everything after. All Objective-C on one serial dispatch queue; the Rust side touches only a mutex over bytes.
+
+| Check | Result |
+|---|---|
+| Compiles; fourteen unit tests | ✅ |
+| `backend::choose()` selects it on Apple platforms | ✅ |
+| The delegate is reached; both managers report their state | ✅ |
+| **Radio powers on, publishes an L2CAP channel, is assigned a PSM** | ✅ **on hardware** |
+| **Service added; advertising started; scanning started** | ✅ **on hardware** |
+| Asserted by test rather than eyeballed (`--ignored`) | ✅ |
+| Two machines link and exchange a packet | ⏸ **blocked on a second Mac** |
+
+The run:
+
+```
+BLE plane using CoreBluetooth
+transport: bluetooth
+BLE plane up transport="bluetooth" peer_id=711f9251a8435f4f
+scanning for nodes
+published an L2CAP channel psm=192
+advertising
+```
+
+Every step a single machine can reach. The PSM is assigned by CoreBluetooth, so `psm=192` is the OS answering rather than a constant being echoed.
+
+**One bug, found only by running.** The service UUID contained an `H`, which is not a hexadecimal digit. `CBUUID::UUIDWithString` does not return an error for that — it raises an Objective-C exception that killed the process from inside a delegate callback, with a stack trace naming KVO rather than the constant. No test and no type caught it; `is_valid_uuid` and four tests now do.
+
+## Two devices linked over BLE — **GO** (2026-08-10)
+
+Two Android emulators, `com.cabalmesh.ble` (`tauri-plugin-cabal-ble`), real BLE through the emulator's virtual controller.
+
+| Check | Result |
+|---|---|
+| Both nodes publish an L2CAP channel and are assigned a PSM | ✅ `psm=139` / `psm=171` |
+| Both advertise and both scan | ✅ |
+| GATT rendezvous: discover, connect, read the PSM | ✅ `discovered a node; connecting` |
+| **L2CAP channels open in both directions** | ✅ `link up 1`, `link up 2` on each |
+| The Rust engine runs on the radio | ✅ `BLE plane up transport="bluetooth"` |
+| **Announcements cross; each node identifies the other** | ✅ |
+| The nodes screen shows it | ✅ screenshot |
+
+The two nodes, from their own logs:
+
+```
+emulator-5554  BLE plane up transport="bluetooth" peer_id=7f9985898179db94
+emulator-5556  BLE plane up transport="bluetooth" peer_id=4e78f1fe4396b85c
+```
+
+and from each other's nodes screen:
+
+| | 5554 | 5556 |
+|---|---|---|
+| OFFLINE PLANE | `7f99..db94` · BLUETOOTH | `4e78..b85c` · BLUETOOTH |
+| LINKS / IN RANGE / REACHABLE | 2 / 1 / 1 | 2 / 1 / 1 |
+| NEARBY NODES | `4e78..b85c` — RADIO · DIRECT | `7f99..db94` — RADIO · DIRECT |
+
+Each node names the other by the identifier that node logged for itself. Nothing here is a fixture.
+
+**`LINKS 2` for one peer is correct, not a leak.** Both nodes scan and both connect, so each pair ends up with one outbound and one inbound channel. `SUPPRESSED 8` on the same screen is the consequence and the proof: every announcement arrives twice and the router drops the second, which is exactly what `router::Router::receive` is for.
+
+**Two bugs, both found only by running:**
+
+1. **A reconnect storm.** The GATT connection is dropped once the PSM has been read — that *is* the normal end of the rendezvous — and the disconnect handler released the device for reconnection. Every scan result then opened another channel: two nodes reached nine links in under a second. An address is now released only when a link goes down or the GATT exchange fails before a channel was attempted.
+
+2. **A one-word boundary mismatch.** Kotlin's `invoke.resolve()` with no argument sends `null`; the Rust side expected a struct and refused it with `invalid type: null, expected struct Empty`. The radio started, advertised, scanned and opened links — and the app was told it was unavailable. Every layer worked except the sentence between them.
+
+### The iOS Simulator cannot do this
+
+It has no Bluetooth at all — CoreBluetooth is not virtualised, so no amount of code makes a simulator a second BLE device. The Android emulator does have a virtual controller (`netsim`/Rootcanal): `dumpsys bluetooth_manager` reports `state: ON` with addresses `BB:BB:BB:00:00:01` and `...:02`, and the two instances see each other.
+
+```sh
+# Two emulators, then:
+adb -s emulator-5554 install -r -g app-universal-debug.apk
+adb -s emulator-5554 shell pm grant com.cabalmesh.app android.permission.BLUETOOTH_SCAN
+# ...ADVERTISE, CONNECT; repeat for emulator-5556
+adb -s <device> logcat -s CabalBle:V
+```
+
+`-g` grants what is declared; the three Bluetooth permissions are runtime ones on API 31+ and a missing grant throws `SecurityException` at the first scan rather than failing to install.
+
+Build with **JDK 21**. Gradle 8.14.3 cannot read the class files JDK 26 emits and fails with `Unsupported class file major version 70` before it reaches anything project-specific.
+
+### Verifying the link between two Macs
+
+```sh
+# Bluetooth on, on both machines. Then, on each:
+cargo run -p cabalmesh --example ble_node
+```
+
+No argument means the real radio; an argument means the loopback transport. Expect on both, additionally: `link up`, then `in-range=1`, then the peer's `hello from the terminal #N` lines.
+
+**One machine cannot do it, and this was tested rather than assumed.** Two `ble_node` processes were run on one Mac: both advertised, both scanned, neither ever saw the other. A controller does not hear its own advertisements. No amount of code changes that.
+
+`cargo test` cannot do it either — an unbundled process is refused Bluetooth by TCC — which is why the bring-up test is `#[ignore]`d and run explicitly:
+
+```sh
+cargo test -p cabal-ble-macos -- --ignored --nocapture
+```
+
+**`LoopbackTransport` is TCP.** It reports itself as `loopback` everywhere it surfaces, and the nodes screen prints that verbatim, precisely so no screenshot of it can be mistaken for Bluetooth. The radio reports `bluetooth`.
+
+Background behaviour, MTU behaviour under load, and battery cost remain entirely unmeasured.
+
+**Three bugs the tests found that reading did not**, recorded because each was invisible until something ran:
+
+1. Whole-relay cancellation on a duplicate stranded five of twenty nodes in a line. Cancellation is now per-link.
+2. Fanout subsetting dropped a third of a star's leaves. Only links another neighbour also covers may now be thinned.
+3. A node counted **itself** as a two-hop peer, because every neighbour advertises it in their own neighbour list. Found by reading `reachable=2` from two real nodes where one was correct.
+
+A fourth was found only by building for the simulator: `ble_status` was registered in the desktop invoke-handler arm and not the mobile one. It compiled, it was granted by the ACL, and it failed only on device. `tests/handler_arms.rs` now compares the two arms.
+
+---
+
 ## iOS cross-compile — **GO** (2026-08-02, ticket 07)
 
 The question the probe existed to answer: do `alloy` and `libp2p` cross-compile for arm64 iOS? If not, the dependency strategy has to change before any refactoring is worth starting.

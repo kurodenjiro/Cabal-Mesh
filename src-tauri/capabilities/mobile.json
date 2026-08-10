@@ -17,6 +17,7 @@
     "allow-mesh-snapshot",
     "allow-subscribe-mesh-log",
     "allow-list-nearby-nodes",
+    "allow-ble-status",
     "allow-list-intents",
     "allow-intent-form-options",
     "allow-preview-intent",

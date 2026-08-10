@@ -26,6 +26,60 @@ tag: string, decimals: number,
 available: string | null, };
 
 /**
+ * What the nodes screen shows about the offline plane.
+ *
+ * Every field is a measurement. There is no "signal strength" and no
+ * "distance": the radio reports neither, and the app requests no location
+ * permission — asking for one would contradict the premise.
+ */
+export type BleStatusView = { 
+/**
+ * Whether the plane is running at all.
+ *
+ * False means no radio backend and no development transport — a state
+ * the app is expected to survive, and one the screen has to be able to
+ * say out loud rather than rendering as "no peers".
+ */
+running: boolean, 
+/**
+ * This session's identifier, truncated. Changes on every launch.
+ */
+nodeId: string, 
+/**
+ * Which backend is carrying the plane, verbatim: `loopback`, or the name
+ * of a real radio. Never dressed up as "BLE" when it is not.
+ */
+transport: string, 
+/**
+ * Radio links currently open.
+ */
+links: number, 
+/**
+ * Peers one hop away — people in the room.
+ */
+directPeers: number, 
+/**
+ * Every peer reachable, direct or through a neighbour.
+ */
+reachablePeers: number, 
+/**
+ * Reachable peers offering a way to the internet.
+ */
+gateways: number, 
+/**
+ * Packets forwarded for other people.
+ */
+relayed: bigint, 
+/**
+ * Forwards cancelled because a neighbour was faster.
+ *
+ * Shown beside `relayed` because without it the two states "the mesh is
+ * quiet" and "everything is arriving twice and being suppressed" look
+ * identical.
+ */
+suppressed: bigint, offline: boolean, };
+
+/**
  * Delta direction. Domain matches `StatBlock`'s `deltaTone`.
  */
 export type DeltaTone = "up" | "down" | "neutral";
@@ -277,7 +331,7 @@ export type ToastTone = "neutral" | "info" | "success" | "alert";
 /**
  * How a peer is reached.
  */
-export type Transport = "mdns" | "quic" | "relayed";
+export type Transport = "mdns" | "quic" | "relayed" | "ble";
 
 /**
  * A row in the vault list.

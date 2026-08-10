@@ -20,7 +20,8 @@
     "android:bundle": "tauri android build --aab",
     "android:size": "bash scripts/android-size.sh",
     "relay": "cd src-tauri && cargo run --release -p cabal-relay --",
-    "ios:size": "bash scripts/ios-size.sh"
+    "ios:size": "bash scripts/ios-size.sh",
+    "ble:check": "bash scripts/ble-link-check.sh"
   },
   "dependencies": {
     "@tauri-apps/api": "2.11.1",

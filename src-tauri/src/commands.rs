@@ -307,6 +307,12 @@ pub enum Transport {
     Quic,
     /// Reached through a relay.
     Relayed,
+    /// Heard over the radio, with no network involved at all.
+    ///
+    /// Distinct from the others in the only way the user cares about: a `Ble`
+    /// peer is a person in the room, and it is still there when the Wi-Fi is
+    /// not.
+    Ble,
 }
 
 /// A peer, as the nodes screen shows it.
@@ -348,12 +354,42 @@ pub struct NodeSummary {
 #[tauri::command]
 pub async fn list_nearby_nodes(state: State<'_, AppState>) -> Result<Vec<NodeSummary>, AppError> {
     let services = state.services()?;
-    let mesh = services.mesh.as_ref().ok_or(AppError::MeshOffline)?;
-    let snapshot = mesh.snapshot().await.map_err(|_| AppError::MeshOffline)?;
 
-    // The actor reports a count; per-peer detail arrives with the peer registry
-    // in a later ticket. Rendering the count honestly beats inventing rows.
-    let mut nodes = Vec::with_capacity(snapshot.peer_count);
+    // BLE peers first, and they are real rows rather than a count: the engine
+    // knows each one's identifier and how many hops away it is, so there is
+    // nothing to invent.
+    let mut nodes = Vec::new();
+    if let Some(ble) = services.ble.as_ref() {
+        if let Ok(peers) = ble.peers().await {
+            for peer in peers {
+                let id = peer.id.to_string();
+                let (x, y, pulse) = seeded_position(&id);
+                nodes.push(NodeSummary {
+                    id: cabal_core::NodeId::new(id).truncated(),
+                    latency_ms: None,
+                    hops: peer.hops,
+                    transport: Transport::Ble,
+                    x,
+                    y,
+                    pulse_ms: pulse,
+                });
+            }
+        }
+    }
+
+    // The IP plane. Without a swarm this is simply empty — a node with
+    // Bluetooth and no network is a working node, and returning `MeshOffline`
+    // here would blank a screen that has peers to show.
+    let Some(mesh) = services.mesh.as_ref() else {
+        return Ok(nodes);
+    };
+    let Ok(snapshot) = mesh.snapshot().await else {
+        return Ok(nodes);
+    };
+
+    // The mesh actor reports a count, not a registry; per-peer detail arrives
+    // with the peer registry in a later ticket. Rendering the count honestly
+    // beats inventing rows.
     for index in 0..snapshot.peer_count {
         let seed = format!("{}-{index}", snapshot.peer_id);
         let (x, y, pulse) = seeded_position(&seed);
@@ -368,6 +404,88 @@ pub async fn list_nearby_nodes(state: State<'_, AppState>) -> Result<Vec<NodeSum
         });
     }
     Ok(nodes)
+}
+
+/// What the nodes screen shows about the offline plane.
+///
+/// Every field is a measurement. There is no "signal strength" and no
+/// "distance": the radio reports neither, and the app requests no location
+/// permission — asking for one would contradict the premise.
+#[derive(Debug, Clone, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "camelCase")]
+pub struct BleStatusView {
+    /// Whether the plane is running at all.
+    ///
+    /// False means no radio backend and no development transport — a state
+    /// the app is expected to survive, and one the screen has to be able to
+    /// say out loud rather than rendering as "no peers".
+    pub running: bool,
+    /// This session's identifier, truncated. Changes on every launch.
+    pub node_id: String,
+    /// Which backend is carrying the plane, verbatim: `loopback`, or the name
+    /// of a real radio. Never dressed up as "BLE" when it is not.
+    pub transport: String,
+    /// Radio links currently open.
+    pub links: usize,
+    /// Peers one hop away — people in the room.
+    pub direct_peers: usize,
+    /// Every peer reachable, direct or through a neighbour.
+    pub reachable_peers: usize,
+    /// Reachable peers offering a way to the internet.
+    pub gateways: usize,
+    /// Packets forwarded for other people.
+    pub relayed: u64,
+    /// Forwards cancelled because a neighbour was faster.
+    ///
+    /// Shown beside `relayed` because without it the two states "the mesh is
+    /// quiet" and "everything is arriving twice and being suppressed" look
+    /// identical.
+    pub suppressed: u64,
+    pub offline: bool,
+}
+
+/// Status of the BLE plane.
+///
+/// # Errors
+///
+/// [`AppError::NotReady`] before bootstrap completes. Never
+/// [`AppError::MeshOffline`]: a plane that is not running is a status, not a
+/// failure, and the screen needs to render it.
+#[tauri::command]
+pub async fn ble_status(state: State<'_, AppState>) -> Result<BleStatusView, AppError> {
+    let services = state.services()?;
+
+    let Some(ble) = services.ble.as_ref() else {
+        return Ok(BleStatusView {
+            running: false,
+            node_id: String::new(),
+            transport: String::new(),
+            links: 0,
+            direct_peers: 0,
+            reachable_peers: 0,
+            gateways: 0,
+            relayed: 0,
+            suppressed: 0,
+            offline: false,
+        });
+    };
+
+    let status = ble.status().await.map_err(|_| AppError::NotReady {
+        subsystem: "ble".into(),
+    })?;
+    Ok(BleStatusView {
+        running: true,
+        node_id: cabal_core::NodeId::new(status.peer_id.to_string()).truncated(),
+        transport: services.ble_transport.clone(),
+        links: status.links,
+        direct_peers: status.direct_peers,
+        reachable_peers: status.reachable_peers,
+        gateways: status.gateways,
+        relayed: status.relayed,
+        suppressed: status.suppressed,
+        offline: status.offline,
+    })
 }
 
 /// Deterministic position and pulse from a peer id.
