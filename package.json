@@ -6,8 +6,6 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "dev:mobile": "vite --mode mobile",
-    "build:mobile": "tsc && vite build --mode mobile",
     "preview": "vite preview",
     "tauri": "tauri",
     "ds:unbundle": "python3 scripts/unbundle-ds.py",
@@ -26,8 +24,6 @@
   "dependencies": {
     "@tauri-apps/api": "2.11.1",
     "@tauri-apps/plugin-opener": "2.5.4",
-    "ethers": "^6.13.4",
-    "framer-motion": "^12.29.2",
     "react": "^19.2.4",
     "react-dom": "^19.2.4"
   },
@@ -36,9 +32,6 @@
     "@types/react": "^19.2.10",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.2",
-    "autoprefixer": "^10.4.23",
-    "postcss": "^8.5.6",
-    "tailwindcss": "^3.4.19",
     "typescript": "~5.6.2",
     "vite": "^6.0.3"
   }

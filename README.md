@@ -69,19 +69,15 @@ This will:
 1. Start the Vite dev server (frontend)
 2. Initialize the Rust Tauri backend
 3. Launch the mesh network with mDNS discovery
-4. Open the Nexus UI
+4. Open the app UI
 
 ## 💻 Usage
 
-### The Nexus Interface
+### The App
 
-The main UI displays:
-
-- **Central Radar**: Pulsing violet circle representing your mesh presence
-- **Peer Dots**: Violet dots appear as nearby nodes are discovered
-- **Status Bar**: Shows Internet, Mesh Nodes count, and Privacy level
-- **Intent Composer**: Command bar at bottom for entering privacy intents
-- **Thought Stream**: Live log of operations on the right side
+The UI (`src/screens/`) walks: Splash → Connecting → Home, then tabs across
+Nodes, Intents, Vault, and Profile. Composing an intent (`New`) and watching it
+settle (`Detail` → `Settled`) is the core loop.
 
 ### Example Intent
 
@@ -105,12 +101,12 @@ The system will:
 
 ```
 cabalmesh/
-├── src/                          # React frontend
-│   ├── App.tsx                   # Nexus UI
-│   ├── styles.css                # Tailwind + custom styles
-│   ├── avalanche-settlement.ts   # Read-only Avalanche helper (ethers.js v6)
-│   ├── abi/Escrow.abi.json       # Escrow contract ABI (frontend copy)
-│   └── main.tsx                  # Entry point
+├── src/                          # React frontend (design-system UI)
+│   ├── mobile-entry/mobile.tsx   # Entry point
+│   ├── shell/                    # AppShell, modal stack, screen routing
+│   ├── screens/                  # Splash, Connecting, Home, Nodes, Intents, New, Detail, Settled, Vault, Profile
+│   ├── ds/                       # Design system (tokens, components, brand rules)
+│   └── types/bindings.ts         # Generated Tauri command/type bindings
 ├── src-tauri/                    # Rust backend
 │   └── src/
 │       ├── mesh.rs               # libp2p mesh networking

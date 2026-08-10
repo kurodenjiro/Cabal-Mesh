@@ -7,15 +7,15 @@
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "npm run build",
-    "frontendDist": "../dist-desktop"
+    "frontendDist": "../dist"
   },
   "app": {
     "withGlobalTauri": false,
     "windows": [
       {
         "title": "CabalMesh",
-        "width": 800,
-        "height": 600
+        "width": 390,
+        "height": 844
       }
     ],
     "security": {

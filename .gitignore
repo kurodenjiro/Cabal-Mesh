@@ -1,7 +1,5 @@
 node_modules/
 dist/
-dist-desktop/
-dist-mobile/
 .env
 .env.local
 
