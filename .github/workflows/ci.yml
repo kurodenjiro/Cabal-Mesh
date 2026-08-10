@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A new push to the same PR/branch cancels the still-running old one — no
+# point burning runner time on a commit that's already superseded.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust (check, test, bindings)
+    # macOS, not ubuntu: the Tauri crate links against system WebKit, which
+    # ubuntu runners don't have without installing libwebkit2gtk-4.1-dev and
+    # friends first. rust-toolchain.toml's own `targets` list is macOS/iOS/
+    # Android only — this project's native platform is macOS — so a macOS
+    # runner needs no extra setup at all.
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: src-tauri
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # rust-toolchain.toml pins the channel/components/targets; cargo picks
+      # it up automatically as long as rustup is present, which it is on
+      # every GitHub-hosted runner.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: cargo check
+        run: cargo check --workspace --all-targets
+
+      - name: cargo test
+        run: cargo test --workspace --all-targets
+
+      - name: bindings are up to date
+        # Regenerates src/types/bindings.ts from the Rust side and fails if
+        # that changes anything not already committed. Catches exactly the
+        # class of bug this check was added for: a ts-rs `export_to` path
+        # that produces a stale or broken file nobody notices until the
+        # frontend build breaks.
+        working-directory: .
+        run: npm run bindings:check
+
+  frontend:
+    name: Frontend (typecheck + build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build
+
+  contracts:
+    name: Contracts (hardhat test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: contracts
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: contracts/package-lock.json
+
+      - run: npm ci
+      - run: npx hardhat test

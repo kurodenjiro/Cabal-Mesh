@@ -19,7 +19,7 @@ macro_rules! id_newtype {
         #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
         // Identifiers cross the IPC boundary inside view types, so they need a
         // TypeScript face too. `transparent` keeps that face a bare string.
-        #[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../../src/types/bindings.ts"))]
+        #[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
         #[serde(transparent)]
         pub struct $name(Box<str>);
 

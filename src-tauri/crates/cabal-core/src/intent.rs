@@ -9,7 +9,7 @@ use ts_rs::TS;
 
 /// What the user is trying to do — the `I WANT TO` segmented control.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts-rs", derive(TS), ts(export, export_to = "../../../src/types/bindings.ts"))]
+#[cfg_attr(feature = "ts-rs", derive(TS), ts(export, export_to = "../../src/types/bindings.ts"))]
 #[serde(rename_all = "UPPERCASE")]
 pub enum Action {
     Buy,
@@ -25,7 +25,7 @@ impl Action {
 
 /// Execution strategy — the `MODE` selector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts-rs", derive(TS), ts(export, export_to = "../../../src/types/bindings.ts"))]
+#[cfg_attr(feature = "ts-rs", derive(TS), ts(export, export_to = "../../src/types/bindings.ts"))]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ExecutionMode {
     Shark,
@@ -60,7 +60,7 @@ impl ExecutionMode {
 
 /// How much routing privacy to buy, at the cost of speed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts-rs", derive(TS), ts(export, export_to = "../../../src/types/bindings.ts"))]
+#[cfg_attr(feature = "ts-rs", derive(TS), ts(export, export_to = "../../src/types/bindings.ts"))]
 #[serde(rename_all = "UPPERCASE")]
 pub enum PrivacyLevel {
     Low,
@@ -78,7 +78,7 @@ impl PrivacyLevel {
 /// `Under` unconstructable, so no downstream code has to handle a
 /// "price-under-nothing" case that should never exist.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts-rs", derive(TS), ts(export, export_to = "../../../src/types/bindings.ts"))]
+#[cfg_attr(feature = "ts-rs", derive(TS), ts(export, export_to = "../../src/types/bindings.ts"))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Condition {
     Under { price: UsdPrice },
@@ -110,7 +110,7 @@ impl Condition {
 /// Why an intent failed. A variant rather than a message, so the UI can render
 /// on-voice copy instead of echoing an internal string.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts-rs", derive(TS), ts(export, export_to = "../../../src/types/bindings.ts"))]
+#[cfg_attr(feature = "ts-rs", derive(TS), ts(export, export_to = "../../src/types/bindings.ts"))]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum FailureReason {
@@ -132,7 +132,7 @@ pub enum FailureReason {
 /// surfaces every place that has to decide what it means, rather than silently
 /// falling through to a default.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts-rs", derive(TS), ts(export, export_to = "../../../src/types/bindings.ts"))]
+#[cfg_attr(feature = "ts-rs", derive(TS), ts(export, export_to = "../../src/types/bindings.ts"))]
 #[serde(tag = "status", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum IntentStatus {
     /// Composed but not yet broadcast. Nothing has left the device.
