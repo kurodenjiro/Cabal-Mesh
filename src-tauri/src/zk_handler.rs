@@ -92,10 +92,46 @@ impl ZKHandler {
 
 
 
-    pub fn verify_proof(&self, proof: &ZKProof) -> Result<bool, Box<dyn Error>> {
-        // In production, this would call Noir's verification
-        // For now, we validate the structure
-        Ok(!proof.proof.is_empty() && !proof.public_inputs.is_empty())
+    /// Verifies a proof by shelling out to `nargo verify`, mirroring
+    /// [`Self::generate_proof`]'s subprocess pattern exactly: same platform
+    /// gate, same blocking task, same circuit path convention. `nargo verify
+    /// <circuit_path>` reads `<circuit_path>/proofs/proof.hex` — the same
+    /// file `generate_proof` just wrote — plus the compiled circuit and
+    /// verification key under `<circuit_path>/target/`, so a proof must
+    /// still be sitting on disk from a prior `generate_proof` call (or a
+    /// hand-placed one) before this can check it.
+    ///
+    /// Cheap structural checks stay first: an empty proof or public-input
+    /// list is never valid and doesn't deserve a subprocess spawn.
+    pub async fn verify_proof(&self, proof: &ZKProof) -> Result<bool, Box<dyn Error>> {
+        if proof.proof.is_empty() || proof.public_inputs.is_empty() {
+            return Ok(false);
+        }
+
+        if !crate::platform::CAN_SPAWN_PROCESSES {
+            return Err(
+                "ZK verification is unavailable on this platform: it runs the `nargo` binary, \
+                 which iOS and Android sandboxes cannot execute."
+                    .into(),
+            );
+        }
+
+        let circuit_path = self.circuit_path.clone();
+
+        let output_result = tokio::task::spawn_blocking(move || {
+            Command::new("nargo")
+                .args(&["verify", &circuit_path])
+                .output()
+        })
+        .await?;
+
+        match output_result {
+            Ok(result) => Ok(result.status.success()),
+            Err(error) => {
+                tracing::warn!("❌ Noir ZK Proof Verification failed to run: {error}");
+                Err(error.into())
+            }
+        }
     }
 }
 
