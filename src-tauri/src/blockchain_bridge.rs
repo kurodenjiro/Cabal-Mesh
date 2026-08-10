@@ -1053,16 +1053,6 @@ impl BlockchainBridge {
         let provider = ProviderBuilder::new().wallet(signer).connect_http(self.rpc_url.parse()?);
         let contract = IMarketplace::new(marketplace_address, provider);
 
-        // TEMPORARY test hook: forces the offline-signing path without needing to
-        // actually break network connectivity (which would also hang the
-        // un-timeout-wrapped listings read used for AI matching). Remove after
-        // the offline-flow demo.
-        if std::env::var("CABALMESH_FORCE_OFFLINE_BUY").is_ok() {
-            tracing::info!("🧪 [Bridge] CABALMESH_FORCE_OFFLINE_BUY set — skipping online attempt.");
-            let queued = self.sign_offline(marketplace_address, calldata, price_wei, "Buy listing").await?;
-            return Ok(TxResult::Queued { queue_id: queued.id });
-        }
-
         // See create_escrow's comment above: map to String here to keep this future Send.
         let online_result = timeout(Duration::from_secs(6), async {
             let pending = contract

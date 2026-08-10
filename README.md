@@ -23,13 +23,17 @@ In this network, you are a **Nobody**. Every trace—from your physical location
 
 2. **The Invisible Brain** (Confidential Computation)
    - Ollama AI Agents with "Shark Mode" aggressive negotiation
-   - Noir ZK-Circuits for privacy-preserving verification
-   - Confidential Compute (FHE/MPC) integration ready
+   - Noir ZK-Circuits generate a proof per bid; on-chain/IPC verification of
+     that proof is not implemented yet (`zk_handler::verify_proof` only
+     checks the proof and public inputs are non-empty)
+   - Confidential Compute (FHE/MPC): not started — no code exists for this
 
 3. **The Settlement Layer** (Avalanche)
    - A minimal on-chain `Escrow` contract (Solidity, deployed to Fuji via Hardhat) locks/releases AVAX for a deal
-   - Private Swap for anonymous swaps (interface reserved, not yet integrated)
-   - Instant Session keys for sub-second mesh-side agent authority delegation
+   - Private Swap for anonymous swaps: not started — no interface exists yet
+   - Instant Session keys for mesh-side agent authority delegation — currently a
+     local-signer prototype (`blockchain_bridge::init_instant_session`), not
+     backed by real on-chain delegation
 
 ## 🚀 Quick Start
 
