@@ -1,4 +1,4 @@
-//! What this node has actually done — settled intents, and the trend.
+//! This installation's private settlement history and trend.
 //!
 //! # What this replaces, and why the name changed
 //!
@@ -10,7 +10,7 @@
 //! score with no scale, no inputs and no way for a user to ask why it was that
 //! number. `INTENTS SETTLED 14 (+55.6%)` is a count anyone can verify by
 //! looking at their own history, which is the only kind of trust signal a
-//! product built on proving things can honestly show.
+//! product built on proving things can honestly show about itself.
 //!
 //! Renaming rather than redefining matters: keeping the label `REPUTATION
 //! SCORE` over a settled-intent count would be the same dishonesty in a
@@ -19,8 +19,15 @@
 //!
 //! # Where the numbers come from
 //!
-//! The ledger, which is the same place the intents list reads from. There is no
-//! second accounting to drift from the first.
+//! The device-local ledger, which is the same place the intents list reads
+//! from. There is no second local accounting to drift from the first.
+//!
+//! This is intentionally named [`LocalStanding`]. It is valid for the owner's
+//! home/profile screens, but it is not public seller standing and must never be
+//! sent to a marketplace buyer as evidence about another wallet. Public
+//! marketplace standing is verified from the canonical on-chain registry by
+//! `cabal-standing`; when that evidence is unavailable it reads `UNKNOWN`, not
+//! this local count.
 //!
 //! - **The headline is lifetime**, not windowed. "How many have I settled" has
 //!   one obvious answer and it is not "in the last week".
@@ -48,9 +55,9 @@ use cabal_core::IntentStatus;
 /// already covers.
 const WINDOW_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
 
-/// A node's settlement record.
+/// This installation's private settlement record.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Standing {
+pub struct LocalStanding {
     /// Lifetime settled intents.
     pub settled: u32,
     /// Change against the previous seven days, as a percentage. `None` when
@@ -58,8 +65,8 @@ pub struct Standing {
     pub delta_percent: Option<f64>,
 }
 
-impl Standing {
-    /// Computes the standing from the ledger.
+impl LocalStanding {
+    /// Computes private local standing from the ledger.
     #[must_use]
     pub fn of(ledger: &Ledger, now_ms: u64) -> Self {
         Self::from_intents(&ledger.all(), now_ms)
@@ -178,7 +185,7 @@ mod tests {
     fn a_node_that_has_settled_nothing_reads_zero_not_an_em_dash() {
         // Measured, and the answer is none. The em dash was right when there
         // was no source at all; it would be wrong now.
-        let standing = Standing::from_intents(&[], NOW);
+        let standing = LocalStanding::from_intents(&[], NOW);
         assert_eq!(standing.settled, 0);
         assert_eq!(standing.value(), "0");
         assert_eq!(standing.combined(), "0");
@@ -198,7 +205,7 @@ mod tests {
             intent(IntentStatus::Draft, None),
             intent(IntentStatus::Waiting, None),
         ];
-        assert_eq!(Standing::from_intents(&intents, NOW).settled, 1);
+        assert_eq!(LocalStanding::from_intents(&intents, NOW).settled, 1);
     }
 
     #[test]
@@ -206,7 +213,7 @@ mod tests {
         // "How many have I settled" has one obvious answer, and it is not
         // "in the last week".
         let intents = [settled(1), settled(40), settled(300)];
-        assert_eq!(Standing::from_intents(&intents, NOW).settled, 3);
+        assert_eq!(LocalStanding::from_intents(&intents, NOW).settled, 3);
     }
 
     #[test]
@@ -220,7 +227,7 @@ mod tests {
             settled(8),
             settled(13),
         ];
-        let standing = Standing::from_intents(&intents, NOW);
+        let standing = LocalStanding::from_intents(&intents, NOW);
         assert_eq!(standing.settled, 5);
         assert_eq!(standing.delta_percent, Some(50.0));
         assert_eq!(standing.combined(), "5 (+50.0%)");
@@ -229,7 +236,7 @@ mod tests {
     #[test]
     fn a_decline_reads_as_a_decline() {
         let intents = [settled(2), settled(8), settled(9), settled(10)];
-        let standing = Standing::from_intents(&intents, NOW);
+        let standing = LocalStanding::from_intents(&intents, NOW);
         assert_eq!(standing.delta_percent, Some(-((2.0 / 3.0) * 100.0)));
         assert!(standing.combined().contains("-66.7%"));
     }
@@ -239,7 +246,7 @@ mod tests {
         // A percentage change from zero is undefined, not infinite. This is
         // exactly the fabricated trend ticket 39 exists to remove.
         let intents = [settled(1), settled(2)];
-        let standing = Standing::from_intents(&intents, NOW);
+        let standing = LocalStanding::from_intents(&intents, NOW);
         assert_eq!(standing.settled, 2);
         assert_eq!(standing.delta_percent, None);
         assert_eq!(standing.combined(), "2", "a missing baseline must not render as a trend");
@@ -248,7 +255,7 @@ mod tests {
     #[test]
     fn intents_older_than_both_windows_count_only_toward_the_lifetime_total() {
         let intents = [settled(1), settled(9), settled(200)];
-        let standing = Standing::from_intents(&intents, NOW);
+        let standing = LocalStanding::from_intents(&intents, NOW);
         assert_eq!(standing.settled, 3);
         // One recent against one prior: flat, and flat is a real reading.
         assert_eq!(standing.delta_percent, Some(0.0));
@@ -267,12 +274,12 @@ mod tests {
             },
             None,
         );
-        assert_eq!(Standing::from_intents(&[broken], NOW).settled, 0);
+        assert_eq!(LocalStanding::from_intents(&[broken], NOW).settled, 0);
     }
 
     #[test]
     fn large_counts_are_separated_per_the_brands_number_rules() {
-        let standing = Standing { settled: 1_248, delta_percent: Some(12.4) };
+        let standing = LocalStanding { settled: 1_248, delta_percent: Some(12.4) };
         assert_eq!(standing.value(), "1,248");
         assert_eq!(standing.combined(), "1,248 (+12.4%)");
     }
@@ -282,7 +289,7 @@ mod tests {
         // now_ms below the window width happens on a device with a wrong clock,
         // and saturating_sub is what keeps it from wrapping to the far future
         // and reading every intent as prior.
-        let standing = Standing::from_intents(&[], 1_000);
+        let standing = LocalStanding::from_intents(&[], 1_000);
         assert_eq!(standing.settled, 0);
     }
 }

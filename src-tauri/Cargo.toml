@@ -49,6 +49,7 @@ cabal-core = { path = "crates/cabal-core" }
 cabal-intent-inference = { path = "crates/cabal-intent-inference" }
 cabal-relay-proof = { path = "crates/cabal-relay-proof" }
 cabal-rewards = { path = "crates/cabal-rewards" }
+cabal-standing = { path = "crates/cabal-standing" }
 cabal-store = { path = "crates/cabal-store" }
 cabal-vault = { path = "crates/cabal-vault" }
 # The BLE mesh protocol: wire format, flood routing, sessions. No I/O — the

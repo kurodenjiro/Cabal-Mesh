@@ -1,0 +1,12 @@
+[package]
+name = "cabal-standing"
+version = "0.1.0"
+edition = "2021"
+description = "Fail-closed verification of CabalMesh marketplace seller standing."
+publish = false
+
+[dependencies]
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

@@ -203,7 +203,7 @@ pub async fn mesh_snapshot(state: State<'_, AppState>) -> Result<MeshSnapshotVie
     //
     // It reads the local ledger, so unlike the other two it is just as true
     // with no mesh as with one.
-    let standing = crate::standing::Standing::of(state.intents(), crate::intents::now_ms());
+    let standing = crate::standing::LocalStanding::of(state.intents(), crate::intents::now_ms());
     let settled_tile = match standing.delta_percent {
         Some(delta) => StatTile::with_delta("INTENTS SETTLED", standing.value(), delta),
         // No prior window, so no baseline. `plain` omits the delta rather than
@@ -1875,7 +1875,8 @@ pub async fn profile_summary(state: State<'_, AppState>) -> Result<ProfileView, 
 
     // The same ledger the home tile reads, so the two screens cannot disagree.
     // No mesh is needed: this is local history, not network state.
-    let settled = crate::standing::Standing::of(state.intents(), crate::intents::now_ms()).combined();
+    let settled =
+        crate::standing::LocalStanding::of(state.intents(), crate::intents::now_ms()).combined();
 
     Ok(ProfileView {
         node_id,

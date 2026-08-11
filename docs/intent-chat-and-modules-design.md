@@ -111,19 +111,19 @@ never broadcasts.
 │  ┌─────────────────────────────────────┐ │
 │  │ ▚▚▚  RELAY AMPLIFIER MK-II     RARE │ │
 │  │ ▚▚▚  RADIO · +18% RELAY YIELD       │ │
-│  │      SELLER  NODE-7F3A…C2   ★ 42    │ │
+│  │      SELLER  0x7F3A…C2  VERIFIED 42 │ │
 │  │      2.40 AVAX            [  BUY  ] │ │
 │  └─────────────────────────────────────┘ │
 │  ┌─────────────────────────────────────┐ │
 │  │ ▞▞▞  GHOST CLOAK             COMMON │ │
 │  │ ▞▞▞  CRYPTO · +2 HOPS, NO LATENCY   │ │
-│  │      SELLER  NODE-91BE…08   ★ 31    │ │
+│  │      SELLER  0x91BE…08  VERIFIED 31 │ │
 │  │      0.85 AVAX            [  BUY  ] │ │
 │  └─────────────────────────────────────┘ │
 │  ┌─────────────────────────────────────┐ │
 │  │ ▙▙▙  GATEWAY LICENSE         LEGEND │ │
 │  │ ▙▙▙  POWER · EARN AS GATEWAY        │ │
-│  │      SELLER  NODE-2C4D…AA   ★ 18    │ │
+│  │      SELLER  0x2C4D…AA  VERIFIED 18 │ │
 │  │      11.00 AVAX           [  BUY  ] │ │
 │  └─────────────────────────────────────┘ │
 │                                          │
@@ -132,8 +132,13 @@ never broadcasts.
 └──────────────────────────────────────────┘
 ```
 
-`★ 42` is the seller's **real** standing — settlement count from
-`src/standing.rs`, not an invented score.
+`VERIFIED 42` is the seller wallet's public standing at an accepted block, not
+an invented score or a value copied from the seller's device. Buyers verify a
+quorum of independent reads from the canonical `CabalStandingRegistry`; any
+missing, stale, unfinalized, or conflicting evidence renders `UNKNOWN`. The
+device-local count in `src/standing.rs` remains self-history only. The complete
+definition and privacy decision are in the
+[standing verification specification](standing-verification.md).
 
 `Marketplace.sol` implements the escrow this promises: `buy()` locks AVAX and
 pulls the NFT into escrow in one transaction, `releaseDeal` / `refundDeal`

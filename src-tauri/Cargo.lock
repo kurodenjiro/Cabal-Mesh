@@ -1667,6 +1667,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "cabal-standing"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "cabal-store"
 version = "0.1.0"
 dependencies = [
@@ -1706,6 +1713,7 @@ dependencies = [
  "cabal-intent-inference",
  "cabal-relay-proof",
  "cabal-rewards",
+ "cabal-standing",
  "cabal-store",
  "cabal-vault",
  "chrono",
