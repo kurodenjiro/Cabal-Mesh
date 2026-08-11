@@ -59,6 +59,10 @@ targets:
         # ITSEncryptionExportComplianceCode is deliberately absent — Apple
         # issues it only once the export documentation is accepted.
         ITSAppUsesNonExemptEncryption: true
+        # CoreBluetooth is linked below because the Apple BLE backend lives in
+        # the Rust static library. Keep the usage description in this source
+        # spec as well as src-tauri/Info.plist so XcodeGen cannot drop it.
+        NSBluetoothAlwaysUsageDescription: CabalMesh relays intents to nearby nodes over Bluetooth when there is no network. No identity is attached.
         # libp2p mDNS sends raw UDP multicast to 224.0.0.251:5353. iOS gates
         # both the local-network probe and the multicast socket itself.
         NSLocalNetworkUsageDescription: CabalMesh discovers nearby nodes on your local network. No identity is attached.
@@ -104,6 +108,7 @@ targets:
     dependencies:
       - framework: libapp.a
         embed: false
+      - sdk: CoreBluetooth.framework
       - sdk: CoreGraphics.framework
       - sdk: Metal.framework
       - sdk: MetalKit.framework

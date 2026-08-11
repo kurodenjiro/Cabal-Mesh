@@ -1,6 +1,9 @@
 # Chat intents, marketplace, and node modules — design
 
-**Status: proposal. None of this is built yet.** Written 2026-08-10.
+**Status: implementation in progress.** Written 2026-08-10. The always-available
+[local intent inference runtime](intent-inference-runtime.md) was accepted and
+proved on desktop, iOS, and Android on 2026-08-12; the conversational UI and
+marketplace/module loop remain to be implemented.
 
 Three connected changes: composing intents by conversation instead of by form,
 a marketplace for NFTs, and NFTs that measurably improve what a node earns.
