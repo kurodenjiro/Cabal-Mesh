@@ -4,7 +4,14 @@ import { Button, Input, Panel } from "../ds";
 import { ModalDialog } from "../shell/ModalDialog";
 import { errorCopy } from "../state/errorCopy";
 import type { IntentId } from "../shell/screen";
-import type { AssetOption, FormOptions, IntentFields, IntentPreview } from "../types/bindings";
+import type {
+  AssetOption,
+  FormOptions,
+  IntentComposition,
+  IntentCompositionStatus,
+  IntentFields,
+  IntentPreview,
+} from "../types/bindings";
 
 /**
  * Composing an intent.
@@ -26,10 +33,20 @@ import type { AssetOption, FormOptions, IntentFields, IntentPreview } from "../t
  * actually broadcast. See ticket 04: the prototype's single string claimed
  * offline intents settle on-chain, and they do not.
  *
- * The two numeric fields are the only text entry in the app, which is why they
- * carry `inputMode="decimal"` and scroll themselves clear of the keyboard.
+ * **Conversation text never becomes an execution command.** `propose_intent`
+ * has no app-state argument and returns only typed candidate fields. This
+ * screen enables review only for a candidate that Rust marked validated, and
+ * confirmation still goes through the existing preview/broadcast boundary.
+ * The manual fields remain an explicit fallback if local inference cannot run.
  */
 export function New({ onBroadcast }: { onBroadcast: (id: IntentId) => void }) {
+  const [intentText, setIntentText] = useState("");
+  const [submittedText, setSubmittedText] = useState<string | null>(null);
+  const [composition, setComposition] = useState<IntentComposition | null>(null);
+  const [inferenceBusy, setInferenceBusy] = useState(false);
+  const [manualMode, setManualMode] = useState(false);
+  const fieldsClaimed = useRef(false);
+
   const [options, setOptions] = useState<FormOptions | null>(null);
   const [action, setAction] = useState("BUY");
   const [asset, setAsset] = useState("AVAX");
@@ -52,11 +69,13 @@ export function New({ onBroadcast }: { onBroadcast: (id: IntentId) => void }) {
         // Defaults come from the options themselves rather than from the
         // literals above, so a change in Rust cannot leave this screen holding
         // a value the backend will reject.
-        if (next.actions[0]) setAction(next.actions[0]);
-        if (next.assets[0]) setAsset(next.assets[0].name);
-        if (next.conditions[0]) setCondition(next.conditions[0]);
-        if (next.modes[0]) setMode(next.modes[0].label);
-        if (next.privacyLevels[0]) setPrivacy(next.privacyLevels[0]);
+        if (!fieldsClaimed.current) {
+          if (next.actions[0]) setAction(next.actions[0]);
+          if (next.assets[0]) setAsset(next.assets[0].name);
+          if (next.conditions[0]) setCondition(next.conditions[0]);
+          if (next.modes[0]) setMode(next.modes[0].label);
+          if (next.privacyLevels[0]) setPrivacy(next.privacyLevels[0]);
+        }
       })
       .catch(() => undefined);
     return () => {
@@ -73,7 +92,44 @@ export function New({ onBroadcast }: { onBroadcast: (id: IntentId) => void }) {
   // out" a property rather than a promise.
   const fields: IntentFields = { action, asset, condition, price, amount, mode, privacy };
 
+  const applyFields = (next: IntentFields) => {
+    fieldsClaimed.current = true;
+    setAction(next.action);
+    setAsset(next.asset);
+    setCondition(next.condition);
+    setPrice(next.price);
+    setAmount(next.amount);
+    setMode(next.mode);
+    setPrivacy(next.privacy);
+  };
+
+  const propose = async () => {
+    const text = intentText.trim();
+    if (!text || inferenceBusy) return;
+
+    setInferenceBusy(true);
+    setError(null);
+    setPreview(null);
+    setComposition(null);
+    setSubmittedText(text);
+    try {
+      const next = await invoke<IntentComposition>("propose_intent", { text });
+      setComposition(next);
+      if (next.fields) applyFields(next.fields);
+      if (next.status === "validated") setManualMode(false);
+    } catch (failure) {
+      // Transport failures keep the phrase editable and leave no reviewable
+      // draft behind. The command itself has no ledger or broadcast access.
+      setError(errorCopy(failure));
+    } finally {
+      setInferenceBusy(false);
+    }
+  };
+
+  const canReview = manualMode || composition?.status === "validated";
+
   const review = async () => {
+    if (!canReview) return;
     setError(null);
     try {
       setPreview(await invoke<IntentPreview>("preview_intent", { fields }));
@@ -99,6 +155,115 @@ export function New({ onBroadcast }: { onBroadcast: (id: IntentId) => void }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-6)", padding: "var(--space-6)" }}>
+      <Panel label="DESCRIBE INTENT">
+        <div style={{ padding: "var(--space-6)", display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
+          {submittedText ? (
+            <div
+              style={{
+                alignSelf: "flex-end",
+                maxWidth: "86%",
+                padding: "var(--space-4) var(--space-5)",
+                border: "var(--border-width) solid var(--border-default)",
+                background: "var(--surface-raised)",
+                color: "var(--text-primary)",
+                overflowWrap: "anywhere",
+              }}
+            >
+              {submittedText}
+            </div>
+          ) : null}
+          <label
+            htmlFor="intent-conversation"
+            style={{
+              fontFamily: "var(--type-label-family)",
+              fontSize: "var(--text-2xs)",
+              letterSpacing: "var(--tracking-widest)",
+              color: "var(--text-muted)",
+            }}
+          >
+            SAY WHAT YOU WANT TO DO
+          </label>
+          <Input
+            id="intent-conversation"
+            multiline
+            rows={3}
+            value={intentText}
+            maxLength={512}
+            autoComplete="off"
+            spellCheck="false"
+            placeholder="buy 10 avax under 95, shark mode, privacy high"
+            onChange={(event) => setIntentText((event.target as HTMLTextAreaElement).value)}
+          />
+          <Button
+            tone="signal"
+            size="md"
+            block
+            className="cm-touch"
+            disabled={inferenceBusy || intentText.trim().length === 0}
+            onClick={propose}
+          >
+            {inferenceBusy ? "PARSING LOCALLY" : "PARSE LOCALLY"}
+          </Button>
+          <span style={{ fontSize: "var(--text-2xs)", color: "var(--text-muted)" }}>
+            TEXT STAYS ON THIS DEVICE. NOTHING IS SENT UNTIL YOU REVIEW AND CONFIRM.
+          </span>
+        </div>
+      </Panel>
+
+      {composition ? (
+        <Panel label="◇ PARSED · LOCAL MODEL">
+          <div
+            aria-live="polite"
+            style={{ padding: "var(--space-6)", display: "flex", flexDirection: "column", gap: "var(--space-5)" }}
+          >
+            {composition.chips.length > 0 ? (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--space-3)" }}>
+                {composition.chips.map((chip) => {
+                  const label = fieldLabel(chip.field);
+                  const missing = chip.value === null;
+                  return (
+                    <span
+                      key={chip.field}
+                      style={{
+                        padding: "var(--space-3) var(--space-4)",
+                        border: `var(--border-width) solid ${
+                          missing ? "var(--accent-blood-red)" : "var(--border-default)"
+                        }`,
+                        color: missing ? "var(--accent-blood-red)" : "var(--text-primary)",
+                        fontFamily: "var(--type-data-family)",
+                        fontSize: "var(--text-xs)",
+                        overflowWrap: "anywhere",
+                      }}
+                    >
+                      <span style={{ color: "var(--text-muted)" }}>{label} · </span>
+                      {chip.value ?? "MISSING"}
+                    </span>
+                  );
+                })}
+              </div>
+            ) : null}
+            <p style={{ margin: 0, color: "var(--text-secondary)", fontSize: "var(--text-base)" }}>
+              {compositionMessage(composition.status, composition.missing.map(fieldLabel))}
+            </p>
+            <span style={{ color: "var(--text-muted)", fontSize: "var(--text-2xs)" }}>
+              MODEL {composition.modelVersion}
+            </span>
+          </div>
+        </Panel>
+      ) : null}
+
+      <Button
+        tone="ghost"
+        size="sm"
+        block
+        className="cm-touch"
+        onClick={() => setManualMode((shown) => !shown)}
+      >
+        {manualMode ? "HIDE MANUAL FIELDS" : "USE MANUAL FIELDS"}
+      </Button>
+
+      {manualMode ? (
+        <>
       <Panel label="I WANT TO">
         <div style={{ padding: "var(--space-6)" }}>
           <Segmented name="Action" options={options?.actions ?? []} value={action} onChange={setAction} />
@@ -200,6 +365,8 @@ export function New({ onBroadcast }: { onBroadcast: (id: IntentId) => void }) {
           />
         </div>
       </Panel>
+        </>
+      ) : null}
 
       {error ? (
         <p role="alert" style={{ fontSize: "var(--text-base)", color: "var(--accent-blood-red)" }}>
@@ -207,7 +374,7 @@ export function New({ onBroadcast }: { onBroadcast: (id: IntentId) => void }) {
         </p>
       ) : null}
 
-      <Button tone="primary" size="lg" block className="cm-touch" onClick={review}>
+      <Button tone="primary" size="lg" block className="cm-touch" disabled={!canReview} onClick={review}>
         REVIEW INTENT
       </Button>
 
@@ -251,6 +418,29 @@ export function New({ onBroadcast }: { onBroadcast: (id: IntentId) => void }) {
       </ModalDialog>
     </div>
   );
+}
+
+function fieldLabel(field: IntentComposition["missing"][number]): string {
+  return field.replace(/_/g, " ").toUpperCase();
+}
+
+function compositionMessage(status: IntentCompositionStatus, missing: string[]): string {
+  switch (status) {
+    case "validated":
+      return "All six fields passed Rust domain validation. Review before anything leaves this device.";
+    case "needs_clarification":
+      return missing.length > 0
+        ? `Clarify: ${missing.join(", ")}. No financial value was invented.`
+        : "Clarify the phrase. No financial value was invented.";
+    case "unavailable":
+      return "The local model is unavailable. Your text remains editable; use manual fields or retry. Nothing was sent.";
+    case "timed_out":
+      return "The local model timed out. Your text remains editable; use manual fields or retry. Nothing was sent.";
+    case "malformed_output":
+      return "Rust refused the model output. Revise the phrase or use manual fields. Nothing was sent.";
+    case "refused":
+      return "The text was refused at the private inference boundary. Revise it or use manual fields. Nothing was sent.";
+  }
 }
 
 /**
@@ -375,4 +565,3 @@ function DecimalField({
     </div>
   );
 }
-

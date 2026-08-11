@@ -2,8 +2,9 @@
 
 **Status: implementation in progress.** Written 2026-08-10. The always-available
 [local intent inference runtime](intent-inference-runtime.md) was accepted and
-proved on desktop, iOS, and Android on 2026-08-12; the conversational UI and
-marketplace/module loop remain to be implemented.
+proved on desktop, iOS, and Android on 2026-08-12. Conversational composition
+now produces Rust-validated chips with fail-closed clarification and a manual
+fallback; chip correction and the marketplace/module loop remain in progress.
 
 Three connected changes: composing intents by conversation instead of by form,
 a marketplace for NFTs, and NFTs that measurably improve what a node earns.
@@ -99,6 +100,15 @@ only produces `IntentFields`. `parse_draft` still validates, `preview_intent`
 still builds the review rows from the draft, and broadcasting still re-parses
 the same fields. The AI proposes; Rust decides; the user confirms. The model
 never broadcasts.
+
+**Resolved 2026-08-12:** `propose_intent` runs the embedded model in a bounded
+worker and has no app-state argument, so it cannot reach the ledger, mesh,
+vault, signer, queue, or chain. Complete proposals pass through the same
+`parse_draft` function used by review and broadcast before six read-only chips
+are returned. Partial or ambiguous input names missing fields without defaults;
+unavailable, timed-out, refused, or domain-invalid inference leaves the phrase
+editable and offers the manual fields. No intent text or model output enters a
+log or IPC response. Ticket 07 owns constrained chip editing and affordability.
 
 ## Marketplace
 

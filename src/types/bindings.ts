@@ -95,6 +95,34 @@ export type FailureReason = "no_route" | "node_failure" | "condition_unmet" | "s
 export type FormOptions = { actions: Array<string>, assets: Array<AssetOption>, conditions: Array<string>, modes: Array<ModeOption>, privacyLevels: Array<string>, };
 
 /**
+ * One model proposal rendered without carrying the original intent text.
+ */
+export type IntentChip = { field: IntentFieldView,
+/**
+ * Absent means the model did not infer this field. It is not a default.
+ */
+value: string | null, };
+
+/**
+ * Buyer-independent result shown by the conversational compose screen.
+ *
+ * The original phrase is deliberately absent: IPC returns only structured
+ * candidate fields, and neither this value nor its errors can leak financial
+ * text into logs.
+ */
+export type IntentComposition = { status: IntentCompositionStatus, modelVersion: string,
+/**
+ * Canonical fields for a validated result, partial fields for a safe
+ * clarification result, and absent for runtime/refusal failures.
+ */
+fields: IntentFields | null, chips: Array<IntentChip>, missing: Array<IntentFieldView>, };
+
+/**
+ * Outcome of one bounded local-model invocation.
+ */
+export type IntentCompositionStatus = "validated" | "needs_clarification" | "unavailable" | "timed_out" | "malformed_output" | "refused";
+
+/**
  * Everything the detail screen renders.
  */
 export type IntentDetailView = { id: string, title: string, status: IntentStatus, 
@@ -118,6 +146,11 @@ settleBlocked: string | null,
  * Whether the intent can still be cancelled.
  */
 canCancel: boolean, };
+
+/**
+ * Stable names for the six conversational intent chips.
+ */
+export type IntentFieldView = "action" | "asset" | "condition" | "amount" | "mode" | "privacy";
 
 /**
  * The compose form's fields, exactly as the screen holds them.

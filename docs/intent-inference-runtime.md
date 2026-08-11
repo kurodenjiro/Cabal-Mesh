@@ -12,7 +12,8 @@ a broadcast. It does not make conversational input an execution command.
 CabalMesh uses `cabal-intent-slots-v1`, a compact deterministic semantic-slot
 model implemented by the pure Rust `cabal-intent-inference` crate. The app
 depends on that crate and successfully compiles it for desktop, iOS, and
-Android; compose will call the same API when ticket 06 wires the UI boundary.
+Android. The `propose_intent` command now calls that API in a bounded local
+worker and returns only structured chips; it never returns or logs the phrase.
 There is no model download, hosted endpoint, local-network server, platform AI
 entitlement, or operator configuration in the required path.
 
@@ -28,9 +29,10 @@ The v1 model proposes exactly six typed fields:
 Missing fields remain `None`. Conflicting signals, malformed values, control
 characters, overlong text, and known instruction-manipulation phrases return a
 typed error. Inference has no I/O dependency and has no function that creates,
-signs, queues, or broadcasts an intent. A future UI caller must pass the
-proposal through the existing authoritative `cabal-core` draft parser, show a
-review, and require confirmation.
+signs, queues, or broadcasts an intent. The application passes every complete
+proposal through the same `parse_draft` function used by preview and broadcast
+before it becomes reviewable. Review and explicit confirmation remain separate
+commands.
 
 ## Packaging and fallback
 

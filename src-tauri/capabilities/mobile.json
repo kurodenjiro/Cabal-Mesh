@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/mobile-schema.json",
   "identifier": "mobile",
-  "description": "Main webview on iOS and Android. Grants core only: no app command is reachable from the mobile webview yet, because no mobile screen exists to call one. The mobile build is a compile/launch/render probe until ticket 26 splits the frontends; ticket 29 onward adds exactly the commands each screen uses. Never grant speculatively. See capabilities/README.md.",
+  "description": "Main webview on iOS and Android. Mobile and desktop now share the same implemented screens and 22 least-privilege app commands; opener remains desktop-only. Never grant commands speculatively. See capabilities/README.md.",
   "platforms": [
     "iOS",
     "android"
@@ -20,6 +20,7 @@
     "allow-ble-status",
     "allow-list-intents",
     "allow-intent-form-options",
+    "allow-propose-intent",
     "allow-preview-intent",
     "allow-broadcast-intent",
     "allow-intent-detail",

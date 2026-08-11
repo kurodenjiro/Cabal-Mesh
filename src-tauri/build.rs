@@ -23,6 +23,7 @@ const COMMANDS: &[&str] = &[
     "ble_status",
     "list_intents",
     "intent_form_options",
+    "propose_intent",
     "preview_intent",
     "broadcast_intent",
     "intent_detail",

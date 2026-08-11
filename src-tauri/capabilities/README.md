@@ -5,8 +5,8 @@ Two files, one per platform family. There is deliberately **no shared
 
 | File | Applies to | Grants |
 |---|---|---|
-| `desktop.json` | linux, macOS, windows | `core:default`, `opener:default`, the same 21 app commands as mobile.json |
-| `mobile.json` | iOS, android | `core:default` plus the same 21 app commands as desktop.json |
+| `desktop.json` | linux, macOS, windows | `core:default`, `opener:default`, the same 22 app commands as mobile.json |
+| `mobile.json` | iOS, android | `core:default` plus the same 22 app commands as desktop.json |
 
 Desktop and mobile now serve the same frontend (`src/screens/`) through one
 `invoke_handler` in `lib.rs`, so their command grants are kept identical on
