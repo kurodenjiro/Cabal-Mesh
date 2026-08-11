@@ -261,10 +261,24 @@ and saved it. If rewards are real AVAX, the multiplier **must** be derived from
 verified on-chain NFT ownership. A locally editable file is not a game
 mechanic, it is a mint button.
 
+**Resolved at the trust boundary 2026-08-12:** authentic effects originate only
+from the canonical `CabalMeshModules` collection, immutable structured token
+data, current ownership, an on-chain one-token/one-slot loadout, and unrevoked
+state. The full authority and failure policy is in the
+[module trust model](module-trust-model.md). Ticket 14 still has to consume that
+state in relay settlement before a RADIO multiplier changes real payment.
+
 **2. `CabalMeshVoucher` has no slot, rarity, or effect on-chain.**
 It stores `voucherType` (string) and `description`. Options: encode structure
 into `voucherType`, add ERC721 `tokenURI` metadata, or extend the contract.
 Metadata is the recommended route — standard, and external wallets can read it.
+
+**Resolved 2026-08-12:** a separate, non-upgradeable `CabalMeshModules` ERC-721
+returns on-chain standards-compatible JSON metadata, exposes typed slot/rarity/
+effect parameters and provenance, implements ERC-5192 Standing Badges, and owns
+the loadout rules. The deployed voucher remains explicitly legacy and receives
+no module effect; Fuji replacement steps are fixed in the
+[module trust model](module-trust-model.md).
 
 **3. Who pays the relay reward?** *(the load-bearing question)*
 If node A relays for node B, where does the AVAX come from — a fee the sender

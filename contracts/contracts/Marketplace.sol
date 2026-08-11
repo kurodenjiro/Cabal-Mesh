@@ -2,7 +2,9 @@
 pragma solidity ^0.8.24;
 
 import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
+import {IERC165} from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {ICabalMeshAsset} from "./interfaces/ICabalMeshAsset.sol";
 
 /// @notice Asset-backed catalog + atomic settlement. Every listing references
 /// an NFT from an allowed collection that the seller actually owns (checked
@@ -45,6 +47,8 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 /// it belongs to, so a new token contract is one governance call and old deals
 /// keep settling against the contract they were opened against.
 contract Marketplace is ReentrancyGuard {
+    error IneligibleAsset(address collection, uint256 tokenId);
+
     struct Listing {
         address seller;
         string description;
@@ -184,6 +188,7 @@ contract Marketplace is ReentrancyGuard {
 
         IERC721 nft = IERC721(collection);
         require(nft.ownerOf(tokenId) == msg.sender, "Not the voucher owner");
+        _requireMarketplaceEligible(collection, tokenId);
         require(
             nft.getApproved(tokenId) == address(this) || nft.isApprovedForAll(msg.sender, address(this)),
             "Approve marketplace first"
@@ -212,6 +217,7 @@ contract Marketplace is ReentrancyGuard {
         require(l.active, "Not active");
         require(msg.sender != l.seller, "Cannot buy your own listing");
         require(msg.value == l.priceWei, "Wrong amount");
+        _requireMarketplaceEligible(l.collection, l.tokenId);
 
         l.active = false;
         activeListingOf[l.collection][l.tokenId] = 0;
@@ -344,5 +350,12 @@ contract Marketplace is ReentrancyGuard {
 
     function getDeal(uint256 dealId) external view returns (Deal memory) {
         return deals[dealId];
+    }
+
+    function _requireMarketplaceEligible(address collection, uint256 tokenId) private view {
+        if (
+            IERC165(collection).supportsInterface(type(ICabalMeshAsset).interfaceId)
+                && !ICabalMeshAsset(collection).isMarketplaceEligible(tokenId)
+        ) revert IneligibleAsset(collection, tokenId);
     }
 }
