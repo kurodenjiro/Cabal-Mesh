@@ -294,6 +294,19 @@ ONLY`, actions are disabled, and every `activeEffect` remains empty. Nominal
 metadata stays inspectable, but NODE LOADOUT claims no active runtime bonus
 until tickets 14–16 wire the corresponding verifier.
 
+**Resolved for seller listing 2026-08-12:** a current owner can list only an
+unequipped, transferable, unrevoked canonical V1 module through the reviewed
+module/market pair. AVAX input is converted from decimal text to integer wei
+without floating point. Token approval and listing remain separate confirmed
+operations unless a verified blanket approval already exists. Every mutation
+waits for its receipt and then re-reads accepted chain state; rejection,
+replacement, timeout, reorganization, revert, retry, and a duplicate attempt
+cannot manufacture a buyer-visible listing. MARKET rechecks custody and
+eligibility at its accepted head. Cancelling an unsold listing returns the token
+to the seller and makes it equippable again, while marketplace custody without
+an active listing is treated as a paid deal governed by release or mutual-refund
+rules rather than as a cancellable sale.
+
 ### Where earnings are visible — HOME
 
 ```

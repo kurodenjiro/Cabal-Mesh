@@ -3,7 +3,15 @@ import { invoke } from "@tauri-apps/api/core";
 import { Badge, Button, IconButton, Panel } from "../ds";
 import { ModalDialog } from "../shell/ModalDialog";
 import type { VaultTab } from "../shell/screen";
-import type { ModuleInventory, ModuleView, NodeLoadout, VaultRow } from "../types/bindings";
+import type {
+  ModuleInventory,
+  ModuleListingActionView,
+  ModuleListingIneligibleReason,
+  ModuleListingStateView,
+  ModuleView,
+  NodeLoadout,
+  VaultRow,
+} from "../types/bindings";
 
 const TABS: VaultTab[] = ["ASSETS", "MODULES", "IDENTITIES", "KEYS"];
 
@@ -507,13 +515,99 @@ function ModuleDetails({
   onMutate: (command: "equip_module" | "unequip_module", module: ModuleView) => void;
   onClose: () => void;
 }) {
+  const [listing, setListing] = useState<ModuleListingActionView | null>(null);
+  const [listingBusy, setListingBusy] = useState<"status" | "approval" | "listing" | "cancel" | null>(null);
+  const [listingFailed, setListingFailed] = useState(false);
+  const [priceAvax, setPriceAvax] = useState("");
   const action = module ? loadoutAction(loadout, module) : null;
+  const selectedKey = module ? moduleKey(module) : null;
+
+  useEffect(() => {
+    if (!module || !selectedKey) {
+      setListing(null);
+      setListingBusy(null);
+      setListingFailed(false);
+      setPriceAvax("");
+      return;
+    }
+
+    let cancelled = false;
+    setListing(null);
+    setListingBusy("status");
+    setListingFailed(false);
+    setPriceAvax("");
+    invoke<ModuleListingActionView>("module_listing_status", { tokenId: module.tokenId })
+      .then((next) => {
+        if (!cancelled) setListing(next);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setListing({ state: { status: "chain_unavailable" }, operation: "none", txHash: null });
+        setListingFailed(true);
+      })
+      .finally(() => {
+        if (!cancelled) setListingBusy(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [loadout?.mutationTxHash, selectedKey]);
+
+  const refreshListingAfterFailure = useCallback(async (tokenId: string) => {
+    try {
+      const current = await invoke<ModuleListingActionView>("module_listing_status", { tokenId });
+      setListing(current);
+    } catch {
+      setListing({ state: { status: "chain_unavailable" }, operation: "none", txHash: null });
+    }
+  }, []);
+
+  const mutateListing = useCallback(async (
+    command: "approve_module_listing" | "create_module_listing" | "cancel_module_listing",
+    pending: "approval" | "listing" | "cancel",
+    args: Record<string, string>,
+  ) => {
+    if (!module || listingBusy !== null) return;
+    setListingBusy(pending);
+    setListingFailed(false);
+    try {
+      const next = await invoke<ModuleListingActionView>(command, args);
+      setListing(next);
+    } catch {
+      // Never retain a pre-submit state as evidence after a rejection,
+      // replacement, timeout, reorg, or revert. Re-read accepted state.
+      setListingFailed(true);
+      await refreshListingAfterFailure(module.tokenId);
+    } finally {
+      setListingBusy(null);
+    }
+  }, [listingBusy, module, refreshListingAfterFailure]);
+
+  const listingBlocksEquip =
+    listing === null ||
+    listing.state.status === "chain_unavailable" ||
+    listing.state.status === "listed" ||
+    listing.state.status === "stale_listing" ||
+    listing.state.status === "deal_rules_active";
+  const loadoutDisabled = busy || Boolean(action?.disabled) ||
+    (action?.command === "equip_module" && listingBlocksEquip);
+  const loadoutLabel = action?.command === "equip_module"
+    ? listing === null
+      ? "VERIFY MARKET STATE"
+      : listing.state.status === "chain_unavailable"
+        ? "MARKET STATE UNAVAILABLE"
+        : listing.state.status === "listed" || listing.state.status === "stale_listing"
+          ? "CANCEL LISTING FIRST"
+          : listing.state.status === "deal_rules_active"
+            ? "DEAL RULES ACTIVE"
+            : action.label
+    : action?.label;
 
   return (
     <ModalDialog
       open={module !== null}
       title={module?.displayName ?? "MODULE DETAILS"}
-      onClose={onClose}
+      onClose={listingBusy !== null && listingBusy !== "status" ? () => undefined : onClose}
       footer={
         <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "flex-end", gap: "var(--space-3)" }}>
           {module && action ? (
@@ -522,13 +616,20 @@ function ModuleDetails({
               tone="ghost"
               size="md"
               className="cm-touch"
-              disabled={busy || action.disabled}
+              disabled={loadoutDisabled || listingBusy !== null}
               onClick={() => onMutate(action.command, module)}
             >
-              {busy ? "CONFIRMING CHAIN" : action.label}
+              {busy ? "CONFIRMING CHAIN" : loadoutLabel}
             </Button>
           ) : null}
-          <Button type="button" tone="primary" size="md" className="cm-touch" onClick={onClose}>
+          <Button
+            type="button"
+            tone="primary"
+            size="md"
+            className="cm-touch"
+            disabled={listingBusy !== null && listingBusy !== "status"}
+            onClick={onClose}
+          >
             CLOSE
           </Button>
         </div>
@@ -571,10 +672,232 @@ function ModuleDetails({
           <DetailField label="ARTWORK URI" value={module.artworkUri} />
           <DetailField label="ARTWORK DIGEST" value={module.artworkDigest} />
           <DetailField label="SCHEMA" value={`CABALMESH V${module.schemaVersion}`} />
+          <ModuleListingControls
+            listing={listing}
+            busy={listingBusy}
+            failed={listingFailed}
+            priceAvax={priceAvax}
+            onPriceChange={setPriceAvax}
+            onApprove={() => mutateListing(
+              "approve_module_listing",
+              "approval",
+              { tokenId: module.tokenId },
+            )}
+            onList={() => mutateListing(
+              "create_module_listing",
+              "listing",
+              { tokenId: module.tokenId, priceAvax },
+            )}
+            onCancel={(listingId) => mutateListing(
+              "cancel_module_listing",
+              "cancel",
+              { tokenId: module.tokenId, listingId },
+            )}
+          />
         </div>
       ) : null}
     </ModalDialog>
   );
+}
+
+function ModuleListingControls({
+  listing,
+  busy,
+  failed,
+  priceAvax,
+  onPriceChange,
+  onApprove,
+  onList,
+  onCancel,
+}: {
+  listing: ModuleListingActionView | null;
+  busy: "status" | "approval" | "listing" | "cancel" | null;
+  failed: boolean;
+  priceAvax: string;
+  onPriceChange: (value: string) => void;
+  onApprove: () => void;
+  onList: () => void;
+  onCancel: (listingId: string) => void;
+}) {
+  const state = listing?.state ?? null;
+  const canPrice = state?.status === "approval_required" || state?.status === "ready";
+  const validPrice = isExactPositiveAvax(priceAvax);
+  const confirmed = listingOperationCopy(listing);
+
+  return (
+    <section
+      aria-label="Module marketplace listing"
+      style={{
+        border: "var(--border-hairline-style)",
+        padding: "var(--space-5)",
+        display: "flex",
+        flexDirection: "column",
+        gap: "var(--space-4)",
+      }}
+    >
+      <div style={{ display: "flex", justifyContent: "space-between", gap: "var(--space-4)", flexWrap: "wrap" }}>
+        <span style={listingLabelStyle}>SELL THIS MODULE</span>
+        <Badge tone={state?.status === "listed" ? "success" : "quiet"} size="sm">
+          {listingStateLabel(state)}
+        </Badge>
+      </div>
+
+      {busy === "status" || state === null ? (
+        <ListingCopy title="VERIFYING MARKET STATE" body="Reading owner, loadout, approval, and duplicate guard from one accepted chain head." />
+      ) : null}
+
+      {failed ? (
+        <ListingCopy title="OPERATION NOT CONFIRMED" body="The transaction was rejected, replaced, timed out, reorganized, or reverted. Accepted state was refreshed; no optimistic listing is shown." alert />
+      ) : null}
+
+      {confirmed ? <ListingCopy title={confirmed.title} body={confirmed.body} /> : null}
+
+      {state?.status === "deployment_unavailable" ? (
+        <ListingCopy title="CANONICAL MARKET UNAVAILABLE" body="This release has no reviewed CabalMeshModules and Marketplace deployment pair. Legacy voucher listings are not accepted." />
+      ) : state?.status === "chain_unavailable" ? (
+        <ListingCopy title="MARKET STATE UNAVAILABLE" body="Ownership and listing state could not be verified. Selling and equipping are paused until accepted state is readable." alert />
+      ) : state?.status === "missing_or_burned" ? (
+        <ListingCopy title="TOKEN DOES NOT EXIST" body="The canonical collection no longer reports this token. Burned and nonexistent tokens cannot be listed." alert />
+      ) : state?.status === "not_owner" ? (
+        <ListingCopy title="NOT CURRENT OWNER" body={`Current owner is ${state.owner}. Only that address can list this token.`} alert />
+      ) : state?.status === "equipped" ? (
+        <ListingCopy title={`UNEQUIP ${state.slot} FIRST`} body="Listing is disabled while the module is bound to the verified node loadout. Confirm the unequip transaction, then reopen this detail." />
+      ) : state?.status === "ineligible" ? (
+        <ListingCopy title="MODULE IS NOT LISTABLE" body={listingIneligibleCopy(state.reason)} alert />
+      ) : state?.status === "deal_rules_active" ? (
+        <ListingCopy title="BUYER HAS PAID" body="The listing cannot be cancelled because the token and payment are now in escrow. Release or mutually agreed refund rules govern the active deal." alert />
+      ) : state?.status === "listed" || state?.status === "stale_listing" ? (
+        <>
+          <ListingCopy
+            title={state.status === "listed" ? "ACTIVE LISTING VERIFIED" : "LISTING NO LONGER BUYABLE"}
+            body={state.status === "listed"
+              ? `Listing #${state.listing.listingId} offers token #${state.listing.tokenId} for exactly ${state.listing.priceAvax} AVAX (${state.listing.priceWei} wei).`
+              : "The duplicate guard still references this listing, but current ownership, eligibility, loadout, or approval no longer backs a purchase. Withdraw it before trying again."}
+          />
+          <Button
+            type="button"
+            tone="ghost"
+            size="md"
+            className="cm-touch"
+            disabled={busy !== null}
+            onClick={() => onCancel(state.listing.listingId)}
+          >
+            {busy === "cancel" ? "CANCELLATION PENDING" : "CANCEL UNSOLD LISTING"}
+          </Button>
+        </>
+      ) : null}
+
+      {canPrice ? (
+        <label style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
+          <span style={listingLabelStyle}>EXACT PRICE · AVAX</span>
+          <input
+            type="text"
+            inputMode="decimal"
+            autoComplete="off"
+            spellCheck={false}
+            value={priceAvax}
+            disabled={busy !== null}
+            aria-invalid={priceAvax.length > 0 && !validPrice}
+            placeholder="2.40"
+            onChange={(event) => onPriceChange(event.currentTarget.value)}
+            style={{
+              minHeight: "var(--control-min-height)",
+              border: "var(--border-hairline-style)",
+              borderColor: priceAvax.length > 0 && !validPrice ? "var(--accent-blood-red)" : undefined,
+              background: "var(--surface-sunken)",
+              color: "var(--text-primary)",
+              fontFamily: "var(--type-data-family)",
+              fontSize: "var(--text-base)",
+              padding: "var(--space-3) var(--space-4)",
+            }}
+          />
+          <span style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)" }}>
+            Decimal text only, up to 18 places. The value is never converted through JavaScript floating point.
+          </span>
+        </label>
+      ) : null}
+
+      {state?.status === "approval_required" ? (
+        <Button type="button" tone="ghost" size="md" className="cm-touch" disabled={busy !== null} onClick={onApprove}>
+          {busy === "approval" ? "APPROVAL PENDING" : "1 · APPROVE MARKETPLACE"}
+        </Button>
+      ) : state?.status === "ready" ? (
+        <>
+          <ListingCopy
+            title={state.approval === "blanket" ? "BLANKET APPROVAL CONFIRMED" : "TOKEN APPROVAL CONFIRMED"}
+            body={state.approval === "blanket"
+              ? "The existing operator approval is accepted; no redundant approval transaction will be sent."
+              : "Approval is accepted. Listing remains a separate transaction."}
+          />
+          <Button type="button" tone="primary" size="md" className="cm-touch" disabled={busy !== null || !validPrice} onClick={onList}>
+            {busy === "listing" ? "LISTING PENDING" : "2 · LIST FOR EXACT PRICE"}
+          </Button>
+        </>
+      ) : null}
+    </section>
+  );
+}
+
+const listingLabelStyle = {
+  fontFamily: "var(--type-label-family)",
+  fontSize: "var(--text-2xs)",
+  letterSpacing: "var(--tracking-widest)",
+  color: "var(--text-secondary)",
+} as const;
+
+function ListingCopy({ title, body, alert = false }: { title: string; body: string; alert?: boolean }) {
+  return (
+    <div role={alert ? "alert" : undefined} style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
+      <span style={{ ...listingLabelStyle, color: alert ? "var(--accent-blood-red)" : "var(--text-primary)" }}>{title}</span>
+      <span style={{ fontSize: "var(--text-sm)", color: "var(--text-muted)", overflowWrap: "anywhere" }}>{body}</span>
+    </div>
+  );
+}
+
+function listingStateLabel(state: ModuleListingStateView | null): string {
+  switch (state?.status) {
+    case "approval_required": return "APPROVAL REQUIRED";
+    case "ready": return "READY TO LIST";
+    case "listed": return "LISTED";
+    case "stale_listing": return "STALE LISTING";
+    case "equipped": return "EQUIPPED";
+    case "deal_rules_active": return "IN DEAL";
+    case "deployment_unavailable": return "NO DEPLOYMENT";
+    case "chain_unavailable": return "CHAIN UNAVAILABLE";
+    case "missing_or_burned": return "MISSING";
+    case "not_owner": return "NOT OWNER";
+    case "ineligible": return "INELIGIBLE";
+    default: return "VERIFYING";
+  }
+}
+
+function listingIneligibleCopy(reason: ModuleListingIneligibleReason): string {
+  switch (reason) {
+    case "soulbound": return "Soulbound standing badges are non-transferable and cannot enter the market.";
+    case "revoked": return "The issuer revoked this module, so it cannot enter a new official marketplace sale.";
+    case "incompatible": return "This token does not match the reviewed CabalMesh module schema, slot, and effect rules.";
+    case "marketplace_disabled": return "The canonical collection currently marks this token as marketplace-ineligible.";
+  }
+}
+
+function listingOperationCopy(action: ModuleListingActionView | null): { title: string; body: string } | null {
+  switch (action?.operation) {
+    case "approval_confirmed":
+      return { title: "APPROVAL CONFIRMED", body: `Accepted chain state confirmed marketplace approval${action.txHash ? ` in ${action.txHash}` : ""}.` };
+    case "listing_confirmed":
+      return { title: "LISTING CONFIRMED", body: `Accepted chain state confirmed the exact token and price${action.txHash ? ` in ${action.txHash}` : ""}.` };
+    case "listing_cancelled":
+      return { title: "CANCELLATION CONFIRMED", body: `The active listing is gone from accepted state${action.txHash ? ` after ${action.txHash}` : ""}. This module can be equipped or listed again.` };
+    case "deal_rules_active":
+      return { title: "DEAL RULES TOOK OVER", body: "A buyer paid before cancellation confirmed. The listing was not cancelled." };
+    default:
+      return null;
+  }
+}
+
+export function isExactPositiveAvax(value: string): boolean {
+  if (!/^[0-9]+(?:\.[0-9]{1,18})?$/.test(value)) return false;
+  return value.replace(".", "").split("").some((digit) => digit !== "0");
 }
 
 function DetailField({ label, value }: { label: string; value: string }) {

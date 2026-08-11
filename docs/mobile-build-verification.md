@@ -1391,3 +1391,38 @@ voucher fallback.
 Known build warnings remain unchanged: the unresolved `glitch.png` runtime
 texture, the `.app` bundle-identifier advisory, duplicate Android INTERNET
 permission, Java 8 source/target deprecation, and existing dead-code warnings.
+
+---
+
+## Unequipped module seller listing — **GO, release tuple unavailable** (2026-08-12, intent-market ticket 11)
+
+VAULT module detail now derives listing eligibility from accepted canonical
+collection and marketplace state. Exact AVAX text remains exact wei across IPC;
+token approval, listing, and cancellation have independent pending and confirmed
+states; blanket approval skips only the redundant approval transaction. A live
+listing is visible in MARKET only after ownership and eligibility are rechecked.
+An unsold cancellation returns the module to listable/equippable state, while
+marketplace custody after payment presents the deal release/refund rules and
+refuses seller cancellation.
+
+The reviewed Fuji module collection and marketplace replacement are still not
+published as a release tuple, so the production listing controls fail closed as
+`DEPLOYMENT UNAVAILABLE`. Browser integration uses the same IPC shapes with
+dynamic accepted-state mocks to exercise the complete seller lifecycle without
+substituting the legacy voucher market.
+
+| Gate | Result |
+|---|---|
+| Browser integration: unequip → approve → exact list → MARKET → cancel → re-equip; blanket approval + paid deal; rejected transaction refresh | ✅ 3 Playwright flows |
+| Exact price, lossless IDs, owner/equipped/legacy/soulbound/revoked/stale/deal classifiers and IPC snapshots | ✅ 17 module unit tests; 25 IPC tests |
+| Solidity owner, approval, blanket, duplicate, cancel, cancelled-buy, paid-deal and verified module lifecycle | ✅ 96 tests |
+| `cargo test --workspace`, including 138 app tests, relay reservation, and 9 BLE loopback tests | ✅ |
+| TypeScript + Vite production build; generated TypeScript bindings | ✅ |
+| Workspace Clippy | ✅; existing warnings only |
+| Desktop debug application | ✅ `src-tauri/target/debug/cabalmesh` |
+| iOS 17.5 arm64 simulator, clean unsigned debug bundle | ✅ `src-tauri/gen/apple/build/arm64-sim/CabalMesh.app` |
+| Android arm64 debug APK, JDK 21 + NDK 27 | ✅ `src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk` |
+
+Known build warnings remain unchanged: unresolved `glitch.png`, the `.app`
+bundle-identifier advisory, duplicate Android INTERNET permission, Java 8
+source/target deprecation, and existing dead-code/unused-mut warnings.

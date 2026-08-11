@@ -493,6 +493,40 @@ describe("CabalMeshModules", function () {
       expect(await modules.equippedBy(tokenId)).to.equal(buyer.address);
     });
 
+    it("supports the verified unequip, list, cancel, and re-equip lifecycle", async function () {
+      const { modules, minter, owner } = await deployFixture();
+      const tokenId = await mint(modules, minter, owner.address);
+      const Marketplace = await ethers.getContractFactory("Marketplace");
+      const marketplace = await Marketplace.deploy(await modules.getAddress(), 3 * 24 * 60 * 60);
+      await marketplace.waitForDeployment();
+
+      await modules.connect(owner).equip(tokenId);
+      await expect(modules.connect(owner).unequip(tokenId))
+        .to.emit(modules, "ModuleUnequipped")
+        .withArgs(tokenId, owner.address, Slot.Radio);
+      expect(await modules.equippedBy(tokenId)).to.equal(ethers.ZeroAddress);
+
+      await modules.connect(owner).approve(await marketplace.getAddress(), tokenId);
+      await expect(
+        marketplace.connect(owner).createListingFor(
+          await modules.getAddress(),
+          "Canonical CabalMesh module",
+          ethers.parseEther("2.40"),
+          tokenId,
+        ),
+      ).to.emit(marketplace, "ListingCreated");
+      expect(await marketplace.activeListingOf(await modules.getAddress(), tokenId)).to.equal(1n);
+      expect(await modules.ownerOf(tokenId)).to.equal(owner.address);
+
+      await expect(marketplace.connect(owner).cancelListing(1n))
+        .to.emit(marketplace, "ListingCancelled")
+        .withArgs(1n, owner.address, tokenId);
+      expect(await marketplace.activeListingOf(await modules.getAddress(), tokenId)).to.equal(0n);
+      await expect(modules.connect(owner).equip(tokenId))
+        .to.emit(modules, "ModuleEquipped")
+        .withArgs(tokenId, owner.address, Slot.Radio);
+    });
+
     it("does not strand an already-funded deal if a module is revoked in escrow", async function () {
       const { modules, admin, minter, owner, buyer } = await deployFixture();
       const tokenId = await mint(modules, minter, owner.address);

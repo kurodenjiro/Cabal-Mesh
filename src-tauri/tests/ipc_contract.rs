@@ -34,8 +34,10 @@ use cabalmesh_lib::matcher::MatchResult;
 use cabalmesh_lib::mesh::{MeshEvent, PrivacyIntent};
 use cabalmesh_lib::zk_handler::{ProofRequest, ZKProof};
 use cabalmesh_lib::commands::{
-    ModuleAssetClass, ModuleEffectType, ModuleMarketCatalog, ModuleMarketListing,
-    ModuleMarketStatus, ModuleRarity, ModuleSlot, ModuleView, SellerStandingView,
+    ModuleAssetClass, ModuleEffectType, ModuleListingActionView,
+    ModuleListingOperationView, ModuleListingStateView, ModuleMarketCatalog,
+    ModuleMarketListing, ModuleMarketStatus, ModuleRarity, ModuleSlot, ModuleView,
+    OwnedModuleListingView, SellerStandingView,
 };
 use chrono::{TimeZone, Utc};
 use serde::Serialize;
@@ -198,6 +200,34 @@ fn module_market_catalog_shape() {
         stale_listings: 2,
         malformed_metadata: 1,
     }));
+}
+
+#[test]
+fn module_listing_action_shape() {
+    insta::assert_snapshot!(shape(&vec![
+        ModuleListingActionView {
+            state: ModuleListingStateView::Listed {
+                verified_block: "42113010".into(),
+                listing: OwnedModuleListingView {
+                    listing_id: "900719925474099312346".into(),
+                    token_id: "900719925474099312345".into(),
+                    collection: "0x00000000000000000000000000000000000000a7".into(),
+                    seller: "0x00000000000000000000000000000000000000b8".into(),
+                    price_wei: "2400000000000000000".into(),
+                    price_avax: "2.40".into(),
+                },
+            },
+            operation: ModuleListingOperationView::ListingConfirmed,
+            tx_hash: Some(format!("0x{}", "ab".repeat(32))),
+        },
+        ModuleListingActionView {
+            state: ModuleListingStateView::DealRulesActive {
+                verified_block: "42113011".into(),
+            },
+            operation: ModuleListingOperationView::DealRulesActive,
+            tx_hash: None,
+        },
+    ]));
 }
 
 // ---------------------------------------------------------------------------
@@ -435,8 +465,11 @@ fn bootstrap_status_shape() {
 fn command_inventory() {
     let mut commands = vec![
         "ble_status",
+        "approve_module_listing",
         "broadcast_intent",
+        "cancel_module_listing",
         "cancel_intent",
+        "create_module_listing",
         "enter_mesh",
         "intent_detail",
         "intent_form_options",
@@ -445,6 +478,7 @@ fn command_inventory() {
         "list_nearby_nodes",
         "market_modules",
         "mesh_snapshot",
+        "module_listing_status",
         "module_loadout",
         "preview_intent",
         "profile_summary",
@@ -464,6 +498,6 @@ fn command_inventory() {
         "unequip_module",
     ];
     commands.sort_unstable();
-    assert_eq!(commands.len(), 28, "command count changed");
+    assert_eq!(commands.len(), 32, "command count changed");
     insta::assert_snapshot!(commands.join("\n"));
 }

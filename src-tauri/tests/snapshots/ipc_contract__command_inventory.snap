@@ -2,9 +2,12 @@
 source: tests/ipc_contract.rs
 expression: "commands.join(\"\\n\")"
 ---
+approve_module_listing
 ble_status
 broadcast_intent
 cancel_intent
+cancel_module_listing
+create_module_listing
 enter_mesh
 equip_module
 intent_affordability
@@ -15,6 +18,7 @@ list_intents
 list_nearby_nodes
 market_modules
 mesh_snapshot
+module_listing_status
 module_loadout
 preview_intent
 profile_summary

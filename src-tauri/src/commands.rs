@@ -2551,6 +2551,110 @@ pub struct ModuleMarketCatalog {
     pub malformed_metadata: u32,
 }
 
+/// Approval already accepted by the canonical module collection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "snake_case")]
+pub enum ModuleListingApprovalView {
+    Token,
+    Blanket,
+}
+
+/// Why an owned token cannot enter the canonical module market.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "snake_case")]
+pub enum ModuleListingIneligibleReason {
+    Soulbound,
+    Revoked,
+    Incompatible,
+    MarketplaceDisabled,
+}
+
+/// One seller-owned listing, preserving identifiers and price as decimal text.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "camelCase")]
+pub struct OwnedModuleListingView {
+    pub listing_id: String,
+    pub token_id: String,
+    pub collection: String,
+    pub seller: String,
+    pub price_wei: String,
+    pub price_avax: String,
+}
+
+/// Accepted state that controls every listing affordance in module detail.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(
+    tag = "status",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum ModuleListingStateView {
+    DeploymentUnavailable,
+    ChainUnavailable,
+    MissingOrBurned {
+        verified_block: String,
+    },
+    NotOwner {
+        verified_block: String,
+        owner: String,
+    },
+    Equipped {
+        verified_block: String,
+        slot: ModuleSlot,
+    },
+    Ineligible {
+        verified_block: String,
+        reason: ModuleListingIneligibleReason,
+    },
+    ApprovalRequired {
+        verified_block: String,
+    },
+    Ready {
+        verified_block: String,
+        approval: ModuleListingApprovalView,
+    },
+    Listed {
+        verified_block: String,
+        listing: OwnedModuleListingView,
+    },
+    /// The duplicate guard still points at this listing, but current token
+    /// state no longer makes it buyer-visible. Its seller may still withdraw.
+    StaleListing {
+        verified_block: String,
+        listing: OwnedModuleListingView,
+    },
+    /// A buyer has already atomically paid and moved the token into escrow.
+    /// Listing cancellation is over; release/refund rules now govern it.
+    DealRulesActive {
+        verified_block: String,
+    },
+}
+
+/// Mutation claim whose effect was observed again at an accepted chain head.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "snake_case")]
+pub enum ModuleListingOperationView {
+    None,
+    ApprovalConfirmed,
+    ListingConfirmed,
+    ListingCancelled,
+    DealRulesActive,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "camelCase")]
+pub struct ModuleListingActionView {
+    pub state: ModuleListingStateView,
+    pub operation: ModuleListingOperationView,
+    pub tx_hash: Option<String>,
+}
+
 /// Whether a node loadout is live chain evidence or display-only history.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
@@ -2846,6 +2950,252 @@ fn module_market_catalog_view(
     }
 }
 
+fn parse_avax_price_to_wei(value: &str) -> Result<alloy::primitives::U256, AppError> {
+    use alloy::primitives::U256;
+
+    let malformed = || AppError::InvalidIntent {
+        field: "price_avax",
+        reason: crate::error::InvalidReason::Malformed,
+    };
+    if value.is_empty()
+        || value.len() > 97
+        || !value.bytes().all(|byte| byte.is_ascii_digit() || byte == b'.')
+    {
+        return Err(malformed());
+    }
+    let mut parts = value.split('.');
+    let whole = parts.next().ok_or_else(malformed)?;
+    let fractional = parts.next();
+    if parts.next().is_some()
+        || whole.is_empty()
+        || fractional.is_some_and(str::is_empty)
+        || fractional.is_some_and(|digits| digits.len() > 18)
+    {
+        return Err(malformed());
+    }
+
+    let fractional = fractional.unwrap_or_default();
+    let mut wei_text = String::with_capacity(whole.len() + 18);
+    wei_text.push_str(whole);
+    wei_text.push_str(fractional);
+    wei_text.extend(std::iter::repeat_n('0', 18 - fractional.len()));
+    let wei = wei_text.parse::<U256>().map_err(|_| AppError::InvalidIntent {
+        field: "price_avax",
+        reason: crate::error::InvalidReason::OutOfRange,
+    })?;
+    if wei == U256::ZERO {
+        return Err(AppError::InvalidIntent {
+            field: "price_avax",
+            reason: crate::error::InvalidReason::OutOfRange,
+        });
+    }
+    Ok(wei)
+}
+
+fn owned_module_listing_view(
+    record: &crate::blockchain_bridge::OwnedModuleListingChainRecord,
+) -> Result<OwnedModuleListingView, ()> {
+    use alloy::primitives::{Address, U256};
+
+    let listing_id = record.listing_id.parse::<U256>().map_err(|_| ())?;
+    let token_id = record.token_id.parse::<U256>().map_err(|_| ())?;
+    let price_wei = record.price_wei.parse::<U256>().map_err(|_| ())?;
+    let seller = record.seller.parse::<Address>().map_err(|_| ())?;
+    let collection = record.collection.parse::<Address>().map_err(|_| ())?;
+    if listing_id == U256::ZERO
+        || token_id == U256::ZERO
+        || price_wei == U256::ZERO
+        || seller == Address::ZERO
+        || collection == Address::ZERO
+    {
+        return Err(());
+    }
+
+    Ok(OwnedModuleListingView {
+        listing_id: listing_id.to_string(),
+        token_id: token_id.to_string(),
+        collection: collection.to_string(),
+        seller: seller.to_string(),
+        price_wei: price_wei.to_string(),
+        price_avax: format_avax_for_market(price_wei),
+    })
+}
+
+fn module_listing_state_view(
+    raw: &crate::blockchain_bridge::ModuleListingChainState,
+    seller: alloy::primitives::Address,
+    marketplace: alloy::primitives::Address,
+) -> Result<ModuleListingStateView, ()> {
+    use crate::blockchain_bridge::ModuleListingApprovalChain;
+    use alloy::primitives::{Address, U256};
+
+    let verified_block = raw.verified_block.to_string();
+    let expected_token = raw.token_id.parse::<U256>().map_err(|_| ())?;
+    if expected_token == U256::ZERO {
+        return Err(());
+    }
+    let listing = raw
+        .active_listing
+        .as_ref()
+        .map(owned_module_listing_view)
+        .transpose()?;
+    let listing_belongs_to_seller = listing
+        .as_ref()
+        .is_some_and(|listing| listing.seller.parse::<Address>().ok() == Some(seller));
+
+    let owner = raw
+        .owner
+        .as_deref()
+        .map(str::parse::<Address>)
+        .transpose()
+        .map_err(|_| ())?;
+    if owner == Some(marketplace) && listing.is_none() {
+        return Ok(ModuleListingStateView::DealRulesActive { verified_block });
+    }
+    let Some(owner) = owner else {
+        return Ok(match listing {
+            Some(listing) if listing_belongs_to_seller => ModuleListingStateView::StaleListing {
+                verified_block,
+                listing,
+            },
+            _ => ModuleListingStateView::MissingOrBurned { verified_block },
+        });
+    };
+    if owner != seller {
+        return Ok(match listing {
+            Some(listing) if listing.seller.parse::<Address>().ok() == Some(seller) => {
+                ModuleListingStateView::StaleListing {
+                    verified_block,
+                    listing,
+                }
+            }
+            _ => ModuleListingStateView::NotOwner {
+                verified_block,
+                owner: owner.to_string(),
+            },
+        });
+    }
+
+    let Some(record) = raw.module.as_ref() else {
+        return Ok(match listing {
+            Some(listing) if listing_belongs_to_seller => ModuleListingStateView::StaleListing {
+                verified_block,
+                listing,
+            },
+            _ => ModuleListingStateView::Ineligible {
+                verified_block,
+                reason: ModuleListingIneligibleReason::Incompatible,
+            },
+        });
+    };
+    let record_owner = record.owner.parse::<Address>().map_err(|_| ())?;
+    let record_token = record.token_id.parse::<U256>().map_err(|_| ())?;
+    let compatible = record_owner == owner
+        && record_token == expected_token
+        && module_view(record.clone())
+            .is_ok_and(|module| module.asset_class == ModuleAssetClass::Module && module.slot != ModuleSlot::None);
+    let ineligible = if record.soulbound {
+        Some(ModuleListingIneligibleReason::Soulbound)
+    } else if record.revoked {
+        Some(ModuleListingIneligibleReason::Revoked)
+    } else if !compatible {
+        Some(ModuleListingIneligibleReason::Incompatible)
+    } else if !raw.marketplace_eligible {
+        Some(ModuleListingIneligibleReason::MarketplaceDisabled)
+    } else {
+        None
+    };
+    let equipped = raw.equipped_by.is_some();
+    let approved = match raw.approval {
+        ModuleListingApprovalChain::Required => None,
+        ModuleListingApprovalChain::Token => Some(ModuleListingApprovalView::Token),
+        ModuleListingApprovalChain::Blanket => Some(ModuleListingApprovalView::Blanket),
+    };
+
+    if let Some(listing) = listing {
+        if !listing_belongs_to_seller {
+            return Ok(ModuleListingStateView::Ineligible {
+                verified_block,
+                reason: ModuleListingIneligibleReason::Incompatible,
+            });
+        }
+        let live = listing.seller.parse::<Address>().ok() == Some(seller)
+            && listing.collection.parse::<Address>().ok()
+                == record.collection.parse::<Address>().ok()
+            && listing.token_id.parse::<U256>().ok() == Some(expected_token)
+            && ineligible.is_none()
+            && !equipped
+            && approved.is_some();
+        return Ok(if live {
+            ModuleListingStateView::Listed {
+                verified_block,
+                listing,
+            }
+        } else {
+            ModuleListingStateView::StaleListing {
+                verified_block,
+                listing,
+            }
+        });
+    }
+    if let Some(reason) = ineligible {
+        return Ok(ModuleListingStateView::Ineligible {
+            verified_block,
+            reason,
+        });
+    }
+    if equipped {
+        let slot = match record.slot {
+            1 => ModuleSlot::Radio,
+            2 => ModuleSlot::Crypto,
+            3 => ModuleSlot::Power,
+            _ => return Err(()),
+        };
+        return Ok(ModuleListingStateView::Equipped {
+            verified_block,
+            slot,
+        });
+    }
+    match approved {
+        Some(approval) => Ok(ModuleListingStateView::Ready {
+            verified_block,
+            approval,
+        }),
+        None => Ok(ModuleListingStateView::ApprovalRequired { verified_block }),
+    }
+}
+
+fn listing_action_view(
+    outcome: crate::blockchain_bridge::ModuleListingMutationOutcome,
+    seller: alloy::primitives::Address,
+    marketplace: alloy::primitives::Address,
+) -> Result<ModuleListingActionView, AppError> {
+    use crate::blockchain_bridge::ModuleListingMutationKind;
+
+    let state = module_listing_state_view(&outcome.state, seller, marketplace)
+        .map_err(|()| AppError::Internal)?;
+    let operation = match outcome.kind {
+        ModuleListingMutationKind::NoChange => ModuleListingOperationView::None,
+        ModuleListingMutationKind::ApprovalConfirmed => {
+            ModuleListingOperationView::ApprovalConfirmed
+        }
+        ModuleListingMutationKind::ListingConfirmed => {
+            ModuleListingOperationView::ListingConfirmed
+        }
+        ModuleListingMutationKind::ListingCancelled => {
+            ModuleListingOperationView::ListingCancelled
+        }
+        ModuleListingMutationKind::DealRulesActive => {
+            ModuleListingOperationView::DealRulesActive
+        }
+    };
+    Ok(ModuleListingActionView {
+        state,
+        operation,
+        tx_hash: outcome.tx_hash,
+    })
+}
+
 fn empty_loadout(status: LoadoutVerificationStatus) -> NodeLoadout {
     NodeLoadout {
         status,
@@ -3028,6 +3378,160 @@ pub async fn market_modules(
     Ok(module_market_catalog_view(snapshot, &standing))
 }
 
+/// Current seller-side state for one canonical module token.
+///
+/// Deployment and RPC absence are values because the detail screen must be
+/// able to explain why selling is unavailable without parsing transport copy.
+#[tauri::command]
+pub async fn module_listing_status(
+    token_id: String,
+    state: State<'_, AppState>,
+) -> Result<ModuleListingActionView, AppError> {
+    let token_id = parse_module_token_id(&token_id)?;
+    let services = state.services()?;
+    let writer = {
+        let bridge = services.bridge.lock().await;
+        bridge.module_market_writer()
+    };
+    let Some(writer) = writer.map_err(|_| AppError::Chain { retryable: false })? else {
+        return Ok(ModuleListingActionView {
+            state: ModuleListingStateView::DeploymentUnavailable,
+            operation: ModuleListingOperationView::None,
+            tx_hash: None,
+        });
+    };
+    let seller = writer.seller();
+    let marketplace = writer.marketplace();
+    let raw = match tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        writer.listing_state(token_id),
+    )
+    .await
+    {
+        Ok(Ok(raw)) => raw,
+        Ok(Err(error)) => {
+            tracing::warn!(
+                target: "cabalmesh::module_listing",
+                error_kind = %std::any::type_name_of_val(error.as_ref()),
+                "module listing status refresh failed"
+            );
+            return Ok(ModuleListingActionView {
+                state: ModuleListingStateView::ChainUnavailable,
+                operation: ModuleListingOperationView::None,
+                tx_hash: None,
+            });
+        }
+        Err(_) => {
+            tracing::warn!(target: "cabalmesh::module_listing", "module listing status refresh timed out");
+            return Ok(ModuleListingActionView {
+                state: ModuleListingStateView::ChainUnavailable,
+                operation: ModuleListingOperationView::None,
+                tx_hash: None,
+            });
+        }
+    };
+    let listing_state = module_listing_state_view(&raw, seller, marketplace)
+        .map_err(|()| AppError::Internal)?;
+    Ok(ModuleListingActionView {
+        state: listing_state,
+        operation: ModuleListingOperationView::None,
+        tx_hash: None,
+    })
+}
+
+/// Grants only the token-specific marketplace approval when one is needed.
+/// Existing blanket or token approval is returned as a no-op.
+#[tauri::command]
+pub async fn approve_module_listing(
+    token_id: String,
+    state: State<'_, AppState>,
+) -> Result<ModuleListingActionView, AppError> {
+    let token_id = parse_module_token_id(&token_id)?;
+    let services = state.services()?;
+    let writer = {
+        let bridge = services.bridge.lock().await;
+        bridge.module_market_writer()
+    }
+    .map_err(|_| AppError::Chain { retryable: false })?
+    .ok_or(AppError::Chain { retryable: false })?;
+    let seller = writer.seller();
+    let marketplace = writer.marketplace();
+    let outcome = writer.approve_module(token_id).await.map_err(|error| {
+        tracing::warn!(
+            target: "cabalmesh::module_listing",
+            error_kind = %std::any::type_name_of_val(error.as_ref()),
+            "module approval was not accepted"
+        );
+        AppError::Chain { retryable: true }
+    })?;
+    listing_action_view(outcome, seller, marketplace)
+}
+
+/// Creates one exact-price listing after approval has been accepted.
+#[tauri::command]
+pub async fn create_module_listing(
+    token_id: String,
+    price_avax: String,
+    state: State<'_, AppState>,
+) -> Result<ModuleListingActionView, AppError> {
+    let token_id = parse_module_token_id(&token_id)?;
+    let price_wei = parse_avax_price_to_wei(&price_avax)?;
+    let services = state.services()?;
+    let writer = {
+        let bridge = services.bridge.lock().await;
+        bridge.module_market_writer()
+    }
+    .map_err(|_| AppError::Chain { retryable: false })?
+    .ok_or(AppError::Chain { retryable: false })?;
+    let seller = writer.seller();
+    let marketplace = writer.marketplace();
+    let outcome = writer
+        .create_listing(token_id, price_wei)
+        .await
+        .map_err(|error| {
+            tracing::warn!(
+                target: "cabalmesh::module_listing",
+                error_kind = %std::any::type_name_of_val(error.as_ref()),
+                "module listing was not accepted"
+            );
+            AppError::Chain { retryable: true }
+        })?;
+    listing_action_view(outcome, seller, marketplace)
+}
+
+/// Withdraws one still-live seller listing. If a buyer has already paid, the
+/// response changes to `deal_rules_active`; it never claims cancellation.
+#[tauri::command]
+pub async fn cancel_module_listing(
+    token_id: String,
+    listing_id: String,
+    state: State<'_, AppState>,
+) -> Result<ModuleListingActionView, AppError> {
+    let token_id = parse_module_token_id(&token_id)?;
+    let listing_id = parse_positive_u256(&listing_id, "listing_id")?;
+    let services = state.services()?;
+    let writer = {
+        let bridge = services.bridge.lock().await;
+        bridge.module_market_writer()
+    }
+    .map_err(|_| AppError::Chain { retryable: false })?
+    .ok_or(AppError::Chain { retryable: false })?;
+    let seller = writer.seller();
+    let marketplace = writer.marketplace();
+    let outcome = writer
+        .cancel_listing(token_id, listing_id)
+        .await
+        .map_err(|error| {
+            tracing::warn!(
+                target: "cabalmesh::module_listing",
+                error_kind = %std::any::type_name_of_val(error.as_ref()),
+                "module listing cancellation was not accepted"
+            );
+            AppError::Chain { retryable: true }
+        })?;
+    listing_action_view(outcome, seller, marketplace)
+}
+
 /// The primary node operator's loadout, explicitly classified as verified,
 /// cached, or unavailable.
 #[tauri::command]
@@ -3068,19 +3572,26 @@ pub async fn module_loadout(state: State<'_, AppState>) -> Result<NodeLoadout, A
 }
 
 fn parse_module_token_id(token_id: &str) -> Result<alloy::primitives::U256, AppError> {
-    let token_id = token_id
+    parse_positive_u256(token_id, "token_id")
+}
+
+fn parse_positive_u256(
+    value: &str,
+    field: &'static str,
+) -> Result<alloy::primitives::U256, AppError> {
+    let value = value
         .parse::<alloy::primitives::U256>()
         .map_err(|_| AppError::InvalidIntent {
-            field: "token_id",
+            field,
             reason: crate::error::InvalidReason::Malformed,
         })?;
-    if token_id == alloy::primitives::U256::ZERO {
+    if value == alloy::primitives::U256::ZERO {
         return Err(AppError::InvalidIntent {
-            field: "token_id",
+            field,
             reason: crate::error::InvalidReason::OutOfRange,
         });
     }
-    Ok(token_id)
+    Ok(value)
 }
 
 /// Equips one owned canonical module. There is no offline optimistic mutation:
@@ -3139,8 +3650,9 @@ pub async fn unequip_module(
 mod module_tests {
     use super::*;
     use crate::blockchain_bridge::{
-        ModuleChainRecord, ModuleListingChainRecord, ModuleLoadoutChainSnapshot,
-        ModuleMarketChainSnapshot,
+        ModuleChainRecord, ModuleListingApprovalChain, ModuleListingChainRecord,
+        ModuleListingChainState, ModuleLoadoutChainSnapshot, ModuleMarketChainSnapshot,
+        OwnedModuleListingChainRecord,
     };
 
     fn bytes32(byte: &str) -> String {
@@ -3195,6 +3707,41 @@ mod module_tests {
             seller: module.owner.clone(),
             price_wei: "2400000000000000000".into(),
             module,
+        }
+    }
+
+    fn address(value: &str) -> alloy::primitives::Address {
+        value.parse().unwrap()
+    }
+
+    fn seller_address() -> alloy::primitives::Address {
+        address("0x00000000000000000000000000000000000000b8")
+    }
+
+    fn marketplace_address() -> alloy::primitives::Address {
+        address("0x00000000000000000000000000000000000000d0")
+    }
+
+    fn listing_state(approval: ModuleListingApprovalChain) -> ModuleListingChainState {
+        ModuleListingChainState {
+            verified_block: 42_113_009,
+            token_id: "7".into(),
+            owner: Some(seller_address().to_string()),
+            module: Some(radio_record()),
+            equipped_by: None,
+            marketplace_eligible: true,
+            approval,
+            active_listing: None,
+        }
+    }
+
+    fn owned_listing() -> OwnedModuleListingChainRecord {
+        OwnedModuleListingChainRecord {
+            listing_id: "900719925474099312346".into(),
+            seller: seller_address().to_string(),
+            price_wei: "2400000000000000000".into(),
+            token_id: "7".into(),
+            collection: "0x00000000000000000000000000000000000000a7".into(),
         }
     }
 
@@ -3389,6 +3936,180 @@ mod module_tests {
         assert_eq!(parse_module_token_id(large).unwrap().to_string(), large);
         assert!(parse_module_token_id("0").is_err());
         assert!(parse_module_token_id("7.5").is_err());
+    }
+
+    #[test]
+    fn avax_listing_price_is_parsed_without_floating_point() {
+        assert_eq!(
+            parse_avax_price_to_wei("2.40").unwrap().to_string(),
+            "2400000000000000000"
+        );
+        assert_eq!(
+            parse_avax_price_to_wei("0.000000000000000001")
+                .unwrap()
+                .to_string(),
+            "1"
+        );
+        assert_eq!(
+            parse_avax_price_to_wei("340282366920938463463.374607431768211457")
+                .unwrap()
+                .to_string(),
+            "340282366920938463463374607431768211457"
+        );
+    }
+
+    #[test]
+    fn malformed_zero_or_overprecision_listing_price_is_rejected() {
+        for value in [
+            "",
+            "0",
+            "0.0",
+            ".5",
+            "1.",
+            " 1",
+            "+1",
+            "-1",
+            "1e3",
+            "1,5",
+            "1.0000000000000000000",
+            "1.2.3",
+        ] {
+            assert!(parse_avax_price_to_wei(value).is_err(), "accepted {value:?}");
+        }
+        assert!(parse_avax_price_to_wei(
+            "115792089237316195423570985008687907853269984665640564039458"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn listing_approval_and_blanket_approval_are_distinct_accepted_states() {
+        let required = module_listing_state_view(
+            &listing_state(ModuleListingApprovalChain::Required),
+            seller_address(),
+            marketplace_address(),
+        )
+        .unwrap();
+        assert!(matches!(
+            required,
+            ModuleListingStateView::ApprovalRequired { .. }
+        ));
+
+        let token = module_listing_state_view(
+            &listing_state(ModuleListingApprovalChain::Token),
+            seller_address(),
+            marketplace_address(),
+        )
+        .unwrap();
+        assert!(matches!(
+            token,
+            ModuleListingStateView::Ready {
+                approval: ModuleListingApprovalView::Token,
+                ..
+            }
+        ));
+
+        let blanket = module_listing_state_view(
+            &listing_state(ModuleListingApprovalChain::Blanket),
+            seller_address(),
+            marketplace_address(),
+        )
+        .unwrap();
+        assert!(matches!(
+            blanket,
+            ModuleListingStateView::Ready {
+                approval: ModuleListingApprovalView::Blanket,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn equipped_soulbound_revoked_and_incompatible_tokens_cannot_list() {
+        let mut equipped = listing_state(ModuleListingApprovalChain::Token);
+        equipped.equipped_by = Some(seller_address().to_string());
+        assert!(matches!(
+            module_listing_state_view(&equipped, seller_address(), marketplace_address()).unwrap(),
+            ModuleListingStateView::Equipped {
+                slot: ModuleSlot::Radio,
+                ..
+            }
+        ));
+
+        let mut soulbound = listing_state(ModuleListingApprovalChain::Token);
+        soulbound.module.as_mut().unwrap().soulbound = true;
+        assert!(matches!(
+            module_listing_state_view(&soulbound, seller_address(), marketplace_address()).unwrap(),
+            ModuleListingStateView::Ineligible {
+                reason: ModuleListingIneligibleReason::Soulbound,
+                ..
+            }
+        ));
+
+        let mut revoked = listing_state(ModuleListingApprovalChain::Token);
+        revoked.module.as_mut().unwrap().revoked = true;
+        assert!(matches!(
+            module_listing_state_view(&revoked, seller_address(), marketplace_address()).unwrap(),
+            ModuleListingStateView::Ineligible {
+                reason: ModuleListingIneligibleReason::Revoked,
+                ..
+            }
+        ));
+
+        let mut legacy = listing_state(ModuleListingApprovalChain::Token);
+        legacy.module.as_mut().unwrap().schema_version = 0;
+        assert!(matches!(
+            module_listing_state_view(&legacy, seller_address(), marketplace_address()).unwrap(),
+            ModuleListingStateView::Ineligible {
+                reason: ModuleListingIneligibleReason::Incompatible,
+                ..
+            }
+        ));
+
+        let mut disabled = listing_state(ModuleListingApprovalChain::Token);
+        disabled.marketplace_eligible = false;
+        assert!(matches!(
+            module_listing_state_view(&disabled, seller_address(), marketplace_address()).unwrap(),
+            ModuleListingStateView::Ineligible {
+                reason: ModuleListingIneligibleReason::MarketplaceDisabled,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn live_listing_preserves_large_id_and_exact_price() {
+        let mut raw = listing_state(ModuleListingApprovalChain::Token);
+        raw.active_listing = Some(owned_listing());
+
+        let view = module_listing_state_view(&raw, seller_address(), marketplace_address()).unwrap();
+        let ModuleListingStateView::Listed { listing, .. } = view else {
+            panic!("expected confirmed listing")
+        };
+        assert_eq!(listing.listing_id, "900719925474099312346");
+        assert_eq!(listing.token_id, "7");
+        assert_eq!(listing.price_wei, "2400000000000000000");
+        assert_eq!(listing.price_avax, "2.40");
+    }
+
+    #[test]
+    fn stale_listing_and_paid_deal_never_look_listable() {
+        let mut stale = listing_state(ModuleListingApprovalChain::Token);
+        stale.active_listing = Some(owned_listing());
+        stale.owner = Some("0x00000000000000000000000000000000000000ee".into());
+        stale.module.as_mut().unwrap().owner = stale.owner.clone().unwrap();
+        assert!(matches!(
+            module_listing_state_view(&stale, seller_address(), marketplace_address()).unwrap(),
+            ModuleListingStateView::StaleListing { .. }
+        ));
+
+        let mut paid = listing_state(ModuleListingApprovalChain::Token);
+        paid.owner = Some(marketplace_address().to_string());
+        paid.module.as_mut().unwrap().owner = marketplace_address().to_string();
+        assert!(matches!(
+            module_listing_state_view(&paid, seller_address(), marketplace_address()).unwrap(),
+            ModuleListingStateView::DealRulesActive { .. }
+        ));
     }
 
     #[test]

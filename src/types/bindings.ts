@@ -294,6 +294,28 @@ export type ModuleInventory = { status: ModuleInventoryStatus, modules: Array<Mo
  */
 export type ModuleInventoryStatus = "available" | "unavailable";
 
+export type ModuleListingActionView = { state: ModuleListingStateView, operation: ModuleListingOperationView, txHash: string | null, };
+
+/**
+ * Approval already accepted by the canonical module collection.
+ */
+export type ModuleListingApprovalView = "token" | "blanket";
+
+/**
+ * Why an owned token cannot enter the canonical module market.
+ */
+export type ModuleListingIneligibleReason = "soulbound" | "revoked" | "incompatible" | "marketplace_disabled";
+
+/**
+ * Mutation claim whose effect was observed again at an accepted chain head.
+ */
+export type ModuleListingOperationView = "none" | "approval_confirmed" | "listing_confirmed" | "listing_cancelled" | "deal_rules_active";
+
+/**
+ * Accepted state that controls every listing affordance in module detail.
+ */
+export type ModuleListingStateView = { "status": "deployment_unavailable" } | { "status": "chain_unavailable" } | { "status": "missing_or_burned", verifiedBlock: string, } | { "status": "not_owner", verifiedBlock: string, owner: string, } | { "status": "equipped", verifiedBlock: string, slot: ModuleSlot, } | { "status": "ineligible", verifiedBlock: string, reason: ModuleListingIneligibleReason, } | { "status": "approval_required", verifiedBlock: string, } | { "status": "ready", verifiedBlock: string, approval: ModuleListingApprovalView, } | { "status": "listed", verifiedBlock: string, listing: OwnedModuleListingView, } | { "status": "stale_listing", verifiedBlock: string, listing: OwnedModuleListingView, } | { "status": "deal_rules_active", verifiedBlock: string, };
+
 /**
  * Accepted-head module catalog and the entries deliberately omitted from it.
  */
@@ -360,6 +382,11 @@ x: number, y: number,
  * Milliseconds, also seeded, so the field does not pulse in unison.
  */
 pulseMs: number, };
+
+/**
+ * One seller-owned listing, preserving identifiers and price as decimal text.
+ */
+export type OwnedModuleListingView = { listingId: string, tokenId: string, collection: string, seller: string, priceWei: string, priceAvax: string, };
 
 /**
  * What the profile screen shows.

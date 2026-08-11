@@ -10,7 +10,10 @@ use chrono::{DateTime, Utc};
 use alloy::{
     consensus::{BlockHeader as _, Transaction as _, TxEnvelope},
     eips::{eip2718::{Decodable2718, Encodable2718}, BlockId, BlockNumberOrTag},
-    network::{primitives::HeaderResponse as _, BlockResponse as _, EthereumWallet, TransactionBuilder},
+    network::{
+        primitives::HeaderResponse as _,
+        BlockResponse as _, EthereumWallet, TransactionBuilder,
+    },
     primitives::{keccak256, Address, Bytes, Signature, U256},
     providers::{Provider, ProviderBuilder},
     rpc::types::TransactionRequest,
@@ -65,6 +68,7 @@ sol! {
         function equippedBy(uint256 tokenId) external view returns (address operator);
         function ownerOf(uint256 tokenId) external view returns (address owner);
         function getApproved(uint256 tokenId) external view returns (address operator);
+        function approve(address operator, uint256 tokenId) external;
         function isApprovedForAll(address owner, address operator)
             external
             view
@@ -224,6 +228,66 @@ pub struct ModuleMarketReader {
     marketplace: Address,
     modules: Address,
     standing_release: Option<crate::network_config::StandingRelease>,
+}
+
+/// Current approval path for one canonical module token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModuleListingApprovalChain {
+    Required,
+    Token,
+    Blanket,
+}
+
+/// One live seller listing, without its untrusted description.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnedModuleListingChainRecord {
+    pub listing_id: String,
+    pub seller: String,
+    pub price_wei: String,
+    pub token_id: String,
+    pub collection: String,
+}
+
+/// Pinned accepted state used to decide whether a module can be listed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModuleListingChainState {
+    pub verified_block: u64,
+    pub token_id: String,
+    pub owner: Option<String>,
+    pub module: Option<ModuleChainRecord>,
+    pub equipped_by: Option<String>,
+    pub marketplace_eligible: bool,
+    pub approval: ModuleListingApprovalChain,
+    pub active_listing: Option<OwnedModuleListingChainRecord>,
+}
+
+/// Mutation whose claimed effect has already been re-read from accepted state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModuleListingMutationKind {
+    NoChange,
+    ApprovalConfirmed,
+    ListingConfirmed,
+    ListingCancelled,
+    DealRulesActive,
+}
+
+#[derive(Debug, Clone)]
+pub struct ModuleListingMutationOutcome {
+    pub kind: ModuleListingMutationKind,
+    pub tx_hash: Option<String>,
+    pub state: ModuleListingChainState,
+}
+
+/// Signing client detached from [`BlockchainBridge`]'s mutex before any RPC.
+///
+/// This type deliberately has no `Debug`: its signer must never enter a span
+/// or error message through derived formatting.
+#[derive(Clone)]
+pub struct ModuleMarketWriter {
+    rpc_url: String,
+    marketplace: Address,
+    modules: Address,
+    signer: PrivateKeySigner,
 }
 
 /// One accepted-head view of the operator wallet's complete on-chain loadout.
@@ -1407,6 +1471,26 @@ impl BlockchainBridge {
         })
     }
 
+    /// A detached signer for the same reviewed pair used by MARKET reads.
+    ///
+    /// Development module overrides and the legacy voucher marketplace cannot
+    /// satisfy this constructor. The signer is cloned while the bridge mutex
+    /// is held; callers release the guard before awaiting chain I/O.
+    pub fn module_market_writer(&self) -> Result<Option<ModuleMarketWriter>, Box<dyn Error>> {
+        let (Some(marketplace), Some(modules)) = (
+            self.module_marketplace_address,
+            self.module_market_modules_address,
+        ) else {
+            return Ok(None);
+        };
+        Ok(Some(ModuleMarketWriter {
+            rpc_url: self.rpc_url.clone(),
+            marketplace,
+            modules,
+            signer: self.primary_signer()?,
+        }))
+    }
+
     /// Reads every module currently owned by this bridge's primary wallet.
     ///
     /// Ownership comes from ERC-721 Enumerable at one accepted canonical head;
@@ -1585,8 +1669,24 @@ impl BlockchainBridge {
         let provider = ProviderBuilder::new()
             .wallet(signer)
             .connect_http(self.rpc_url.parse()?);
-        let contract = IModules::new(collection, provider);
+        let contract = IModules::new(collection, provider.clone());
+        let canonical_market = match (
+            self.module_marketplace_address,
+            self.module_market_modules_address,
+        ) {
+            (Some(marketplace), Some(modules)) if modules == collection => {
+                let market = IMarketplace::new(marketplace, provider);
+                if market.activeListingOf(collection, token_id).call().await? != U256::ZERO {
+                    return Err("listed module must be cancelled before equipping".into());
+                }
+                Some(market)
+            }
+            _ => None,
+        };
         let receipt = contract.equip(token_id).send().await?.get_receipt().await?;
+        if !receipt.status() {
+            return Err("module equip reverted".into());
+        }
         let loadout = self.get_module_loadout().await?;
         let token_id_text = token_id.to_string();
         if !loadout
@@ -1595,6 +1695,23 @@ impl BlockchainBridge {
             .any(|module| module.token_id == token_id_text)
         {
             return Err("module equip was not confirmed by accepted state".into());
+        }
+        if let Some(market) = canonical_market {
+            if market.activeListingOf(collection, token_id).call().await? != U256::ZERO {
+                let rollback = contract.unequip(token_id).send().await?.get_receipt().await?;
+                if !rollback.status() {
+                    return Err("listed module equip rollback was not confirmed".into());
+                }
+                let rolled_back = self.get_module_loadout().await?;
+                if rolled_back
+                    .modules
+                    .iter()
+                    .any(|module| module.token_id == token_id_text)
+                {
+                    return Err("listed module remained equipped after rollback".into());
+                }
+                return Err("module became listed while equip was confirming".into());
+            }
         }
 
         Ok(ModuleMutationOutcome {
@@ -1618,6 +1735,9 @@ impl BlockchainBridge {
             .connect_http(self.rpc_url.parse()?);
         let contract = IModules::new(collection, provider);
         let receipt = contract.unequip(token_id).send().await?.get_receipt().await?;
+        if !receipt.status() {
+            return Err("module unequip reverted".into());
+        }
         let loadout = self.get_module_loadout().await?;
         let token_id_text = token_id.to_string();
         if loadout
@@ -2000,6 +2120,11 @@ impl ModuleMarketReader {
                     .block(block)
                     .call()
                     .await?;
+                let equipped_by = modules
+                    .equippedBy(listing.tokenId)
+                    .block(block)
+                    .call()
+                    .await?;
                 let approved = modules
                     .getApproved(listing.tokenId)
                     .block(block)
@@ -2013,6 +2138,7 @@ impl ModuleMarketReader {
                 if soulbound
                     || revoked
                     || !eligible
+                    || equipped_by != Address::ZERO
                     || (approved != self.marketplace && !approved_for_all)
                 {
                     stale_listings = stale_listings.saturating_add(1);
@@ -2055,6 +2181,417 @@ impl ModuleMarketReader {
             stale_listings,
             malformed_listings,
         })
+    }
+}
+
+impl ModuleMarketWriter {
+    const MUTATION_TIMEOUT: Duration = Duration::from_secs(60);
+    const CANONICAL_DESCRIPTION: &'static str = "Canonical CabalMesh module";
+
+    #[must_use]
+    pub fn seller(&self) -> Address {
+        self.signer.address()
+    }
+
+    #[must_use]
+    pub const fn marketplace(&self) -> Address {
+        self.marketplace
+    }
+
+    /// Reads listing eligibility, custody, loadout, approval, and the duplicate
+    /// guard from one accepted block.
+    pub async fn listing_state(
+        &self,
+        token_id: U256,
+    ) -> Result<ModuleListingChainState, Box<dyn Error>> {
+        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        let marketplace = IMarketplace::new(self.marketplace, provider.clone());
+        let modules = IModules::new(self.modules, provider);
+        let verified_block = marketplace.provider().get_block_number().await?;
+        let block = BlockId::number(verified_block);
+
+        let active_id = marketplace
+            .activeListingOf(self.modules, token_id)
+            .block(block)
+            .call()
+            .await?;
+        let active_listing = if active_id == U256::ZERO {
+            None
+        } else {
+            let listing = marketplace.listings(active_id).block(block).call().await?;
+            if !listing.active
+                || listing.collection != self.modules
+                || listing.tokenId != token_id
+                || listing.seller == Address::ZERO
+                || listing.priceWei == U256::ZERO
+            {
+                return Err("module marketplace duplicate guard is inconsistent".into());
+            }
+            Some(OwnedModuleListingChainRecord {
+                listing_id: active_id.to_string(),
+                seller: listing.seller.to_string(),
+                price_wei: listing.priceWei.to_string(),
+                token_id: listing.tokenId.to_string(),
+                collection: listing.collection.to_string(),
+            })
+        };
+
+        let owner = match modules.ownerOf(token_id).block(block).call().await {
+            Ok(owner) => owner,
+            Err(error) if contract_call_reverted(&error) => {
+                return Ok(ModuleListingChainState {
+                    verified_block,
+                    token_id: token_id.to_string(),
+                    owner: None,
+                    module: None,
+                    equipped_by: None,
+                    marketplace_eligible: false,
+                    approval: ModuleListingApprovalChain::Required,
+                    active_listing,
+                });
+            }
+            Err(error) => return Err(Box::new(error)),
+        };
+
+        let data = modules.assetData(token_id).block(block).call().await?;
+        let soulbound = modules.locked(token_id).block(block).call().await?;
+        let revoked = modules.revoked(token_id).block(block).call().await?;
+        let marketplace_eligible = modules
+            .isMarketplaceEligible(token_id)
+            .block(block)
+            .call()
+            .await?;
+        let equipped_by = modules.equippedBy(token_id).block(block).call().await?;
+        let token_approval = modules.getApproved(token_id).block(block).call().await?;
+        let blanket_approval = modules
+            .isApprovedForAll(owner, self.marketplace)
+            .block(block)
+            .call()
+            .await?;
+        let approval = if blanket_approval {
+            ModuleListingApprovalChain::Blanket
+        } else if token_approval == self.marketplace {
+            ModuleListingApprovalChain::Token
+        } else {
+            ModuleListingApprovalChain::Required
+        };
+
+        Ok(ModuleListingChainState {
+            verified_block,
+            token_id: token_id.to_string(),
+            owner: Some(owner.to_string()),
+            module: Some(ModuleChainRecord {
+                token_id: token_id.to_string(),
+                collection: self.modules.to_string(),
+                owner: owner.to_string(),
+                module_id: format!("{:#x}", data.moduleId),
+                provenance_hash: format!("{:#x}", data.provenanceHash),
+                display_name: data.displayName,
+                asset_class: data.assetClass,
+                slot: data.slot,
+                rarity: data.rarity,
+                effect_type: data.effectType,
+                primary_effect_value: data.primaryEffectValue,
+                secondary_effect_value: data.secondaryEffectValue,
+                artwork_uri: data.artworkUri,
+                artwork_digest: format!("{:#x}", data.artworkDigest),
+                schema_version: data.schemaVersion,
+                minted_by: data.mintedBy.to_string(),
+                soulbound,
+                revoked,
+            }),
+            equipped_by: (equipped_by != Address::ZERO).then(|| equipped_by.to_string()),
+            marketplace_eligible,
+            approval,
+            active_listing,
+        })
+    }
+
+    pub async fn approve_module(
+        &self,
+        token_id: U256,
+    ) -> Result<ModuleListingMutationOutcome, Box<dyn Error>> {
+        let before = self.listing_state(token_id).await?;
+        if before.active_listing.is_some() {
+            return Ok(ModuleListingMutationOutcome {
+                kind: ModuleListingMutationKind::NoChange,
+                tx_hash: None,
+                state: before,
+            });
+        }
+        self.ensure_listable(&before)?;
+        if before.approval != ModuleListingApprovalChain::Required {
+            return Ok(ModuleListingMutationOutcome {
+                kind: ModuleListingMutationKind::NoChange,
+                tx_hash: None,
+                state: before,
+            });
+        }
+
+        let provider = ProviderBuilder::new()
+            .wallet(self.signer.clone())
+            .connect_http(self.rpc_url.parse()?);
+        let modules = IModules::new(self.modules, provider);
+        let receipt = timeout(Self::MUTATION_TIMEOUT, async {
+            let pending = modules
+                .approve(self.marketplace, token_id)
+                .send()
+                .await
+                .map_err(|error| error.to_string())?;
+            pending.get_receipt().await.map_err(|error| error.to_string())
+        })
+        .await;
+
+        let receipt = match receipt {
+            Ok(Ok(receipt)) if receipt.status() => Some(receipt),
+            _ => {
+                let after = self.listing_state(token_id).await?;
+                if after.active_listing.is_some() {
+                    return Ok(ModuleListingMutationOutcome {
+                        kind: ModuleListingMutationKind::NoChange,
+                        tx_hash: None,
+                        state: after,
+                    });
+                }
+                self.ensure_listable(&after)?;
+                if after.approval != ModuleListingApprovalChain::Required {
+                    return Ok(ModuleListingMutationOutcome {
+                        kind: ModuleListingMutationKind::ApprovalConfirmed,
+                        tx_hash: None,
+                        state: after,
+                    });
+                }
+                return Err("module approval was not confirmed".into());
+            }
+        };
+
+        let after = self.listing_state(token_id).await?;
+        self.ensure_listable(&after)?;
+        if after.approval == ModuleListingApprovalChain::Required {
+            return Err("accepted state did not confirm module approval".into());
+        }
+        Ok(ModuleListingMutationOutcome {
+            kind: ModuleListingMutationKind::ApprovalConfirmed,
+            tx_hash: receipt.map(|receipt| format!("{:?}", receipt.transaction_hash)),
+            state: after,
+        })
+    }
+
+    pub async fn create_listing(
+        &self,
+        token_id: U256,
+        price_wei: U256,
+    ) -> Result<ModuleListingMutationOutcome, Box<dyn Error>> {
+        if price_wei == U256::ZERO {
+            return Err("module listing price must be positive".into());
+        }
+        let before = self.listing_state(token_id).await?;
+        if before.active_listing.is_some() {
+            return Ok(ModuleListingMutationOutcome {
+                kind: ModuleListingMutationKind::NoChange,
+                tx_hash: None,
+                state: before,
+            });
+        }
+        self.ensure_listable(&before)?;
+        if before.approval == ModuleListingApprovalChain::Required {
+            return Err("module marketplace approval is required".into());
+        }
+
+        let provider = ProviderBuilder::new()
+            .wallet(self.signer.clone())
+            .connect_http(self.rpc_url.parse()?);
+        let marketplace = IMarketplace::new(self.marketplace, provider);
+        let receipt = timeout(Self::MUTATION_TIMEOUT, async {
+            let pending = marketplace
+                .createListingFor(
+                    self.modules,
+                    Self::CANONICAL_DESCRIPTION.to_owned(),
+                    price_wei,
+                    token_id,
+                )
+                .send()
+                .await
+                .map_err(|error| error.to_string())?;
+            pending.get_receipt().await.map_err(|error| error.to_string())
+        })
+        .await;
+
+        let receipt = match receipt {
+            Ok(Ok(receipt)) if receipt.status() => receipt,
+            _ => {
+                let refreshed = self.listing_state(token_id).await?;
+                if refreshed.active_listing.is_some() {
+                    return Ok(ModuleListingMutationOutcome {
+                        kind: ModuleListingMutationKind::NoChange,
+                        tx_hash: None,
+                        state: refreshed,
+                    });
+                }
+                if self.owner_is_marketplace(&refreshed) {
+                    return Ok(ModuleListingMutationOutcome {
+                        kind: ModuleListingMutationKind::DealRulesActive,
+                        tx_hash: None,
+                        state: refreshed,
+                    });
+                }
+                return Err("module listing was not confirmed".into());
+            }
+        };
+        let listing_id = receipt
+            .logs()
+            .iter()
+            .find_map(|log| log.log_decode::<IMarketplace::ListingCreated>().ok())
+            .map(|log| log.inner.data.id)
+            .ok_or("ListingCreated event not found in receipt")?;
+        let after = self.listing_state(token_id).await?;
+        if self.owner_is_marketplace(&after) && after.active_listing.is_none() {
+            return Ok(ModuleListingMutationOutcome {
+                kind: ModuleListingMutationKind::DealRulesActive,
+                tx_hash: Some(format!("{:?}", receipt.transaction_hash)),
+                state: after,
+            });
+        }
+        self.ensure_listable(&after)?;
+        let Some(listing) = after.active_listing.as_ref() else {
+            return Err("accepted state did not confirm an active module listing".into());
+        };
+        if listing.listing_id != listing_id.to_string()
+            || listing.price_wei != price_wei.to_string()
+            || listing.seller.parse::<Address>().ok() != Some(self.signer.address())
+        {
+            return Err("accepted module listing does not match the requested sale".into());
+        }
+
+        Ok(ModuleListingMutationOutcome {
+            kind: ModuleListingMutationKind::ListingConfirmed,
+            tx_hash: Some(format!("{:?}", receipt.transaction_hash)),
+            state: after,
+        })
+    }
+
+    pub async fn cancel_listing(
+        &self,
+        token_id: U256,
+        listing_id: U256,
+    ) -> Result<ModuleListingMutationOutcome, Box<dyn Error>> {
+        let before = self.listing_state(token_id).await?;
+        let Some(listing) = before.active_listing.as_ref() else {
+            return Ok(ModuleListingMutationOutcome {
+                kind: if self.owner_is_marketplace(&before) {
+                    ModuleListingMutationKind::DealRulesActive
+                } else {
+                    ModuleListingMutationKind::NoChange
+                },
+                tx_hash: None,
+                state: before,
+            });
+        };
+        if listing.seller.parse::<Address>().ok() != Some(self.signer.address()) {
+            return Err("only the current listing seller can cancel it".into());
+        }
+        if listing.listing_id != listing_id.to_string() {
+            return Ok(ModuleListingMutationOutcome {
+                kind: ModuleListingMutationKind::NoChange,
+                tx_hash: None,
+                state: before,
+            });
+        }
+
+        let provider = ProviderBuilder::new()
+            .wallet(self.signer.clone())
+            .connect_http(self.rpc_url.parse()?);
+        let marketplace = IMarketplace::new(self.marketplace, provider);
+        let receipt = timeout(Self::MUTATION_TIMEOUT, async {
+            let pending = marketplace
+                .cancelListing(listing_id)
+                .send()
+                .await
+                .map_err(|error| error.to_string())?;
+            pending.get_receipt().await.map_err(|error| error.to_string())
+        })
+        .await;
+
+        let receipt = match receipt {
+            Ok(Ok(receipt)) if receipt.status() => receipt,
+            _ => {
+                let refreshed = self.listing_state(token_id).await?;
+                if refreshed.active_listing.is_none() {
+                    let kind = if refreshed
+                        .owner
+                        .as_deref()
+                        .and_then(|owner| owner.parse::<Address>().ok())
+                        == Some(self.signer.address())
+                    {
+                        ModuleListingMutationKind::ListingCancelled
+                    } else {
+                        ModuleListingMutationKind::DealRulesActive
+                    };
+                    return Ok(ModuleListingMutationOutcome {
+                        kind,
+                        tx_hash: None,
+                        state: refreshed,
+                    });
+                }
+                return Err("module listing cancellation was not confirmed".into());
+            }
+        };
+        let after = self.listing_state(token_id).await?;
+        if after.active_listing.is_some() {
+            return Err("accepted state still reports an active module listing".into());
+        }
+        Ok(ModuleListingMutationOutcome {
+            kind: ModuleListingMutationKind::ListingCancelled,
+            tx_hash: Some(format!("{:?}", receipt.transaction_hash)),
+            state: after,
+        })
+    }
+
+    fn ensure_listable(&self, state: &ModuleListingChainState) -> Result<(), Box<dyn Error>> {
+        let owner = state
+            .owner
+            .as_deref()
+            .and_then(|owner| owner.parse::<Address>().ok())
+            .ok_or("module token does not exist")?;
+        if owner != self.signer.address() {
+            return Err("module is not owned by the current seller".into());
+        }
+        let module = state.module.as_ref().ok_or("module metadata is unavailable")?;
+        let canonical_effect = matches!(
+            (
+                module.slot,
+                module.effect_type,
+                module.primary_effect_value,
+                module.secondary_effect_value,
+            ),
+            (1, 1, 1..=10_000, 0)
+                | (2, 2, 1..=3, 0)
+                | (3, 3, 1..=32, 1..=1_048_576)
+        );
+        if module.token_id != state.token_id
+            || module.collection.parse::<Address>().ok() != Some(self.modules)
+            || module.owner.parse::<Address>().ok() != Some(owner)
+            || module.asset_class != 0
+            || module.schema_version != 1
+            || !canonical_effect
+            || module.soulbound
+            || module.revoked
+            || !state.marketplace_eligible
+        {
+            return Err("module is not marketplace eligible".into());
+        }
+        if state.equipped_by.is_some() {
+            return Err("equipped module must be unequipped before listing".into());
+        }
+        Ok(())
+    }
+
+    fn owner_is_marketplace(&self, state: &ModuleListingChainState) -> bool {
+        state
+            .owner
+            .as_deref()
+            .and_then(|owner| owner.parse::<Address>().ok())
+            == Some(self.marketplace)
     }
 }
 
