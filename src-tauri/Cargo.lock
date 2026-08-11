@@ -1647,6 +1647,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "cabal-relay-proof"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-signer",
+ "alloy-signer-local",
+ "alloy-sol-types",
+ "cabal-rewards",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "cabal-rewards"
 version = "0.1.0"
 dependencies = [
@@ -1692,6 +1704,7 @@ dependencies = [
  "cabal-ble-macos",
  "cabal-core",
  "cabal-intent-inference",
+ "cabal-relay-proof",
  "cabal-rewards",
  "cabal-store",
  "cabal-vault",

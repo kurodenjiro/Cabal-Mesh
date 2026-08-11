@@ -1,0 +1,19 @@
+[package]
+name = "cabal-relay-proof"
+version = "0.1.0"
+edition = "2021"
+description = "EIP-712 proof of requested third-party relay work for CabalMesh."
+publish = false
+
+[dependencies]
+alloy-primitives = { version = "1", default-features = false, features = ["std", "k256"] }
+alloy-sol-types = { version = "1", default-features = false, features = ["std"] }
+cabal-rewards = { path = "../cabal-rewards" }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+alloy-signer = { version = "1", default-features = false }
+alloy-signer-local = { version = "1", default-features = false }
+
+[lints]
+workspace = true

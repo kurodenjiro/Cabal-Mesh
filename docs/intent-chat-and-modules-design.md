@@ -283,3 +283,12 @@ need evidence that a genuine third party wanted the data — for example, counti
 a relay only when it carries both the sender's signature and the recipient's
 receipt. This is the hardest part technically and should be designed early
 rather than retrofitted.
+
+**Resolved 2026-08-12:** v1 requires an EIP-712 sender authorization, one signed
+contribution per ordered relay, and an acknowledgement from a distinct recipient
+wallet. Chain/contract domains, payload and route commitments, expiry, exact
+economics, atomic single-use identifiers, complete-intent delivery, and bounded
+gateway windows are fixed in the
+[genuine relay proof protocol](relay-proof-protocol.md). Same-wallet role reuse
+is rejected; distinct wallets controlled by one operator remain an explicit
+Sybil limitation rather than a solved identity problem.
