@@ -86,6 +86,10 @@ pub struct AssetListingView {
     pub price_wei: String,  // decimal wei string, same precision rule as CompressedAsset.amount
     pub price_avax: String, // formatted for display/prompting, e.g. "0.05"
     pub token_id: u64,
+    /// Which NFT contract the token belongs to. A token id alone stopped
+    /// identifying an asset once the Marketplace accepted more than one
+    /// collection, so anything resolving metadata needs this too.
+    pub collection: String,
 }
 
 /// A voucher NFT owned by a given wallet (used by the Redeem page).
@@ -112,6 +116,15 @@ pub struct DealView {
     pub amount_avax: String,
     pub status: String, // "active" | "released" | "refunded"
     pub role: String,   // "buyer" | "seller" (relative to the address queried)
+    pub collection: String,
+    /// Unix seconds after which anyone may release this deal to the seller.
+    /// The UI needs it to say how long a buyer's exclusive window has left,
+    /// rather than presenting an active deal as if it waits forever.
+    pub auto_release_at: u64,
+    /// Whether the buyer has consented to cancelling. A seller cannot refund
+    /// until they have, so this is the difference between a refund the seller
+    /// can act on and one they cannot.
+    pub refund_requested: bool,
 }
 
 /// A piece of content (e.g. a book page) committed to by its seller: a real
@@ -1010,6 +1023,7 @@ impl BlockchainBridge {
                 price_wei: listing.priceWei.to_string(),
                 price_avax: alloy::primitives::utils::format_ether(listing.priceWei),
                 token_id: listing.tokenId.to::<u64>(),
+                collection: listing.collection.to_string(),
             })
             .collect();
 
@@ -1027,9 +1041,9 @@ impl BlockchainBridge {
         let unsigned_provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
         let unsigned_contract = IMarketplace::new(marketplace_address, unsigned_provider);
 
-        // The Marketplace contract itself doesn't block a seller from buying their
-        // own listing — enforce it client-side so a "completed sale" always means
-        // a real second party paid for it, not the seller round-tripping funds.
+        // The contract rejects a seller buying their own listing, so this is
+        // not the safety check — it is the error message. Catching it here
+        // turns a raw revert into a sentence.
         let listing = unsigned_contract.listings(U256::from(listing_id)).call().await?;
         if listing.seller == signer.address() {
             return Err("You can't buy your own listing".into());
@@ -1085,7 +1099,25 @@ impl BlockchainBridge {
         Ok(TxResult::Confirmed { id: deal_id })
     }
 
+    /// Withdraws an unsold listing. Only the seller can, and only while it is
+    /// still active — once a buyer has paid, the deal rules take over.
+    pub async fn cancel_listing(&self, listing_id: u64) -> Result<String, Box<dyn Error>> {
+        let signer = self.primary_signer()?;
+        let marketplace_address = self.marketplace_address.ok_or("MARKETPLACE_CONTRACT_ADDRESS not configured")?;
+
+        let provider = ProviderBuilder::new().wallet(signer).connect_http(self.rpc_url.parse()?);
+        let contract = IMarketplace::new(marketplace_address, provider);
+
+        let receipt = contract.cancelListing(U256::from(listing_id)).send().await?.get_receipt().await?;
+        tracing::info!("✅ [Bridge] Listing {} cancelled. Tx: {:?}", listing_id, receipt.transaction_hash);
+        Ok(format!("{:?}", receipt.transaction_hash))
+    }
+
     /// Releases a deal: pays the seller and transfers the voucher to the buyer.
+    ///
+    /// The buyer can call this at any time. Anyone can once the deal's
+    /// `autoReleaseAt` has passed — that is what stops a buyer who walks away
+    /// from stranding the seller's voucher and payment in the contract.
     pub async fn release_deal(&self, deal_id: u64) -> Result<String, Box<dyn Error>> {
         let signer = self.primary_signer()?;
         let marketplace_address = self.marketplace_address.ok_or("MARKETPLACE_CONTRACT_ADDRESS not configured")?;
@@ -1098,7 +1130,25 @@ impl BlockchainBridge {
         Ok(format!("{:?}", receipt.transaction_hash))
     }
 
+    /// The buyer's consent to cancel a deal. Moves nothing on its own — it
+    /// only unlocks [`BlockchainBridge::refund_deal`] for the seller.
+    pub async fn request_refund(&self, deal_id: u64) -> Result<String, Box<dyn Error>> {
+        let signer = self.primary_signer()?;
+        let marketplace_address = self.marketplace_address.ok_or("MARKETPLACE_CONTRACT_ADDRESS not configured")?;
+
+        let provider = ProviderBuilder::new().wallet(signer).connect_http(self.rpc_url.parse()?);
+        let contract = IMarketplace::new(marketplace_address, provider);
+
+        let receipt = contract.requestRefund(U256::from(deal_id)).send().await?.get_receipt().await?;
+        tracing::info!("✅ [Bridge] Refund requested on deal {}. Tx: {:?}", deal_id, receipt.transaction_hash);
+        Ok(format!("{:?}", receipt.transaction_hash))
+    }
+
     /// Refunds a deal: returns AVAX to the buyer and the voucher to the seller.
+    ///
+    /// Callable by the seller, and only after the buyer has called
+    /// [`BlockchainBridge::request_refund`]. Cancelling a paid deal takes both
+    /// sides, so neither holds a unilateral option over the other.
     pub async fn refund_deal(&self, deal_id: u64) -> Result<String, Box<dyn Error>> {
         let signer = self.primary_signer()?;
         let marketplace_address = self.marketplace_address.ok_or("MARKETPLACE_CONTRACT_ADDRESS not configured")?;
@@ -1202,6 +1252,9 @@ impl BlockchainBridge {
                 amount_avax: alloy::primitives::utils::format_ether(deal.amount),
                 status: status.to_string(),
                 role: if deal.seller == my_addr { "seller".to_string() } else { "buyer".to_string() },
+                collection: deal.collection.to_string(),
+                auto_release_at: deal.autoReleaseAt,
+                refund_requested: deal.refundRequested,
             });
         }
 

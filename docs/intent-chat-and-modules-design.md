@@ -25,8 +25,11 @@ for an instrument/terminal aesthetic and a literal fit for a mesh device.
             └──────── mint at milestones ─────────┘
 ```
 
-Modules are NFTs on `CabalMeshVoucher` (ERC721, already deployed to Fuji).
-Three slots:
+Modules are NFTs on `CabalMeshVoucher` (ERC721, deployed to Fuji). Minting is
+gated on an issuer-managed minter set, so "mint at milestones" is a thing an
+authority does rather than something any wallet can do for itself. The contract
+still has no on-chain slot, rarity or effect, and no soulbound tokens — see the
+open questions at the end. Three slots:
 
 | Slot | Example modules | Effect |
 |---|---|---|
@@ -129,8 +132,28 @@ never broadcasts.
 `★ 42` is the seller's **real** standing — settlement count from
 `src/standing.rs`, not an invented score.
 
-`Marketplace.sol` already implements the escrow this promises: `buy()` locks
-AVAX and pulls the NFT into escrow, `releaseDeal` / `refundDeal` settle it.
+`Marketplace.sol` implements the escrow this promises: `buy()` locks AVAX and
+pulls the NFT into escrow in one transaction, `releaseDeal` / `refundDeal`
+settle it, and `cancelListing` withdraws an unsold listing.
+
+An earlier version of this paragraph said the contract was already good enough
+to build against. It was not, and the settlement rules changed under it — worth
+reading before designing the deal screens:
+
+- **Release is the default outcome.** The buyer can release at any time; once
+  the deal's three-day window passes, anyone can. A buyer who walks away can no
+  longer strand the seller's module and payment in the contract forever.
+- **Cancelling takes both sides.** The buyer calls `requestRefund`, the seller
+  executes `refundDeal`. Neither can unwind a paid deal alone. The old contract
+  let the buyer refund themselves at will, which made every listing a free
+  option written by the seller.
+- **A module has at most one live listing**, and the seller can cancel and
+  relist it.
+
+The asset leg of this trade is already on-chain and atomic, so the escrow
+window is a *cancellation* window, not a delivery-dispute window. The UI should
+say so: there is nothing for a buyer to inspect before releasing, and nothing a
+seller still owes.
 
 ## Modules — `VAULT → MODULES`
 

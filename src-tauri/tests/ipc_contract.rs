@@ -122,6 +122,7 @@ fn asset_listing_view_shape() {
         price_wei: "50000000000000000".into(),
         price_avax: "0.05".into(),
         token_id: 42,
+        collection: "0x3649E46eCD6A0bd187f0046C4C35a7B31C92bA1E".into(),
     }));
 }
 
@@ -146,6 +147,9 @@ fn deal_view_shape() {
         amount_avax: "0.05".into(),
         status: "active".into(),
         role: "buyer".into(),
+        collection: "0x3649E46eCD6A0bd187f0046C4C35a7B31C92bA1E".into(),
+        auto_release_at: 1_775_000_000,
+        refund_requested: false,
     }));
 }
 

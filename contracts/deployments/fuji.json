@@ -5,13 +5,17 @@
     "deployedAt": "2026-07-20T02:31:43.312Z"
   },
   "voucher": {
-    "address": "0xaEa0F434e6332D1C661087EE3EDdB791f2668bCc",
+    "address": "0x3649E46eCD6A0bd187f0046C4C35a7B31C92bA1E",
     "chainId": 43113,
-    "deployedAt": "2026-07-22T22:27:10.919Z"
+    "deployedAt": "2026-08-11T16:21:17.650Z",
+    "issuer": "0xf24FF3a9CF04c71Dbc94D0b566f7A27B94566cac"
   },
   "marketplace": {
-    "address": "0xE68CAf5c9830607344ce58Daa89ebEB68d4f3158",
+    "address": "0xb6F2B9415fc599130084b7F20B84738aCBB15930",
     "chainId": 43113,
-    "deployedAt": "2026-07-22T22:27:10.919Z"
+    "deployedAt": "2026-08-11T16:21:17.650Z",
+    "governor": "0xf24FF3a9CF04c71Dbc94D0b566f7A27B94566cac",
+    "releaseWindowSeconds": 259200,
+    "collection": "0x3649E46eCD6A0bd187f0046C4C35a7B31C92bA1E"
   }
 }

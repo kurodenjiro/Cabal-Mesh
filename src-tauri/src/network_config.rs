@@ -64,13 +64,22 @@ impl Network {
     /// Empty where nothing is deployed yet. An absent address surfaces as a
     /// clear "not configured" error at the first call rather than a
     /// plausible-looking wrong address, which is why there is no placeholder.
+    ///
+    /// The Fuji voucher and marketplace addresses are the second deployment,
+    /// not the one in the repo's early history. The first pair had an open
+    /// mint on the voucher and a buyer-only escrow on the marketplace, and
+    /// both are fixed in the contract source rather than worked around here.
+    /// The old addresses are deliberately not kept as a fallback: a token from
+    /// the open-mint contract is not an authentic module, and silently
+    /// accepting one would defeat the point of redeploying.
+    /// See `contracts/deployments/fuji.json` for the current record.
     #[must_use]
     pub const fn contracts(self) -> Contracts {
         match self {
             Self::Fuji => Contracts {
-                escrow: None,
-                marketplace: None,
-                voucher: None,
+                escrow: Some("0xCaFF53657191d75Aa4f5C2182210302656d8B392"),
+                marketplace: Some("0xb6F2B9415fc599130084b7F20B84738aCBB15930"),
+                voucher: Some("0x3649E46eCD6A0bd187f0046C4C35a7B31C92bA1E"),
             },
             Self::Mainnet => Contracts {
                 escrow: None,
@@ -227,8 +236,25 @@ mod tests {
     #[test]
     fn an_undeployed_contract_is_none_rather_than_a_placeholder() {
         // A plausible-looking wrong address fails as a chain error. None fails
-        // as "not configured", which is the truth and is actionable.
-        assert!(NetworkConfig::default().escrow().is_none());
+        // as "not configured", which is the truth and is actionable. Nothing
+        // is deployed to mainnet, so nothing is claimed for it.
+        let mainnet = Network::Mainnet.contracts();
+        assert!(mainnet.escrow.is_none());
+        assert!(mainnet.marketplace.is_none());
+        assert!(mainnet.voucher.is_none());
+    }
+
+    #[test]
+    fn the_testnet_deployment_is_compiled_in() {
+        // The addresses live in code rather than in an env var because mobile
+        // has no environment to read one from — that is the whole reason this
+        // table exists, so an empty table for the default network would put
+        // every phone back where it started.
+        let fuji = Network::Fuji.contracts();
+        for address in [fuji.escrow, fuji.marketplace, fuji.voucher] {
+            let address = address.expect("Fuji contracts are deployed");
+            assert!(address.starts_with("0x") && address.len() == 42, "{address} is not an address");
+        }
     }
 
     #[test]
