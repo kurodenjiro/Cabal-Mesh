@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Panel, StatBlock, StatusDot, Terminal } from "../ds";
 import { useLogStream } from "../state/useLogStream";
 import type { LogLine, MeshSnapshotView } from "../types/bindings";
+import { NodeDiagnostics } from "./Nodes";
 
 /** Visible ticker lines. The rest are retained but scrolled. */
 const VISIBLE = 4;
@@ -104,6 +105,8 @@ export function Home() {
         aria-live="polite"
         lines={lines.slice(-VISIBLE).map((line) => ({ text: line.text, tone: line.tone }))}
       />
+
+      <NodeDiagnostics />
     </div>
   );
 }

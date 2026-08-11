@@ -172,6 +172,20 @@ definition and privacy decision are in the
 pulls the NFT into escrow in one transaction, `releaseDeal` / `refundDeal`
 settle it, and `cancelListing` withdraws an unsold listing.
 
+**Resolved for browsing 2026-08-12:** the five-destination shell now replaces
+NODES with MARKET and embeds the former network map, BLE plane figures, and
+nearby-peer rows on HOME alongside node ID, mesh state, and uptime. MARKET
+scans paginated active listings at one accepted C-Chain block, then keeps only
+the reviewed module collection whose token still exists, remains with the
+seller, is eligible, and is still approved for that exact marketplace.
+Identity, slot, rarity, effect, and artwork commitment come only from canonical
+`assetData`; seller descriptions never cross the catalog boundary. Public
+standing is queried at one finalized block through the independently operated
+provider quorum defined below. Missing release configuration, stale evidence,
+or disagreement renders `UNKNOWN`. The current Fuji module/market/registry
+release tuple remains intentionally absent, so production builds fail closed
+rather than treating the deployed legacy voucher marketplace as MARKET.
+
 An earlier version of this paragraph said the contract was already good enough
 to build against. It was not, and the settlement rules changed under it — worth
 reading before designing the deal screens:
@@ -311,6 +325,12 @@ NODES folds into HOME, which already shows mesh status, node id and uptime.
 
 Five tabs is already the limit at 390 px with the brand's tracking; a sixth
 would wrap.
+
+**Implemented 2026-08-12:** the tab bar remains exactly five equal-width
+destinations, labels never wrap, and glyph plus `aria-label` keeps each
+destination available when 200-percent type scaling clips the visible label.
+HOME now owns both IP and BLE nearby-node diagnostics; removing the NODES route
+does not remove the measurements.
 
 ## Four things to settle before building
 

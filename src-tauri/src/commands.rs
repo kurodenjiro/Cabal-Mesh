@@ -182,15 +182,45 @@ pub struct MeshSnapshotView {
 ///
 /// # Errors
 ///
-/// [`AppError::NotReady`] before bootstrap completes, which the connecting
-/// screen already renders as progress.
+/// [`AppError::NotReady`] before bootstrap completes. A missing IP swarm is a
+/// measurable offline state rather than an error: uptime, the BLE node
+/// identifier, local standing, and relay counters remain available on HOME.
 #[tauri::command]
 pub async fn mesh_snapshot(state: State<'_, AppState>) -> Result<MeshSnapshotView, AppError> {
     use crate::bindings::{separated, StatTile};
+    use std::sync::atomic::Ordering;
 
     let services = state.services()?;
-    let mesh = services.mesh.as_ref().ok_or(AppError::MeshOffline)?;
-    let snapshot = mesh.snapshot().await.map_err(|_| AppError::MeshOffline)?;
+    let mesh_snapshot = match services.mesh.as_ref() {
+        Some(mesh) => mesh.snapshot().await.ok(),
+        None => None,
+    };
+    let ble_snapshot = match services.ble.as_ref() {
+        Some(ble) => ble.status().await.ok(),
+        None => None,
+    };
+    let peer_count = mesh_snapshot
+        .as_ref()
+        .map_or_else(
+            || ble_snapshot.as_ref().map_or(0, |snapshot| snapshot.reachable_peers),
+            |snapshot| snapshot.peer_count,
+        );
+    let connected = mesh_snapshot
+        .as_ref()
+        .is_some_and(|snapshot| snapshot.peer_count > 0)
+        || ble_snapshot
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.reachable_peers > 0);
+    let node_id = mesh_snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.peer_id.to_string())
+        .or_else(|| ble_snapshot.as_ref().map(|snapshot| snapshot.peer_id.to_string()))
+        .map(|id| cabal_core::NodeId::new(id).truncated())
+        .unwrap_or_else(|| "UNAVAILABLE".to_string());
+    let relayed_bytes = mesh_snapshot.as_ref().map_or_else(
+        || services.relay_bytes.load(Ordering::Relaxed),
+        |snapshot| snapshot.relay_bytes,
+    );
 
     // Deltas are omitted rather than fabricated. There is no baseline to
     // compare against yet, and the brand's copy rules demand exact figures —
@@ -212,15 +242,18 @@ pub async fn mesh_snapshot(state: State<'_, AppState>) -> Result<MeshSnapshotVie
     };
 
     let stats = vec![
-        StatTile::plain("NETWORK NODES", separated(snapshot.peer_count as u64)),
-        StatTile::plain("RELAYED BYTES", separated(snapshot.relay_bytes)),
+        StatTile::plain(
+            "NETWORK NODES",
+            separated(u64::try_from(peer_count).unwrap_or(u64::MAX)),
+        ),
+        StatTile::plain("RELAYED BYTES", separated(relayed_bytes)),
         settled_tile,
     ];
 
     Ok(MeshSnapshotView {
-        node_id: cabal_core::NodeId::new(snapshot.peer_id.clone()).truncated(),
+        node_id,
         uptime: format_uptime(state.uptime_seconds()),
-        connected: snapshot.peer_count > 0,
+        connected,
         stats,
     })
 }
@@ -312,7 +345,7 @@ pub enum Transport {
     Ble,
 }
 
-/// A peer, as the nodes screen shows it.
+/// A peer, as HOME diagnostics show it.
 ///
 /// **No distance.** A libp2p peer has an identifier and an address, not
 /// coordinates, and this app requests no location permission — asking for one
@@ -403,7 +436,7 @@ pub async fn list_nearby_nodes(state: State<'_, AppState>) -> Result<Vec<NodeSum
     Ok(nodes)
 }
 
-/// What the nodes screen shows about the offline plane.
+/// What HOME diagnostics show about the offline plane.
 ///
 /// Every field is a measurement. There is no "signal strength" and no
 /// "distance": the radio reports neither, and the app requests no location
@@ -2446,6 +2479,78 @@ pub struct ModuleInventory {
     pub modules: Vec<ModuleView>,
 }
 
+/// Buyer-visible state of the canonical module catalog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "snake_case")]
+pub enum ModuleMarketStatus {
+    Available,
+    /// No reviewed module collection + marketplace pair exists for this build.
+    DeploymentUnavailable,
+    /// The reviewed pair exists, but its accepted state could not be read.
+    RpcFailure,
+}
+
+/// Exact reason a public standing value cannot be claimed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "snake_case")]
+pub enum SellerStandingUnknownReason {
+    Unconfigured,
+    Unavailable,
+    IdentityMismatch,
+    Stale,
+    Unfinalized,
+    ConflictingProviders,
+    Malformed,
+}
+
+/// Independently verified public seller standing or an explicit absence.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(
+    tag = "status",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum SellerStandingView {
+    Verified {
+        /// Decimal text keeps the public count exact across IPC.
+        value: String,
+        verified_block: String,
+        provider_count: usize,
+        evidence_at_ms: String,
+    },
+    Unknown {
+        reason: SellerStandingUnknownReason,
+    },
+}
+
+/// One currently buyable canonical module listing.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "camelCase")]
+pub struct ModuleMarketListing {
+    pub listing_id: String,
+    pub seller: String,
+    pub price_wei: String,
+    pub price_avax: String,
+    pub module: ModuleView,
+    pub standing: SellerStandingView,
+}
+
+/// Accepted-head module catalog and the entries deliberately omitted from it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "camelCase")]
+pub struct ModuleMarketCatalog {
+    pub status: ModuleMarketStatus,
+    pub verified_block: Option<String>,
+    pub listings: Vec<ModuleMarketListing>,
+    pub stale_listings: u32,
+    pub malformed_metadata: u32,
+}
+
 /// Whether a node loadout is live chain evidence or display-only history.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
@@ -2599,6 +2704,148 @@ fn module_view(record: crate::blockchain_bridge::ModuleChainRecord) -> Result<Mo
     })
 }
 
+fn seller_standing_view(standing: cabal_standing::PublicStanding) -> SellerStandingView {
+    use cabal_standing::{PublicStanding, UnknownStandingReason};
+
+    match standing {
+        PublicStanding::Verified(verified) => SellerStandingView::Verified {
+            value: verified.count().to_string(),
+            verified_block: verified.block_number().to_string(),
+            provider_count: verified.provider_count(),
+            evidence_at_ms: verified.oldest_observation_ms().to_string(),
+        },
+        PublicStanding::Unknown(reason) => SellerStandingView::Unknown {
+            reason: match reason {
+                UnknownStandingReason::Unconfigured => SellerStandingUnknownReason::Unconfigured,
+                UnknownStandingReason::Unavailable => SellerStandingUnknownReason::Unavailable,
+                UnknownStandingReason::IdentityMismatch => {
+                    SellerStandingUnknownReason::IdentityMismatch
+                }
+                UnknownStandingReason::Stale => SellerStandingUnknownReason::Stale,
+                UnknownStandingReason::Unfinalized => SellerStandingUnknownReason::Unfinalized,
+                UnknownStandingReason::ConflictingProviders => {
+                    SellerStandingUnknownReason::ConflictingProviders
+                }
+                UnknownStandingReason::Malformed => SellerStandingUnknownReason::Malformed,
+                _ => SellerStandingUnknownReason::Malformed,
+            },
+        },
+        _ => SellerStandingView::Unknown {
+            reason: SellerStandingUnknownReason::Malformed,
+        },
+    }
+}
+
+fn empty_module_market(status: ModuleMarketStatus) -> ModuleMarketCatalog {
+    ModuleMarketCatalog {
+        status,
+        verified_block: None,
+        listings: Vec::new(),
+        stale_listings: 0,
+        malformed_metadata: 0,
+    }
+}
+
+fn format_avax_for_market(price_wei: alloy::primitives::U256) -> String {
+    let exact = alloy::primitives::utils::format_ether(price_wei);
+    let Some((whole, fractional)) = exact.split_once('.') else {
+        return format!("{exact}.00");
+    };
+    let significant = fractional.trim_end_matches('0');
+    match significant.len() {
+        0 => format!("{whole}.00"),
+        1 => format!("{whole}.{significant}0"),
+        _ => format!("{whole}.{significant}"),
+    }
+}
+
+fn module_market_catalog_view(
+    snapshot: crate::blockchain_bridge::ModuleMarketChainSnapshot,
+    standing: &std::collections::BTreeMap<
+        alloy::primitives::Address,
+        cabal_standing::PublicStanding,
+    >,
+) -> ModuleMarketCatalog {
+    use alloy::primitives::{Address, U256};
+
+    let mut malformed_metadata = snapshot.malformed_listings;
+    let mut listings = Vec::with_capacity(snapshot.listings.len());
+    let mut identities = std::collections::BTreeSet::new();
+    let mut listing_ids = std::collections::BTreeSet::new();
+
+    for record in snapshot.listings {
+        let Ok(listing_id) = record.listing_id.parse::<U256>() else {
+            malformed_metadata = malformed_metadata.saturating_add(1);
+            continue;
+        };
+        let Ok(token_id) = record.module.token_id.parse::<U256>() else {
+            malformed_metadata = malformed_metadata.saturating_add(1);
+            continue;
+        };
+        let Ok(price_wei) = record.price_wei.parse::<U256>() else {
+            malformed_metadata = malformed_metadata.saturating_add(1);
+            continue;
+        };
+        let Ok(seller) = record.seller.parse::<Address>() else {
+            malformed_metadata = malformed_metadata.saturating_add(1);
+            continue;
+        };
+        let Ok(owner) = record.module.owner.parse::<Address>() else {
+            malformed_metadata = malformed_metadata.saturating_add(1);
+            continue;
+        };
+        if listing_id == U256::ZERO
+            || token_id == U256::ZERO
+            || price_wei == U256::ZERO
+            || seller == Address::ZERO
+            || owner != seller
+            || record.module.asset_class != 0
+            || record.module.soulbound
+            || record.module.revoked
+        {
+            malformed_metadata = malformed_metadata.saturating_add(1);
+            continue;
+        }
+
+        let identity = (record.module.collection.clone(), record.module.token_id.clone());
+        if !listing_ids.insert(listing_id) || !identities.insert(identity) {
+            malformed_metadata = malformed_metadata.saturating_add(1);
+            continue;
+        }
+        let Ok(module) = module_view(record.module) else {
+            malformed_metadata = malformed_metadata.saturating_add(1);
+            continue;
+        };
+        if module.asset_class != ModuleAssetClass::Module || module.slot == ModuleSlot::None {
+            malformed_metadata = malformed_metadata.saturating_add(1);
+            continue;
+        }
+
+        let seller_standing = standing
+            .get(&seller)
+            .copied()
+            .unwrap_or(cabal_standing::PublicStanding::Unknown(
+                cabal_standing::UnknownStandingReason::Unavailable,
+            ));
+        listings.push(ModuleMarketListing {
+            listing_id: listing_id.to_string(),
+            seller: seller.to_string(),
+            price_wei: price_wei.to_string(),
+            price_avax: format_avax_for_market(price_wei),
+            module,
+            standing: seller_standing_view(seller_standing),
+        });
+    }
+
+    ModuleMarketCatalog {
+        status: ModuleMarketStatus::Available,
+        verified_block: Some(snapshot.verified_block.to_string()),
+        listings,
+        stale_listings: snapshot.stale_listings,
+        malformed_metadata,
+    }
+}
+
 fn empty_loadout(status: LoadoutVerificationStatus) -> NodeLoadout {
     NodeLoadout {
         status,
@@ -2707,6 +2954,78 @@ pub async fn vault_modules(state: State<'_, AppState>) -> Result<ModuleInventory
         status: ModuleInventoryStatus::Available,
         modules,
     })
+}
+
+/// Current module marketplace catalog from a reviewed contract pair.
+///
+/// The bridge mutex is released before network I/O. All expected absence and
+/// transport states are returned in-band so the screen can render loading,
+/// deployment-unavailable, offline/RPC failure, stale, malformed, and empty
+/// states without parsing error prose.
+#[tauri::command]
+pub async fn market_modules(
+    state: State<'_, AppState>,
+) -> Result<ModuleMarketCatalog, AppError> {
+    let services = state.services()?;
+    let reader = {
+        let bridge = services.bridge.lock().await;
+        bridge.module_market_reader()
+    };
+    let Some(reader) = reader else {
+        return Ok(empty_module_market(
+            ModuleMarketStatus::DeploymentUnavailable,
+        ));
+    };
+
+    let snapshot = match tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        reader.active_listings(),
+    )
+    .await
+    {
+        Ok(Ok(snapshot)) => snapshot,
+        Ok(Err(error)) => {
+            tracing::warn!(
+                target: "cabalmesh::market",
+                error_kind = %std::any::type_name_of_val(error.as_ref()),
+                "canonical module catalog refresh failed"
+            );
+            return Ok(empty_module_market(ModuleMarketStatus::RpcFailure));
+        }
+        Err(_) => {
+            tracing::warn!(target: "cabalmesh::market", "canonical module catalog refresh timed out");
+            return Ok(empty_module_market(ModuleMarketStatus::RpcFailure));
+        }
+    };
+
+    let sellers = snapshot
+        .listings
+        .iter()
+        .filter_map(|listing| listing.seller.parse::<alloy::primitives::Address>().ok())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let standing = match tokio::time::timeout(
+        std::time::Duration::from_secs(8),
+        reader.seller_standing(&sellers, crate::intents::now_ms()),
+    )
+    .await
+    {
+        Ok(standing) => standing,
+        Err(_) => sellers
+            .into_iter()
+            .map(|seller| {
+                (
+                    seller,
+                    cabal_standing::PublicStanding::Unknown(
+                        cabal_standing::UnknownStandingReason::Unavailable,
+                    ),
+                )
+            })
+            .collect(),
+    };
+
+    Ok(module_market_catalog_view(snapshot, &standing))
 }
 
 /// The primary node operator's loadout, explicitly classified as verified,
@@ -2819,7 +3138,10 @@ pub async fn unequip_module(
 #[cfg(test)]
 mod module_tests {
     use super::*;
-    use crate::blockchain_bridge::{ModuleChainRecord, ModuleLoadoutChainSnapshot};
+    use crate::blockchain_bridge::{
+        ModuleChainRecord, ModuleListingChainRecord, ModuleLoadoutChainSnapshot,
+        ModuleMarketChainSnapshot,
+    };
 
     fn bytes32(byte: &str) -> String {
         format!("0x{}", byte.repeat(32))
@@ -2856,6 +3178,64 @@ mod module_tests {
             verified_at: chrono::Utc::now(),
             modules,
         }
+    }
+
+    fn market_snapshot(listings: Vec<ModuleListingChainRecord>) -> ModuleMarketChainSnapshot {
+        ModuleMarketChainSnapshot {
+            verified_block: 42_113_009,
+            listings,
+            stale_listings: 0,
+            malformed_listings: 0,
+        }
+    }
+
+    fn listing(module: ModuleChainRecord) -> ModuleListingChainRecord {
+        ModuleListingChainRecord {
+            listing_id: "900719925474099312346".into(),
+            seller: module.owner.clone(),
+            price_wei: "2400000000000000000".into(),
+            module,
+        }
+    }
+
+    fn verified_standing(
+        seller: alloy::primitives::Address,
+        count: u64,
+    ) -> cabal_standing::PublicStanding {
+        use cabal_standing::{
+            verify_public_standing, BlockHash, EvmAddress, ProviderId, ProviderObservation,
+            ProviderRead, RegistryConfig, StandingSnapshot,
+        };
+
+        let seller = EvmAddress::from_bytes(seller.into_array());
+        let registry = EvmAddress::from_bytes([9; 20]);
+        let config = RegistryConfig::try_new(43_113, registry, 300_000, 2).unwrap();
+        let snapshot = StandingSnapshot {
+            chain_id: 43_113,
+            registry,
+            seller,
+            count,
+            last_changed_block: 42_113_000,
+            block_number: 42_113_009,
+            block_hash: BlockHash::from_bytes([7; 32]),
+            observed_at_ms: 9_999_000,
+            accepted: true,
+        };
+        verify_public_standing(
+            Some(&config),
+            seller,
+            &[
+                ProviderObservation {
+                    provider_id: ProviderId::try_new(1).unwrap(),
+                    read: ProviderRead::Snapshot(snapshot),
+                },
+                ProviderObservation {
+                    provider_id: ProviderId::try_new(2).unwrap(),
+                    read: ProviderRead::Snapshot(snapshot),
+                },
+            ],
+            10_000_000,
+        )
     }
 
     #[test]
@@ -3009,6 +3389,89 @@ mod module_tests {
         assert_eq!(parse_module_token_id(large).unwrap().to_string(), large);
         assert!(parse_module_token_id("0").is_err());
         assert!(parse_module_token_id("7.5").is_err());
+    }
+
+    #[test]
+    fn market_catalog_preserves_large_ids_exact_price_and_verified_standing() {
+        let mut module = radio_record();
+        module.token_id = "900719925474099312345".into();
+        let seller = module.owner.parse::<alloy::primitives::Address>().unwrap();
+        let standing = [(seller, verified_standing(seller, 42))]
+            .into_iter()
+            .collect();
+
+        let catalog = module_market_catalog_view(market_snapshot(vec![listing(module)]), &standing);
+
+        assert_eq!(catalog.status, ModuleMarketStatus::Available);
+        assert_eq!(catalog.verified_block.as_deref(), Some("42113009"));
+        assert_eq!(catalog.listings.len(), 1);
+        let card = &catalog.listings[0];
+        assert_eq!(card.listing_id, "900719925474099312346");
+        assert_eq!(card.module.token_id, "900719925474099312345");
+        assert_eq!(card.price_wei, "2400000000000000000");
+        assert_eq!(card.price_avax, "2.40");
+        assert_eq!(card.module.slot, ModuleSlot::Radio);
+        assert_eq!(card.module.rarity, ModuleRarity::Rare);
+        assert_eq!(card.module.effect, "+18.50% RELAY REWARD");
+        assert!(matches!(
+            card.standing,
+            SellerStandingView::Verified {
+                ref value,
+                ref verified_block,
+                provider_count: 2,
+                ..
+            } if value == "42" && verified_block == "42113009"
+        ));
+    }
+
+    #[test]
+    fn market_catalog_omits_malformed_metadata_and_reports_stale_entries() {
+        let valid = radio_record();
+        let seller = valid.owner.parse::<alloy::primitives::Address>().unwrap();
+        let mut unsafe_metadata = radio_record();
+        unsafe_metadata.token_id = "8".into();
+        unsafe_metadata.module_id = bytes32("44");
+        unsafe_metadata.provenance_hash = bytes32("55");
+        unsafe_metadata.display_name = "Seller \"prose\"".into();
+        let standing = [(
+            seller,
+            cabal_standing::PublicStanding::Unknown(
+                cabal_standing::UnknownStandingReason::Stale,
+            ),
+        )]
+        .into_iter()
+        .collect();
+        let mut malformed_listing = listing(unsafe_metadata);
+        malformed_listing.listing_id = "900719925474099312347".into();
+        let mut snapshot = market_snapshot(vec![listing(valid), malformed_listing]);
+        snapshot.stale_listings = 3;
+        snapshot.malformed_listings = 2;
+
+        let catalog = module_market_catalog_view(snapshot, &standing);
+
+        assert_eq!(catalog.listings.len(), 1);
+        assert_eq!(catalog.stale_listings, 3);
+        assert_eq!(catalog.malformed_metadata, 3);
+        assert!(matches!(
+            catalog.listings[0].standing,
+            SellerStandingView::Unknown {
+                reason: SellerStandingUnknownReason::Stale
+            }
+        ));
+    }
+
+    #[test]
+    fn unknown_standing_never_turns_into_verified_zero() {
+        let view = seller_standing_view(cabal_standing::PublicStanding::Unknown(
+            cabal_standing::UnknownStandingReason::Unavailable,
+        ));
+
+        assert_eq!(
+            view,
+            SellerStandingView::Unknown {
+                reason: SellerStandingUnknownReason::Unavailable,
+            }
+        );
     }
 }
 

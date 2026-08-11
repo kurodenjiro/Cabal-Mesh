@@ -1355,3 +1355,39 @@ same answer, so they cannot disagree.
 
 This is the string the prototype got wrong. Seeing the accurate one appear
 *because* the mesh is genuinely unreachable is the whole point of that ticket.
+
+---
+
+## Canonical module MARKET browsing — **GO, release tuple unavailable** (2026-08-12, intent-market ticket 10)
+
+The five-destination shell now exposes `HOME · INTENTS · MARKET · VAULT ·
+PROFILE`; node ID, mesh state, uptime, the network map, BLE figures, and nearby
+peer rows remain on HOME. MARKET accepts only an active listing from the
+reviewed module/market pair after rechecking token existence, current seller
+ownership, marketplace eligibility, and approval at one pinned accepted block.
+Card identity, slot, rarity, and typed effect come from immutable
+`CabalMeshModules.assetData`, never the listing description.
+
+The current Fuji module collection, replacement marketplace, standing registry,
+SOURCE_ROLE grants, and independent RPC quorum have not been published as one
+reviewed release tuple. The production screen therefore renders `CANONICAL
+MARKET UNAVAILABLE`; environment and data-file overrides cannot activate the
+buyer-facing catalog. That is the intended fail-closed state, not a legacy
+voucher fallback.
+
+| Gate | Result |
+|---|---|
+| Browser integration at 390 px and forced 200% type: five tabs remain reachable and single-line; HOME diagnostics remain visible | ✅ 3 Playwright flows |
+| Canonical catalog: lossless IDs/prices, ALL/RADIO/CRYPTO/POWER, search, all four deterministic sorts, verified/unknown standing | ✅ |
+| Loading, empty, unconfigured deployment, offline, RPC rejection, stale listing, malformed metadata, and refresh recovery | ✅ |
+| `cargo test --workspace` including 132 app tests, 14 standing tests, 9 BLE loopback tests, IPC/ACL/concurrency suites | ✅ |
+| Solidity contracts | ✅ 95 tests |
+| TypeScript + Vite production build | ✅ |
+| Workspace Clippy | ✅; existing warnings only |
+| Desktop debug application | ✅ `src-tauri/target/debug/cabalmesh` |
+| iOS 17.5 arm64 simulator, clean unsigned debug bundle | ✅ `src-tauri/gen/apple/build/arm64-sim/CabalMesh.app` |
+| Android arm64 debug APK, JDK 21 + NDK 27 | ✅ `src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk` |
+
+Known build warnings remain unchanged: the unresolved `glitch.png` runtime
+texture, the `.app` bundle-identifier advisory, duplicate Android INTERNET
+permission, Java 8 source/target deprecation, and existing dead-code warnings.

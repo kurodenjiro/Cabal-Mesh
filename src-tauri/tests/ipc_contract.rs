@@ -33,6 +33,10 @@ use cabalmesh_lib::blockchain_bridge::{
 use cabalmesh_lib::matcher::MatchResult;
 use cabalmesh_lib::mesh::{MeshEvent, PrivacyIntent};
 use cabalmesh_lib::zk_handler::{ProofRequest, ZKProof};
+use cabalmesh_lib::commands::{
+    ModuleAssetClass, ModuleEffectType, ModuleMarketCatalog, ModuleMarketListing,
+    ModuleMarketStatus, ModuleRarity, ModuleSlot, ModuleView, SellerStandingView,
+};
 use chrono::{TimeZone, Utc};
 use serde::Serialize;
 
@@ -150,6 +154,49 @@ fn deal_view_shape() {
         collection: "0x3649E46eCD6A0bd187f0046C4C35a7B31C92bA1E".into(),
         auto_release_at: 1_775_000_000,
         refund_requested: false,
+    }));
+}
+
+#[test]
+fn module_market_catalog_shape() {
+    insta::assert_snapshot!(shape(&ModuleMarketCatalog {
+        status: ModuleMarketStatus::Available,
+        verified_block: Some("42113009".into()),
+        listings: vec![ModuleMarketListing {
+            listing_id: "900719925474099312346".into(),
+            seller: "0x00000000000000000000000000000000000000b8".into(),
+            price_wei: "2400000000000000000".into(),
+            price_avax: "2.40".into(),
+            module: ModuleView {
+                token_id: "900719925474099312345".into(),
+                contract: "0x00000000000000000000000000000000000000a7".into(),
+                owner: "0x00000000000000000000000000000000000000b8".into(),
+                module_id: format!("0x{}", "11".repeat(32)),
+                provenance_hash: format!("0x{}", "22".repeat(32)),
+                display_name: "Relay Amplifier MK-II".into(),
+                asset_class: ModuleAssetClass::Module,
+                slot: ModuleSlot::Radio,
+                rarity: ModuleRarity::Rare,
+                effect_type: ModuleEffectType::RelayRewardBps,
+                primary_effect_value: 1_850,
+                secondary_effect_value: 0,
+                effect: "+18.50% RELAY REWARD".into(),
+                artwork_uri: "ipfs://bafybeiradioamplifiermk2".into(),
+                artwork_digest: format!("0x{}", "33".repeat(32)),
+                schema_version: 1,
+                minted_by: "0x00000000000000000000000000000000000000c9".into(),
+                soulbound: false,
+                revoked: false,
+            },
+            standing: SellerStandingView::Verified {
+                value: "42".into(),
+                verified_block: "42113009".into(),
+                provider_count: 2,
+                evidence_at_ms: "1786500000000".into(),
+            },
+        }],
+        stale_listings: 2,
+        malformed_metadata: 1,
     }));
 }
 
@@ -396,9 +443,12 @@ fn command_inventory() {
         "intent_proof",
         "list_intents",
         "list_nearby_nodes",
+        "market_modules",
         "mesh_snapshot",
+        "module_loadout",
         "preview_intent",
         "profile_summary",
+        "propose_intent",
         "session_status",
         "set_offline_mode",
         "settle_intent",
@@ -408,8 +458,12 @@ fn command_inventory() {
         "vault_assets",
         "vault_identities",
         "vault_keys",
+        "vault_modules",
+        "equip_module",
+        "intent_affordability",
+        "unequip_module",
     ];
     commands.sort_unstable();
-    assert_eq!(commands.len(), 21, "command count changed");
+    assert_eq!(commands.len(), 28, "command count changed");
     insta::assert_snapshot!(commands.join("\n"));
 }

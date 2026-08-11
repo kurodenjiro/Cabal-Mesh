@@ -25,7 +25,7 @@ tag: string, decimals: number,
 available: string | null, };
 
 /**
- * What the nodes screen shows about the offline plane.
+ * What HOME diagnostics show about the offline plane.
  *
  * Every field is a measurement. There is no "signal strength" and no
  * "distance": the radio reports neither, and the app requests no location
@@ -97,11 +97,11 @@ export type FormOptions = { actions: Array<string>, assets: Array<AssetOption>, 
 /**
  * Exact fixed-point affordability feedback for the compose screen.
  */
-export type IntentAffordability = { status: IntentAffordabilityStatus,
+export type IntentAffordability = { status: IntentAffordabilityStatus, 
 /**
  * Canonical known balance. Absent means unknown, never zero-by-default.
  */
-available: string | null,
+available: string | null, 
 /**
  * Exact amount missing when `status` is `shortfall`.
  */
@@ -115,7 +115,7 @@ export type IntentAffordabilityStatus = "unknown" | "invalid_amount" | "affordab
 /**
  * One model proposal rendered without carrying the original intent text.
  */
-export type IntentChip = { field: IntentFieldView,
+export type IntentChip = { field: IntentFieldView, 
 /**
  * Absent means the model did not infer this field. It is not a default.
  */
@@ -128,7 +128,7 @@ value: string | null, };
  * candidate fields, and neither this value nor its errors can leak financial
  * text into logs.
  */
-export type IntentComposition = { status: IntentCompositionStatus, modelVersion: string,
+export type IntentComposition = { status: IntentCompositionStatus, modelVersion: string, 
 /**
  * Canonical fields for a validated result, partial fields for a safe
  * clarification result, and absent for runtime/refusal failures.
@@ -243,7 +243,7 @@ elapsed: string, };
  */
 export type InvalidReason = "missing" | "malformed" | "out_of_range" | "too_precise" | "insufficient_funds";
 
-export type LoadoutSlotView = { slot: ModuleSlot, module: ModuleView | null,
+export type LoadoutSlotView = { slot: ModuleSlot, module: ModuleView | null, 
 /**
  * Present only after a downstream verifier actually honors the effect.
  * Tickets 14–16 will populate this; ticket 09 deliberately returns none.
@@ -294,6 +294,21 @@ export type ModuleInventory = { status: ModuleInventoryStatus, modules: Array<Mo
  */
 export type ModuleInventoryStatus = "available" | "unavailable";
 
+/**
+ * Accepted-head module catalog and the entries deliberately omitted from it.
+ */
+export type ModuleMarketCatalog = { status: ModuleMarketStatus, verifiedBlock: string | null, listings: Array<ModuleMarketListing>, staleListings: number, malformedMetadata: number, };
+
+/**
+ * One currently buyable canonical module listing.
+ */
+export type ModuleMarketListing = { listingId: string, seller: string, priceWei: string, priceAvax: string, module: ModuleView, standing: SellerStandingView, };
+
+/**
+ * Buyer-visible state of the canonical module catalog.
+ */
+export type ModuleMarketStatus = "available" | "deployment_unavailable" | "rpc_failure";
+
 export type ModuleRarity = "COMMON" | "RARE" | "EPIC" | "LEGENDARY";
 
 export type ModuleSlot = "NONE" | "RADIO" | "CRYPTO" | "POWER";
@@ -306,18 +321,18 @@ export type ModuleView = { tokenId: string, contract: string, owner: string, mod
 /**
  * On-chain node loadout plus an explicit freshness classification.
  */
-export type NodeLoadout = { status: LoadoutVerificationStatus, operator: string | null, contract: string | null,
+export type NodeLoadout = { status: LoadoutVerificationStatus, operator: string | null, contract: string | null, 
 /**
  * Decimal string so block heights never cross IPC as lossy JS numbers.
  */
-verifiedBlock: string | null, verifiedAt: string | null, slots: Array<LoadoutSlotView>,
+verifiedBlock: string | null, verifiedAt: string | null, slots: Array<LoadoutSlotView>, 
 /**
  * A receipt hash is present only on the response to a confirmed mutation.
  */
 mutationTxHash: string | null, };
 
 /**
- * A peer, as the nodes screen shows it.
+ * A peer, as HOME diagnostics show it.
  *
  * **No distance.** A libp2p peer has an identifier and an address, not
  * coordinates, and this app requests no location permission — asking for one
@@ -398,6 +413,20 @@ filledAt: string | null, };
  * One row of the confirm dialog.
  */
 export type ReviewRow = { key: string, value: string, };
+
+/**
+ * Exact reason a public standing value cannot be claimed.
+ */
+export type SellerStandingUnknownReason = "unconfigured" | "unavailable" | "identity_mismatch" | "stale" | "unfinalized" | "conflicting_providers" | "malformed";
+
+/**
+ * Independently verified public seller standing or an explicit absence.
+ */
+export type SellerStandingView = { "status": "verified", 
+/**
+ * Decimal text keeps the public count exact across IPC.
+ */
+value: string, verifiedBlock: string, providerCount: number, evidenceAtMs: string, } | { "status": "unknown", reason: SellerStandingUnknownReason, };
 
 /**
  * What the splash screen needs to decide what it is offering.

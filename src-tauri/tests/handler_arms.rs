@@ -39,6 +39,7 @@ const SHARED: &[&str] = &[
     "subscribe_mesh_log",
     "list_nearby_nodes",
     "ble_status",
+    "market_modules",
     "list_intents",
     "intent_form_options",
     "intent_affordability",

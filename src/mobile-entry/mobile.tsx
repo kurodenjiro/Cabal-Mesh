@@ -12,7 +12,7 @@ import "../ds/index";
 import { AppShell } from "../shell/AppShell";
 import { Splash } from "../screens/Splash";
 import { Home } from "../screens/Home";
-import { Nodes } from "../screens/Nodes";
+import { Market } from "../screens/Market";
 import { Intents } from "../screens/Intents";
 import { New } from "../screens/New";
 import { Detail } from "../screens/Detail";
@@ -36,8 +36,8 @@ function App() {
     <AppShell screen={screen} onNavigate={setScreen}>
       {screen.name === "home" ? (
         <Home />
-      ) : screen.name === "nodes" ? (
-        <Nodes />
+      ) : screen.name === "market" ? (
+        <Market />
       ) : screen.name === "intents" ? (
         <Intents
           tab={screen.tab}

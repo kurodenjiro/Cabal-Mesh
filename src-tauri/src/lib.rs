@@ -302,6 +302,7 @@ pub fn run() {
             commands::subscribe_mesh_log,
             commands::list_nearby_nodes,
             commands::ble_status,
+            commands::market_modules,
             commands::list_intents,
             commands::intent_form_options,
             commands::intent_affordability,

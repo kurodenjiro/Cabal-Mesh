@@ -1,0 +1,46 @@
+---
+source: tests/ipc_contract.rs
+expression: "shape(&ModuleMarketCatalog\n{\n    status: ModuleMarketStatus::Available, verified_block:\n    Some(\"42113009\".into()), listings:\n    vec![ModuleMarketListing\n    {\n        listing_id: \"900719925474099312346\".into(), seller:\n        \"0x00000000000000000000000000000000000000b8\".into(), price_wei:\n        \"2400000000000000000\".into(), price_avax: \"2.40\".into(), module:\n        ModuleView\n        {\n            token_id: \"900719925474099312345\".into(), contract:\n            \"0x00000000000000000000000000000000000000a7\".into(), owner:\n            \"0x00000000000000000000000000000000000000b8\".into(), module_id:\n            format!(\"0x{}\", \"11\".repeat(32)), provenance_hash:\n            format!(\"0x{}\", \"22\".repeat(32)), display_name:\n            \"Relay Amplifier MK-II\".into(), asset_class:\n            ModuleAssetClass::Module, slot: ModuleSlot::Radio, rarity:\n            ModuleRarity::Rare, effect_type: ModuleEffectType::RelayRewardBps,\n            primary_effect_value: 1_850, secondary_effect_value: 0, effect:\n            \"+18.50% RELAY REWARD\".into(), artwork_uri:\n            \"ipfs://bafybeiradioamplifiermk2\".into(), artwork_digest:\n            format!(\"0x{}\", \"33\".repeat(32)), schema_version: 1, minted_by:\n            \"0x00000000000000000000000000000000000000c9\".into(), soulbound:\n            false, revoked: false,\n        }, standing: SellerStandingView::Verified\n        {\n            value: \"42\".into(), verified_block: \"42113009\".into(),\n            provider_count: 2, evidence_at_ms: \"1786500000000\".into(),\n        },\n    }], stale_listings: 2, malformed_metadata: 1,\n})"
+---
+{
+  "status": "available",
+  "verifiedBlock": "42113009",
+  "listings": [
+    {
+      "listingId": "900719925474099312346",
+      "seller": "0x00000000000000000000000000000000000000b8",
+      "priceWei": "2400000000000000000",
+      "priceAvax": "2.40",
+      "module": {
+        "tokenId": "900719925474099312345",
+        "contract": "0x00000000000000000000000000000000000000a7",
+        "owner": "0x00000000000000000000000000000000000000b8",
+        "moduleId": "0x1111111111111111111111111111111111111111111111111111111111111111",
+        "provenanceHash": "0x2222222222222222222222222222222222222222222222222222222222222222",
+        "displayName": "Relay Amplifier MK-II",
+        "assetClass": "MODULE",
+        "slot": "RADIO",
+        "rarity": "RARE",
+        "effectType": "RELAY_REWARD_BPS",
+        "primaryEffectValue": 1850,
+        "secondaryEffectValue": 0,
+        "effect": "+18.50% RELAY REWARD",
+        "artworkUri": "ipfs://bafybeiradioamplifiermk2",
+        "artworkDigest": "0x3333333333333333333333333333333333333333333333333333333333333333",
+        "schemaVersion": 1,
+        "mintedBy": "0x00000000000000000000000000000000000000c9",
+        "soulbound": false,
+        "revoked": false
+      },
+      "standing": {
+        "status": "verified",
+        "value": "42",
+        "verifiedBlock": "42113009",
+        "providerCount": 2,
+        "evidenceAtMs": "1786500000000"
+      }
+    }
+  ],
+  "staleListings": 2,
+  "malformedMetadata": 1
+}

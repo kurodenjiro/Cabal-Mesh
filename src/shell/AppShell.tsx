@@ -205,8 +205,8 @@ function screenForTab(tab: TabKey): Screen {
       return { name: "home" };
     case "intents":
       return { name: "intents", tab: "ACTIVE" };
-    case "nodes":
-      return { name: "nodes" };
+    case "market":
+      return { name: "market" };
     case "vault":
       return { name: "vault", tab: "ASSETS" };
     case "profile":

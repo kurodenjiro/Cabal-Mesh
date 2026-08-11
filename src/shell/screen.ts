@@ -22,12 +22,12 @@ export type Screen =
   | { name: "new" }
   | { name: "detail"; id: IntentId }
   | { name: "settled"; id: IntentId }
-  | { name: "nodes" }
+  | { name: "market" }
   | { name: "vault"; tab: VaultTab }
   | { name: "profile" };
 
 /** The five destinations in the tab bar. */
-export type TabKey = "home" | "intents" | "nodes" | "vault" | "profile";
+export type TabKey = "home" | "intents" | "market" | "vault" | "profile";
 
 /**
  * A glyph from the board's 14-icon plate. Typed as the literal union rather
@@ -41,7 +41,7 @@ export type GlyphName =
 export const TABS: ReadonlyArray<{ key: TabKey; label: string; icon: GlyphName }> = [
   { key: "home", label: "HOME", icon: "mesh" },
   { key: "intents", label: "INTENTS", icon: "intent" },
-  { key: "nodes", label: "NODES", icon: "node" },
+  { key: "market", label: "MARKET", icon: "reputation" },
   { key: "vault", label: "VAULT", icon: "vault" },
   { key: "profile", label: "PROFILE", icon: "identity" },
 ];
@@ -58,7 +58,7 @@ export function back(screen: Screen): Screen {
     case "home":
       return screen;
     case "intents":
-    case "nodes":
+    case "market":
     case "vault":
     case "profile":
       return { name: "home" };
@@ -79,8 +79,8 @@ export function activeTab(screen: Screen): TabKey | null {
     case "detail":
     case "settled":
       return "intents";
-    case "nodes":
-      return "nodes";
+    case "market":
+      return "market";
     case "vault":
       return "vault";
     case "profile":
@@ -108,8 +108,8 @@ export function title(screen: Screen): string {
       return "INTENT DETAILS";
     case "settled":
       return "PROOF";
-    case "nodes":
-      return "NODES";
+    case "market":
+      return "MARKET";
     case "vault":
       return "VAULT";
     case "profile":

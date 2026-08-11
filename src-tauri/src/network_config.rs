@@ -32,6 +32,15 @@ pub enum Network {
 }
 
 impl Network {
+    /// Canonical EVM chain identifier.
+    #[must_use]
+    pub const fn chain_id(self) -> u64 {
+        match self {
+            Self::Fuji => 43_113,
+            Self::Mainnet => 43_114,
+        }
+    }
+
     /// Human-readable name for logs and the profile screen.
     #[must_use]
     pub const fn label(self) -> &'static str {
@@ -83,14 +92,32 @@ impl Network {
                 // No reviewed deployment yet. Never substitute the legacy
                 // voucher: it has no authentic structured module semantics.
                 modules: None,
+                // The address above is the legacy voucher marketplace. A
+                // canonical module collection and its replacement marketplace
+                // must be reviewed and published as one pair before MARKET can
+                // claim that its catalog is authentic.
+                module_marketplace: None,
             },
             Self::Mainnet => Contracts {
                 escrow: None,
                 marketplace: None,
                 voucher: None,
                 modules: None,
+                module_marketplace: None,
             },
         }
+    }
+
+    /// Reviewed public-standing release configuration for this chain.
+    ///
+    /// `None` is deliberate until a registry deployment, its SOURCE_ROLE
+    /// grants, and at least two independently operated accepted-state RPCs are
+    /// recorded in the release manifest. A runtime URL or bare address cannot
+    /// manufacture that review decision.
+    #[must_use]
+    pub const fn standing_release(self) -> Option<StandingRelease> {
+        let _ = self;
+        None
     }
 }
 
@@ -102,6 +129,30 @@ pub struct Contracts {
     pub marketplace: Option<&'static str>,
     pub voucher: Option<&'static str>,
     pub modules: Option<&'static str>,
+    /// Marketplace deployed and reviewed together with `modules`.
+    ///
+    /// Kept separate from `marketplace`, which is the legacy voucher market.
+    pub module_marketplace: Option<&'static str>,
+}
+
+/// One independently operated RPC approved for public-standing verification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StandingProvider {
+    /// Stable non-zero identity; repeated URLs never count twice.
+    pub id: u16,
+    /// Accepted/final C-Chain endpoint. Never sent across IPC or logged.
+    pub rpc_url: &'static str,
+}
+
+/// Canonical standing source and its verification policy, compiled into a
+/// reviewed release rather than supplied by a seller or mutable profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StandingRelease {
+    pub chain_id: u64,
+    pub registry: &'static str,
+    pub maximum_age_ms: u64,
+    pub minimum_provider_quorum: u8,
+    pub providers: &'static [StandingProvider],
 }
 
 /// Resolved chain configuration.
@@ -218,6 +269,37 @@ impl NetworkConfig {
             .clone()
             .or_else(|| self.network.contracts().modules.map(ToOwned::to_owned))
     }
+
+    /// Module collection reviewed as the canonical MARKET collection.
+    ///
+    /// Unlike [`Self::modules`], this deliberately ignores runtime overrides.
+    /// A development collection can support inventory/equip testing, but it
+    /// cannot become buyer-visible release authority by sharing a marketplace
+    /// address with the reviewed pair.
+    #[must_use]
+    pub fn module_market_modules(&self) -> Option<String> {
+        self.network.contracts().modules.map(ToOwned::to_owned)
+    }
+
+    /// Marketplace reviewed as the canonical partner of [`Self::modules`].
+    ///
+    /// This intentionally has no environment or data-file override. Those are
+    /// useful for development transactions, but they are not release review
+    /// evidence and therefore cannot activate the buyer-facing authentic
+    /// module catalog.
+    #[must_use]
+    pub fn module_marketplace(&self) -> Option<String> {
+        self.network
+            .contracts()
+            .module_marketplace
+            .map(ToOwned::to_owned)
+    }
+
+    /// Approved public-standing source for this release, if one exists.
+    #[must_use]
+    pub const fn standing_release(&self) -> Option<StandingRelease> {
+        self.network.standing_release()
+    }
 }
 
 #[cfg(test)]
@@ -265,6 +347,7 @@ mod tests {
         assert!(mainnet.marketplace.is_none());
         assert!(mainnet.voucher.is_none());
         assert!(mainnet.modules.is_none());
+        assert!(mainnet.module_marketplace.is_none());
     }
 
     #[test]
@@ -279,6 +362,25 @@ mod tests {
             assert!(address.starts_with("0x") && address.len() == 42, "{address} is not an address");
         }
         assert!(fuji.modules.is_none(), "unreviewed legacy voucher must not become a module collection");
+        assert!(
+            fuji.module_marketplace.is_none(),
+            "legacy voucher marketplace must not become the module market"
+        );
+        assert!(Network::Fuji.standing_release().is_none());
+    }
+
+    #[test]
+    fn runtime_module_override_does_not_activate_an_unreviewed_market_pair() {
+        let config = NetworkConfig {
+            modules_address: Some("0x0000000000000000000000000000000000000001".into()),
+            marketplace_address: Some("0x0000000000000000000000000000000000000002".into()),
+            ..NetworkConfig::default()
+        };
+
+        assert!(config.modules().is_some());
+        assert!(config.marketplace().is_some());
+        assert!(config.module_market_modules().is_none());
+        assert!(config.module_marketplace().is_none());
     }
 
     #[test]

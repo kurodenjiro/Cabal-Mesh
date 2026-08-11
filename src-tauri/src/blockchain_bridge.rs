@@ -8,9 +8,9 @@ use std::str::FromStr;
 use chrono::{DateTime, Utc};
 // Crypto Imports
 use alloy::{
-    consensus::{Transaction as _, TxEnvelope},
-    eips::{eip2718::{Decodable2718, Encodable2718}, BlockId},
-    network::{EthereumWallet, TransactionBuilder},
+    consensus::{BlockHeader as _, Transaction as _, TxEnvelope},
+    eips::{eip2718::{Decodable2718, Encodable2718}, BlockId, BlockNumberOrTag},
+    network::{primitives::HeaderResponse as _, BlockResponse as _, EthereumWallet, TransactionBuilder},
     primitives::{keccak256, Address, Bytes, Signature, U256},
     providers::{Provider, ProviderBuilder},
     rpc::types::TransactionRequest,
@@ -42,6 +42,16 @@ sol! {
 
 sol! {
     #[sol(rpc)]
+    interface IStandingRegistry {
+        function standingOf(address seller)
+            external
+            view
+            returns (uint64 count, uint256 changedAtBlock);
+    }
+}
+
+sol! {
+    #[sol(rpc)]
     interface IModules {
         function balanceOf(address owner) external view returns (uint256 balance);
         function tokenOfOwnerByIndex(address owner, uint256 index)
@@ -54,6 +64,15 @@ sol! {
             returns (uint256 tokenId);
         function equippedBy(uint256 tokenId) external view returns (address operator);
         function ownerOf(uint256 tokenId) external view returns (address owner);
+        function getApproved(uint256 tokenId) external view returns (address operator);
+        function isApprovedForAll(address owner, address operator)
+            external
+            view
+            returns (bool approved);
+        function isMarketplaceEligible(uint256 tokenId)
+            external
+            view
+            returns (bool eligible);
         function locked(uint256 tokenId) external view returns (bool isLocked);
         function revoked(uint256 tokenId) external view returns (bool isRevoked);
         function equip(uint256 tokenId) external;
@@ -168,6 +187,43 @@ pub struct ModuleChainRecord {
     pub minted_by: String,
     pub soulbound: bool,
     pub revoked: bool,
+}
+
+/// One buyable listing from the reviewed module marketplace at one pinned
+/// accepted chain head. Seller prose is deliberately absent: every identity,
+/// slot, rarity, and effect field comes from [`ModuleChainRecord`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModuleListingChainRecord {
+    pub listing_id: String,
+    pub seller: String,
+    pub price_wei: String,
+    pub module: ModuleChainRecord,
+}
+
+/// Complete result of scanning the reviewed marketplace at one accepted head.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModuleMarketChainSnapshot {
+    pub verified_block: u64,
+    pub listings: Vec<ModuleListingChainRecord>,
+    /// Active mapping entries omitted because ownership, token existence,
+    /// eligibility, or approval no longer makes them buyable.
+    pub stale_listings: u32,
+    /// Active entries omitted because their structural/contract metadata was
+    /// not a valid canonical module record.
+    pub malformed_listings: u32,
+}
+
+/// Read-only client detached from [`BlockchainBridge`]'s wallet mutex.
+///
+/// Commands clone this small value while holding the mutex, release the guard,
+/// and only then perform network I/O. Catalog refreshes therefore cannot block
+/// unrelated signing or vault operations for the duration of many RPC calls.
+#[derive(Debug, Clone)]
+pub struct ModuleMarketReader {
+    rpc_url: String,
+    marketplace: Address,
+    modules: Address,
+    standing_release: Option<crate::network_config::StandingRelease>,
 }
 
 /// One accepted-head view of the operator wallet's complete on-chain loadout.
@@ -333,8 +389,17 @@ pub struct BlockchainBridge {
     pub rpc_url: String,
     pub escrow_address: Option<Address>,
     pub marketplace_address: Option<Address>,
+    /// Marketplace reviewed and deployed together with
+    /// `module_market_modules_address`.
+    /// Separate from the legacy voucher marketplace above.
+    pub module_marketplace_address: Option<Address>,
+    /// Canonical module collection from the same reviewed MARKET release.
+    /// Separate from the development-overridable inventory collection below.
+    pub module_market_modules_address: Option<Address>,
     pub voucher_address: Option<Address>,
     pub modules_address: Option<Address>,
+    /// Reviewed registry and independent RPC quorum for public seller standing.
+    pub standing_release: Option<crate::network_config::StandingRelease>,
     pub current_session: Option<InstantSession>,
 }
 
@@ -354,8 +419,15 @@ impl BlockchainBridge {
 
         let escrow_address = network.escrow().and_then(|s| Address::from_str(&s).ok());
         let marketplace_address = network.marketplace().and_then(|s| Address::from_str(&s).ok());
+        let module_marketplace_address = network
+            .module_marketplace()
+            .and_then(|s| Address::from_str(&s).ok());
+        let module_market_modules_address = network
+            .module_market_modules()
+            .and_then(|s| Address::from_str(&s).ok());
         let voucher_address = network.voucher().and_then(|s| Address::from_str(&s).ok());
         let modules_address = network.modules().and_then(|s| Address::from_str(&s).ok());
+        let standing_release = network.standing_release();
 
         let app_dir = crate::app_paths::data_dir();
 
@@ -376,8 +448,11 @@ impl BlockchainBridge {
             rpc_url,
             escrow_address,
             marketplace_address,
+            module_marketplace_address,
+            module_market_modules_address,
             voucher_address,
             modules_address,
+            standing_release,
             current_session: None,
         };
         let _ = bridge.load_identities();
@@ -1318,6 +1393,20 @@ impl BlockchainBridge {
         self.modules_address.is_some()
     }
 
+    /// A detached reader for the reviewed canonical module-market pair.
+    ///
+    /// Both addresses must exist. The legacy voucher marketplace is kept in a
+    /// different field and can never satisfy this constructor.
+    #[must_use]
+    pub fn module_market_reader(&self) -> Option<ModuleMarketReader> {
+        Some(ModuleMarketReader {
+            rpc_url: self.rpc_url.clone(),
+            marketplace: self.module_marketplace_address?,
+            modules: self.module_market_modules_address?,
+            standing_release: self.standing_release,
+        })
+    }
+
     /// Reads every module currently owned by this bridge's primary wallet.
     ///
     /// Ownership comes from ERC-721 Enumerable at one accepted canonical head;
@@ -1684,6 +1773,414 @@ impl BlockchainBridge {
     }
 }
 
+impl ModuleMarketReader {
+    const PAGE_SIZE: u64 = 128;
+    const MAX_LISTING_HISTORY: u64 = 100_000;
+
+    /// Independently verifies public standing for each exact seller address.
+    ///
+    /// Provider errors are data, not command failures: every seller receives
+    /// an explicit `UNKNOWN` reason from `cabal-standing`. No local settlement
+    /// count or seller-supplied field participates.
+    pub async fn seller_standing(
+        &self,
+        sellers: &[Address],
+        now_ms: u64,
+    ) -> std::collections::BTreeMap<Address, cabal_standing::PublicStanding> {
+        use cabal_standing::{
+            verify_public_standing, EvmAddress, PublicStanding, RegistryConfig,
+            UnknownStandingReason,
+        };
+
+        let mut result = std::collections::BTreeMap::new();
+        let Some(release) = self.standing_release else {
+            for seller in sellers {
+                result.insert(
+                    *seller,
+                    verify_public_standing(
+                        None,
+                        EvmAddress::from_bytes(seller.into_array()),
+                        &[],
+                        now_ms,
+                    ),
+                );
+            }
+            return result;
+        };
+
+        let registry = Address::from_str(release.registry).ok();
+        let verifier_config = registry.and_then(|registry| {
+            RegistryConfig::try_new(
+                release.chain_id,
+                EvmAddress::from_bytes(registry.into_array()),
+                release.maximum_age_ms,
+                release.minimum_provider_quorum,
+            )
+            .ok()
+        });
+        let provider_ids = release
+            .providers
+            .iter()
+            .map(|provider| cabal_standing::ProviderId::try_new(provider.id))
+            .collect::<Result<Vec<_>, _>>();
+        let (Some(registry), Some(verifier_config), Ok(provider_ids)) =
+            (registry, verifier_config, provider_ids)
+        else {
+            for seller in sellers {
+                result.insert(
+                    *seller,
+                    PublicStanding::Unknown(UnknownStandingReason::Unconfigured),
+                );
+            }
+            return result;
+        };
+
+        let head_reads = futures::future::join_all(
+            release
+                .providers
+                .iter()
+                .copied()
+                .map(read_accepted_standing_head),
+        )
+        .await;
+        let pinned_block = head_reads
+            .iter()
+            .filter_map(|read| read.as_ref().ok().map(|head| head.block_number))
+            .min();
+
+        for seller in sellers {
+            let seller_evm = EvmAddress::from_bytes(seller.into_array());
+            let Some(pinned_block) = pinned_block else {
+                result.insert(
+                    *seller,
+                    verify_public_standing(
+                        Some(&verifier_config),
+                        seller_evm,
+                        &provider_ids
+                            .iter()
+                            .copied()
+                            .map(|provider_id| cabal_standing::ProviderObservation {
+                                provider_id,
+                                read: cabal_standing::ProviderRead::Unavailable,
+                            })
+                            .collect::<Vec<_>>(),
+                        now_ms,
+                    ),
+                );
+                continue;
+            };
+
+            let observations = futures::future::join_all(
+                release
+                    .providers
+                    .iter()
+                    .copied()
+                    .zip(provider_ids.iter().copied())
+                    .zip(head_reads.iter().cloned())
+                    .map(|((endpoint, provider_id), head)| {
+                        read_standing_observation(
+                            endpoint,
+                            provider_id,
+                            head,
+                            release.chain_id,
+                            registry,
+                            *seller,
+                            pinned_block,
+                        )
+                    }),
+            )
+            .await;
+            result.insert(
+                *seller,
+                verify_public_standing(
+                    Some(&verifier_config),
+                    seller_evm,
+                    &observations,
+                    now_ms,
+                ),
+            );
+        }
+
+        result
+    }
+
+    /// Reads and validates every currently buyable canonical module listing at
+    /// one accepted Avalanche C-Chain head.
+    ///
+    /// A contract listing can remain marked active after its token is burned,
+    /// transferred, revoked, or unapproved outside the marketplace. Those
+    /// entries are counted as stale and omitted. Transport failures fail the
+    /// whole refresh; a vanished token's explicit contract revert only omits
+    /// that entry.
+    pub async fn active_listings(&self) -> Result<ModuleMarketChainSnapshot, Box<dyn Error>> {
+        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        let marketplace = IMarketplace::new(self.marketplace, provider.clone());
+        let modules = IModules::new(self.modules, provider);
+
+        // Standard Avalanche C-Chain RPC serves accepted state by default.
+        // Pin every view call to this exact head so cancellation, transfer,
+        // metadata, and approval cannot be assembled from different states.
+        let verified_block = marketplace.provider().get_block_number().await?;
+        let block = BlockId::number(verified_block);
+        let count = marketplace.listingCount().block(block).call().await?;
+        if count > U256::from(Self::MAX_LISTING_HISTORY) {
+            return Err("module marketplace history exceeds the supported safety bound".into());
+        }
+        let total = count.to::<u64>();
+        let mut offset = 0_u64;
+        let mut listings = Vec::new();
+        let mut stale_listings = 0_u32;
+        let mut malformed_listings = 0_u32;
+
+        while offset < total {
+            let page = marketplace
+                .getActiveListingsPaged(U256::from(offset), U256::from(Self::PAGE_SIZE))
+                .block(block)
+                .call()
+                .await?;
+            if page.result.len() != page.ids.len() {
+                return Err("module marketplace returned mismatched listing arrays".into());
+            }
+
+            let next_offset = page.nextOffset;
+            if next_offset > U256::from(total) || next_offset <= U256::from(offset) {
+                return Err("module marketplace returned an invalid page cursor".into());
+            }
+
+            for (listing, listing_id) in page.result.into_iter().zip(page.ids) {
+                // Other allowed collections belong to other catalog surfaces.
+                // Never resolve their seller prose as module metadata.
+                if listing.collection != self.modules {
+                    continue;
+                }
+                if !listing.active
+                    || listing_id == U256::ZERO
+                    || listing.seller == Address::ZERO
+                    || listing.priceWei == U256::ZERO
+                {
+                    malformed_listings = malformed_listings.saturating_add(1);
+                    continue;
+                }
+
+                let active_id = marketplace
+                    .activeListingOf(self.modules, listing.tokenId)
+                    .block(block)
+                    .call()
+                    .await?;
+                if active_id != listing_id {
+                    stale_listings = stale_listings.saturating_add(1);
+                    continue;
+                }
+
+                let owner = match modules.ownerOf(listing.tokenId).block(block).call().await {
+                    Ok(owner) => owner,
+                    Err(error) if contract_call_reverted(&error) => {
+                        stale_listings = stale_listings.saturating_add(1);
+                        continue;
+                    }
+                    Err(error) => return Err(Box::new(error)),
+                };
+                if owner != listing.seller {
+                    stale_listings = stale_listings.saturating_add(1);
+                    continue;
+                }
+
+                let data = match modules.assetData(listing.tokenId).block(block).call().await {
+                    Ok(data) => data,
+                    Err(error) if contract_call_reverted(&error) => {
+                        malformed_listings = malformed_listings.saturating_add(1);
+                        continue;
+                    }
+                    Err(error) => return Err(Box::new(error)),
+                };
+                let soulbound = modules.locked(listing.tokenId).block(block).call().await?;
+                let revoked = modules.revoked(listing.tokenId).block(block).call().await?;
+                let eligible = modules
+                    .isMarketplaceEligible(listing.tokenId)
+                    .block(block)
+                    .call()
+                    .await?;
+                let approved = modules
+                    .getApproved(listing.tokenId)
+                    .block(block)
+                    .call()
+                    .await?;
+                let approved_for_all = modules
+                    .isApprovedForAll(owner, self.marketplace)
+                    .block(block)
+                    .call()
+                    .await?;
+                if soulbound
+                    || revoked
+                    || !eligible
+                    || (approved != self.marketplace && !approved_for_all)
+                {
+                    stale_listings = stale_listings.saturating_add(1);
+                    continue;
+                }
+
+                listings.push(ModuleListingChainRecord {
+                    listing_id: listing_id.to_string(),
+                    seller: listing.seller.to_string(),
+                    price_wei: listing.priceWei.to_string(),
+                    module: ModuleChainRecord {
+                        token_id: listing.tokenId.to_string(),
+                        collection: self.modules.to_string(),
+                        owner: owner.to_string(),
+                        module_id: format!("{:#x}", data.moduleId),
+                        provenance_hash: format!("{:#x}", data.provenanceHash),
+                        display_name: data.displayName,
+                        asset_class: data.assetClass,
+                        slot: data.slot,
+                        rarity: data.rarity,
+                        effect_type: data.effectType,
+                        primary_effect_value: data.primaryEffectValue,
+                        secondary_effect_value: data.secondaryEffectValue,
+                        artwork_uri: data.artworkUri,
+                        artwork_digest: format!("{:#x}", data.artworkDigest),
+                        schema_version: data.schemaVersion,
+                        minted_by: data.mintedBy.to_string(),
+                        soulbound,
+                        revoked,
+                    },
+                });
+            }
+
+            offset = next_offset.to::<u64>();
+        }
+
+        Ok(ModuleMarketChainSnapshot {
+            verified_block,
+            listings,
+            stale_listings,
+            malformed_listings,
+        })
+    }
+}
+
+fn contract_call_reverted(error: &alloy::contract::Error) -> bool {
+    error.as_revert_data().is_some()
+}
+
+#[derive(Debug, Clone, Copy)]
+struct StandingHead {
+    chain_id: u64,
+    block_number: u64,
+}
+
+async fn read_accepted_standing_head(
+    endpoint: crate::network_config::StandingProvider,
+) -> Result<StandingHead, ()> {
+    let url = endpoint.rpc_url.parse().map_err(|_| ())?;
+    let provider = ProviderBuilder::new().connect_http(url);
+    let chain_id = provider.get_chain_id().await.map_err(|_| ())?;
+    let block = provider
+        .get_block_by_number(BlockNumberOrTag::Finalized)
+        .await
+        .map_err(|_| ())?
+        .ok_or(())?;
+    Ok(StandingHead {
+        chain_id,
+        block_number: block.header().number(),
+    })
+}
+
+async fn read_standing_observation(
+    endpoint: crate::network_config::StandingProvider,
+    provider_id: cabal_standing::ProviderId,
+    head: Result<StandingHead, ()>,
+    expected_chain_id: u64,
+    registry: Address,
+    seller: Address,
+    pinned_block: u64,
+) -> cabal_standing::ProviderObservation {
+    use cabal_standing::{
+        BlockHash, EvmAddress, ProviderObservation, ProviderRead, StandingSnapshot,
+    };
+
+    let Ok(head) = head else {
+        return ProviderObservation {
+            provider_id,
+            read: ProviderRead::Unavailable,
+        };
+    };
+    if head.chain_id != expected_chain_id || head.block_number < pinned_block {
+        return ProviderObservation {
+            provider_id,
+            read: ProviderRead::IdentityMismatch,
+        };
+    }
+
+    let Ok(url) = endpoint.rpc_url.parse() else {
+        return ProviderObservation {
+            provider_id,
+            read: ProviderRead::Malformed,
+        };
+    };
+    let provider = ProviderBuilder::new().connect_http(url);
+    let block = match provider
+        .get_block_by_number(BlockNumberOrTag::Number(pinned_block))
+        .await
+    {
+        Ok(Some(block)) => block,
+        _ => {
+            return ProviderObservation {
+                provider_id,
+                read: ProviderRead::Unavailable,
+            };
+        }
+    };
+    if block.header().number() != pinned_block {
+        return ProviderObservation {
+            provider_id,
+            read: ProviderRead::Malformed,
+        };
+    }
+
+    let contract = IStandingRegistry::new(registry, provider);
+    let standing = match contract
+        .standingOf(seller)
+        .block(BlockId::number(pinned_block))
+        .call()
+        .await
+    {
+        Ok(standing) => standing,
+        Err(_) => {
+            return ProviderObservation {
+                provider_id,
+                read: ProviderRead::Unavailable,
+            };
+        }
+    };
+    if standing.changedAtBlock > U256::from(u64::MAX) {
+        return ProviderObservation {
+            provider_id,
+            read: ProviderRead::Malformed,
+        };
+    }
+    let Some(observed_at_ms) = block.header().timestamp().checked_mul(1_000) else {
+        return ProviderObservation {
+            provider_id,
+            read: ProviderRead::Malformed,
+        };
+    };
+
+    ProviderObservation {
+        provider_id,
+        read: ProviderRead::Snapshot(StandingSnapshot {
+            chain_id: head.chain_id,
+            registry: EvmAddress::from_bytes(registry.into_array()),
+            seller: EvmAddress::from_bytes(seller.into_array()),
+            count: standing.count,
+            last_changed_block: standing.changedAtBlock.to::<u64>(),
+            block_number: pinned_block,
+            block_hash: BlockHash::from_bytes(block.header().hash().0),
+            observed_at_ms,
+            accepted: true,
+        }),
+    }
+}
+
 #[cfg(test)]
 mod offline_signing_tests {
     use super::*;
@@ -1716,8 +2213,11 @@ mod offline_signing_tests {
             rpc_url: "http://127.0.0.1:9".to_string(),
             escrow_address: None,
             marketplace_address: None,
+            module_marketplace_address: None,
+            module_market_modules_address: None,
             voucher_address: None,
             modules_address: None,
+            standing_release: None,
             current_session: None,
         };
         bridge.generate_new_identity("Test".to_string(), "🧪".to_string()).unwrap();
@@ -1779,8 +2279,11 @@ mod content_commitment_tests {
             rpc_url: "http://127.0.0.1:9".to_string(),
             escrow_address: None,
             marketplace_address: None,
+            module_marketplace_address: None,
+            module_market_modules_address: None,
             voucher_address: None,
             modules_address: None,
+            standing_release: None,
             current_session: None,
         }
     }
@@ -1863,6 +2366,54 @@ mod content_commitment_tests {
             Address::from_str("0x00000000000000000000000000000000000000b8").unwrap(),
         );
         assert!(bridge.cached_module_loadout().is_none());
+
+        std::fs::remove_dir_all(&tmp_dir).ok();
+    }
+
+    #[tokio::test]
+    async fn market_reader_requires_reviewed_pair_and_never_substitutes_local_standing() {
+        let tmp_dir = std::env::temp_dir().join(format!(
+            "cabalmesh_market_reader_test_{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let mut bridge = test_bridge(&tmp_dir);
+        let modules = Address::from_str(
+            "0x00000000000000000000000000000000000000a7",
+        )
+        .unwrap();
+        let legacy_market = Address::from_str(
+            "0x00000000000000000000000000000000000000b8",
+        )
+        .unwrap();
+        bridge.modules_address = Some(modules);
+        bridge.marketplace_address = Some(legacy_market);
+        assert!(
+            bridge.module_market_reader().is_none(),
+            "legacy voucher market must never activate canonical MARKET"
+        );
+
+        bridge.module_marketplace_address = Some(legacy_market);
+        assert!(
+            bridge.module_market_reader().is_none(),
+            "a runtime inventory override must not become the reviewed MARKET collection"
+        );
+        bridge.module_market_modules_address = Some(modules);
+        let reader = bridge
+            .module_market_reader()
+            .expect("an explicit reviewed pair creates a reader");
+        let seller = Address::from_str(
+            "0x00000000000000000000000000000000000000c9",
+        )
+        .unwrap();
+        let standing = reader.seller_standing(&[seller], 10_000_000).await;
+        assert_eq!(
+            standing.get(&seller),
+            Some(&cabal_standing::PublicStanding::Unknown(
+                cabal_standing::UnknownStandingReason::Unconfigured
+            )),
+            "an unreachable RPC and local history cannot replace absent reviewed standing config"
+        );
 
         std::fs::remove_dir_all(&tmp_dir).ok();
     }

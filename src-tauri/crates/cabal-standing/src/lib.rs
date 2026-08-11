@@ -226,6 +226,12 @@ pub enum ProviderRead {
     /// The endpoint timed out, rejected the request, or returned no parseable
     /// response. Details stay in the adapter and must not become a fake value.
     Unavailable,
+    /// The endpoint answered, but for a different chain or canonical source.
+    /// A successful wrong-identity response must invalidate the whole result;
+    /// treating it like downtime would let a quorum silently ignore conflict.
+    IdentityMismatch,
+    /// The endpoint answered with structurally impossible data.
+    Malformed,
 }
 
 /// Read result attributed to one independent provider.
@@ -371,27 +377,36 @@ pub fn verify_public_standing(
         if !provider_ids.insert(observation.provider_id) {
             return PublicStanding::Unknown(UnknownStandingReason::Malformed);
         }
-        if let ProviderRead::Snapshot(snapshot) = observation.read {
-            if snapshot.chain_id != config.chain_id
-                || snapshot.registry != config.registry
-                || snapshot.seller != seller
-            {
+        match observation.read {
+            ProviderRead::Unavailable => {}
+            ProviderRead::IdentityMismatch => {
                 return PublicStanding::Unknown(UnknownStandingReason::IdentityMismatch);
             }
-            if !snapshot.accepted {
-                return PublicStanding::Unknown(UnknownStandingReason::Unfinalized);
-            }
-            if snapshot.block_number == 0
-                || snapshot.block_hash.is_zero()
-                || snapshot.last_changed_block > snapshot.block_number
-                || snapshot.observed_at_ms > now_ms
-            {
+            ProviderRead::Malformed => {
                 return PublicStanding::Unknown(UnknownStandingReason::Malformed);
             }
-            if now_ms - snapshot.observed_at_ms > config.maximum_age_ms {
-                return PublicStanding::Unknown(UnknownStandingReason::Stale);
+            ProviderRead::Snapshot(snapshot) => {
+                if snapshot.chain_id != config.chain_id
+                    || snapshot.registry != config.registry
+                    || snapshot.seller != seller
+                {
+                    return PublicStanding::Unknown(UnknownStandingReason::IdentityMismatch);
+                }
+                if !snapshot.accepted {
+                    return PublicStanding::Unknown(UnknownStandingReason::Unfinalized);
+                }
+                if snapshot.block_number == 0
+                    || snapshot.block_hash.is_zero()
+                    || snapshot.last_changed_block > snapshot.block_number
+                    || snapshot.observed_at_ms > now_ms
+                {
+                    return PublicStanding::Unknown(UnknownStandingReason::Malformed);
+                }
+                if now_ms - snapshot.observed_at_ms > config.maximum_age_ms {
+                    return PublicStanding::Unknown(UnknownStandingReason::Stale);
+                }
+                snapshots.push(snapshot);
             }
-            snapshots.push(snapshot);
         }
     }
 
@@ -611,6 +626,45 @@ mod tests {
         assert_eq!(
             without_quorum,
             PublicStanding::Unknown(UnknownStandingReason::Unavailable)
+        );
+    }
+
+    #[test]
+    fn successful_identity_or_shape_conflict_cannot_hide_as_unavailable() {
+        let identity_mismatch = verify_public_standing(
+            Some(&config()),
+            address(7),
+            &[
+                observation(1, snapshot(8)),
+                observation(2, snapshot(8)),
+                ProviderObservation {
+                    provider_id: provider(3),
+                    read: ProviderRead::IdentityMismatch,
+                },
+            ],
+            NOW,
+        );
+        assert_eq!(
+            identity_mismatch,
+            PublicStanding::Unknown(UnknownStandingReason::IdentityMismatch)
+        );
+
+        let malformed = verify_public_standing(
+            Some(&config()),
+            address(7),
+            &[
+                observation(1, snapshot(8)),
+                observation(2, snapshot(8)),
+                ProviderObservation {
+                    provider_id: provider(3),
+                    read: ProviderRead::Malformed,
+                },
+            ],
+            NOW,
+        );
+        assert_eq!(
+            malformed,
+            PublicStanding::Unknown(UnknownStandingReason::Malformed)
         );
     }
 

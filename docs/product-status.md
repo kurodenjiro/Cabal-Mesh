@@ -42,9 +42,14 @@ These render, accept input, and are stored — but nothing downstream reads them
   **Neither is called from `src/commands.rs`** — grep returns nothing. They were
   only reachable through the `legacy` module, deleted in 3e18664. So "AI agents
   negotiate" is currently 0% live.
-- **Marketplace / vouchers.** `Marketplace.sol` and `CabalMeshVoucher.sol` are
-  deployed to Fuji, but no command in the current 21-command surface exposes
-  them. The frontend cannot mint, list, or buy anything.
+- **Marketplace mutation.** The 28-command surface now exposes a read-only
+  canonical module catalog through MARKET, with accepted-block token/approval
+  checks and independently verified public standing. The reviewed Fuji
+  `CabalMeshModules` + replacement `Marketplace` + `CabalStandingRegistry`
+  release tuple is intentionally not configured yet, so the screen says the
+  canonical market is unavailable instead of falling back to legacy vouchers.
+  Listing, cancelling, buying, and deal settlement remain unwired at this
+  point; those are tickets 11 and 12.
 - **Key export / import / backup.** Also removed with `legacy`. See
   `identity-design.md` — this is the most urgent gap, because a wallet is
   auto-created with no way to ever get the key out of it.
