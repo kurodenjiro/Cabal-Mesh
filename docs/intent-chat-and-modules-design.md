@@ -269,9 +269,13 @@ Metadata is the recommended route — standard, and external wallets can read it
 **3. Who pays the relay reward?** *(the load-bearing question)*
 If node A relays for node B, where does the AVAX come from — a fee the sender
 attaches to the intent, or emission from a treasury? A sender-paid fee is
-self-sustaining; emission needs funding and inflates. **Until this is answered
-the `0.0096 AVAX` on the HOME screen is decoration**, and both the HOME and
-MARKET designs above depend on the answer.
+self-sustaining; emission needs funding and inflates.
+
+**Resolved 2026-08-12:** the sender pre-funds a bounded route escrow; no reward
+emission is used. Fee caps, exact integer arithmetic, refunds, gas handling,
+finality, solvency, and UI language are fixed in the
+[relay reward economics](relay-reward-economics.md). The `0.0096 AVAX` remains
+an estimate until ticket 13 produces an accepted on-chain settlement.
 
 **4. Farming defence.**
 Two devices owned by one person can relay junk to each other forever. Rewards

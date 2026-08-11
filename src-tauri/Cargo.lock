@@ -1647,6 +1647,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "cabal-rewards"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "cabal-store"
 version = "0.1.0"
 dependencies = [
@@ -1684,6 +1692,7 @@ dependencies = [
  "cabal-ble-macos",
  "cabal-core",
  "cabal-intent-inference",
+ "cabal-rewards",
  "cabal-store",
  "cabal-vault",
  "chrono",

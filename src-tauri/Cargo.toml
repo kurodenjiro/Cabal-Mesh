@@ -47,6 +47,7 @@ ts-rs = ["dep:ts-rs", "cabal-core/ts-rs"]
 # The domain model. No I/O, no runtime — see crates/cabal-core/src/lib.rs.
 cabal-core = { path = "crates/cabal-core" }
 cabal-intent-inference = { path = "crates/cabal-intent-inference" }
+cabal-rewards = { path = "crates/cabal-rewards" }
 cabal-store = { path = "crates/cabal-store" }
 cabal-vault = { path = "crates/cabal-vault" }
 # The BLE mesh protocol: wire format, flood routing, sessions. No I/O — the
