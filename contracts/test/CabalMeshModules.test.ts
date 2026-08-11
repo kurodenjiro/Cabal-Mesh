@@ -408,6 +408,9 @@ describe("CabalMeshModules", function () {
       await expect(modules.connect(owner).equip(first))
         .to.emit(modules, "ModuleEquipped")
         .withArgs(first, owner.address, Slot.Radio);
+      await expect(modules.connect(owner).equip(first))
+        .to.be.revertedWithCustomError(modules, "TokenAlreadyEquipped")
+        .withArgs(first, owner.address);
       await expect(modules.connect(owner).equip(second))
         .to.be.revertedWithCustomError(modules, "SlotAlreadyOccupied")
         .withArgs(owner.address, Slot.Radio, first);
@@ -446,6 +449,25 @@ describe("CabalMeshModules", function () {
       expect(await modules.equippedBy(tokenId)).to.equal(ethers.ZeroAddress);
       await modules.connect(buyer).equip(tokenId);
       expect(await modules.equippedToken(buyer.address, Slot.Radio)).to.equal(tokenId);
+    });
+
+    it("clears the loadout if an eventual burn path destroys the token", async function () {
+      const [admin, minter, owner] = await ethers.getSigners();
+      const Harness = await ethers.getContractFactory("CabalMeshModulesHarness");
+      const modules = await Harness.deploy(admin.address, minter.address, admin.address);
+      await modules.waitForDeployment();
+      const tokenId = await mint(modules, minter, owner.address);
+      await modules.connect(owner).equip(tokenId);
+
+      await expect(modules.burnForTest(tokenId))
+        .to.emit(modules, "ModuleUnequipped")
+        .withArgs(tokenId, owner.address, Slot.Radio);
+
+      expect(await modules.equippedToken(owner.address, Slot.Radio)).to.equal(0);
+      expect(await modules.equippedBy(tokenId)).to.equal(ethers.ZeroAddress);
+      await expect(modules.ownerOf(tokenId))
+        .to.be.revertedWithCustomError(modules, "ERC721NonexistentToken")
+        .withArgs(tokenId);
     });
 
     it("stays equipped while merely listed, then clears on atomic escrow transfer", async function () {

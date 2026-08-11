@@ -48,9 +48,16 @@ sol! {
             external
             view
             returns (uint256 tokenId);
+        function equippedToken(address operator, uint8 slot)
+            external
+            view
+            returns (uint256 tokenId);
+        function equippedBy(uint256 tokenId) external view returns (address operator);
         function ownerOf(uint256 tokenId) external view returns (address owner);
         function locked(uint256 tokenId) external view returns (bool isLocked);
         function revoked(uint256 tokenId) external view returns (bool isRevoked);
+        function equip(uint256 tokenId) external;
+        function unequip(uint256 tokenId) external;
         function assetData(uint256 tokenId)
             external
             view
@@ -141,7 +148,7 @@ pub struct VoucherView {
 ///
 /// This is intentionally not marketplace/listing metadata. The command layer
 /// validates and renders these immutable contract fields before they cross IPC.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ModuleChainRecord {
     pub token_id: String,
     pub collection: String,
@@ -161,6 +168,26 @@ pub struct ModuleChainRecord {
     pub minted_by: String,
     pub soulbound: bool,
     pub revoked: bool,
+}
+
+/// One accepted-head view of the operator wallet's complete on-chain loadout.
+///
+/// This can be cached for offline display, but only a freshly queried snapshot
+/// is eligibility evidence for reward or routing decisions.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModuleLoadoutChainSnapshot {
+    pub collection: String,
+    pub operator: String,
+    pub verified_block: u64,
+    pub verified_at: DateTime<Utc>,
+    pub modules: Vec<ModuleChainRecord>,
+}
+
+/// A confirmed loadout mutation plus the accepted state observed afterwards.
+#[derive(Debug, Clone)]
+pub struct ModuleMutationOutcome {
+    pub tx_hash: String,
+    pub loadout: ModuleLoadoutChainSnapshot,
 }
 
 /// A Marketplace deal (real on-chain state: Active/Released/Refunded) —
@@ -297,6 +324,7 @@ pub struct BlockchainBridge {
     pub identity_vault: Vault<crate::vault_key::FileKeyProvider>,
     pub storage_path: PathBuf,
     pub chain_cache_path: PathBuf,
+    pub module_loadout_cache_path: PathBuf,
     pub pending_relay_path: PathBuf,
     pub relayed_history_path: PathBuf,
     pub content_store_path: PathBuf,
@@ -339,6 +367,7 @@ impl BlockchainBridge {
             ),
             storage_path: app_dir.join("snapshot.enc"),
             chain_cache_path: app_dir.join("chain_cache.json"),
+            module_loadout_cache_path: app_dir.join("module_loadout_cache.json"),
             pending_relay_path: app_dir.join("pending_relay_txs.json"),
             relayed_history_path: app_dir.join("relayed_history.json"),
             content_store_path: app_dir.join("content_store.json"),
@@ -1354,6 +1383,168 @@ impl BlockchainBridge {
         Ok(owned)
     }
 
+    /// Reads the operator wallet's complete loadout at one accepted C-Chain
+    /// head and rejects any contract state that does not satisfy the V1
+    /// ownership/binding invariants.
+    pub async fn get_module_loadout(
+        &self,
+    ) -> Result<ModuleLoadoutChainSnapshot, Box<dyn Error>> {
+        let collection = self
+            .modules_address
+            .ok_or("MODULES_CONTRACT_ADDRESS not configured")?;
+        let operator = self.primary_signer()?.address();
+        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        let contract = IModules::new(collection, provider);
+        let verified_block = contract.provider().get_block_number().await?;
+        let snapshot_block = BlockId::number(verified_block);
+        let mut modules = Vec::with_capacity(3);
+
+        for slot in 1_u8..=3 {
+            let token_id = contract
+                .equippedToken(operator, slot)
+                .block(snapshot_block)
+                .call()
+                .await?;
+            if token_id == U256::ZERO {
+                continue;
+            }
+
+            let current_owner = contract.ownerOf(token_id).block(snapshot_block).call().await?;
+            let equipped_by = contract.equippedBy(token_id).block(snapshot_block).call().await?;
+            let data = contract.assetData(token_id).block(snapshot_block).call().await?;
+            let soulbound = contract.locked(token_id).block(snapshot_block).call().await?;
+            let revoked = contract.revoked(token_id).block(snapshot_block).call().await?;
+
+            // A canonical V1 collection clears these mappings on ownership
+            // loss, escrow transfer, burn, and revocation. Fail closed if the
+            // configured bytecode violates that contract rather than turning
+            // inconsistent state into a local boost.
+            if current_owner != operator
+                || equipped_by != operator
+                || data.assetClass != 0
+                || data.slot != slot
+                || soulbound
+                || revoked
+            {
+                return Err("canonical module loadout invariant failed".into());
+            }
+
+            modules.push(ModuleChainRecord {
+                token_id: token_id.to_string(),
+                collection: collection.to_string(),
+                owner: current_owner.to_string(),
+                module_id: format!("{:#x}", data.moduleId),
+                provenance_hash: format!("{:#x}", data.provenanceHash),
+                display_name: data.displayName,
+                asset_class: data.assetClass,
+                slot: data.slot,
+                rarity: data.rarity,
+                effect_type: data.effectType,
+                primary_effect_value: data.primaryEffectValue,
+                secondary_effect_value: data.secondaryEffectValue,
+                artwork_uri: data.artworkUri,
+                artwork_digest: format!("{:#x}", data.artworkDigest),
+                schema_version: data.schemaVersion,
+                minted_by: data.mintedBy.to_string(),
+                soulbound,
+                revoked,
+            });
+        }
+
+        Ok(ModuleLoadoutChainSnapshot {
+            collection: collection.to_string(),
+            operator: operator.to_string(),
+            verified_block,
+            verified_at: Utc::now(),
+            modules,
+        })
+    }
+
+    /// Persists an already validated accepted-head loadout for offline display.
+    /// Cached state is advisory and must never be used by effect verifiers.
+    pub fn save_module_loadout_cache(
+        &self,
+        snapshot: &ModuleLoadoutChainSnapshot,
+    ) -> Result<(), Box<dyn Error>> {
+        JsonStore::compact(&self.module_loadout_cache_path).save(snapshot)?;
+        Ok(())
+    }
+
+    /// Returns the last loadout only when it belongs to this exact canonical
+    /// collection and current primary operator wallet.
+    #[must_use]
+    pub fn cached_module_loadout(&self) -> Option<ModuleLoadoutChainSnapshot> {
+        let collection = self.modules_address?;
+        let operator = self.primary_signer().ok()?.address();
+        let bytes = fs::read(&self.module_loadout_cache_path).ok()?;
+        let snapshot: ModuleLoadoutChainSnapshot = serde_json::from_slice(&bytes).ok()?;
+        (snapshot.collection == collection.to_string()
+            && snapshot.operator == operator.to_string())
+            .then_some(snapshot)
+    }
+
+    /// Equips a module online and returns only after the accepted loadout
+    /// proves that exact token is bound to the primary operator wallet.
+    pub async fn equip_module(
+        &self,
+        token_id: U256,
+    ) -> Result<ModuleMutationOutcome, Box<dyn Error>> {
+        let signer = self.primary_signer()?;
+        let collection = self
+            .modules_address
+            .ok_or("MODULES_CONTRACT_ADDRESS not configured")?;
+        let provider = ProviderBuilder::new()
+            .wallet(signer)
+            .connect_http(self.rpc_url.parse()?);
+        let contract = IModules::new(collection, provider);
+        let receipt = contract.equip(token_id).send().await?.get_receipt().await?;
+        let loadout = self.get_module_loadout().await?;
+        let token_id_text = token_id.to_string();
+        if !loadout
+            .modules
+            .iter()
+            .any(|module| module.token_id == token_id_text)
+        {
+            return Err("module equip was not confirmed by accepted state".into());
+        }
+
+        Ok(ModuleMutationOutcome {
+            tx_hash: format!("{:?}", receipt.transaction_hash),
+            loadout,
+        })
+    }
+
+    /// Unequips a module online and returns only after accepted state no longer
+    /// binds that token to any slot of the primary operator wallet.
+    pub async fn unequip_module(
+        &self,
+        token_id: U256,
+    ) -> Result<ModuleMutationOutcome, Box<dyn Error>> {
+        let signer = self.primary_signer()?;
+        let collection = self
+            .modules_address
+            .ok_or("MODULES_CONTRACT_ADDRESS not configured")?;
+        let provider = ProviderBuilder::new()
+            .wallet(signer)
+            .connect_http(self.rpc_url.parse()?);
+        let contract = IModules::new(collection, provider);
+        let receipt = contract.unequip(token_id).send().await?.get_receipt().await?;
+        let loadout = self.get_module_loadout().await?;
+        let token_id_text = token_id.to_string();
+        if loadout
+            .modules
+            .iter()
+            .any(|module| module.token_id == token_id_text)
+        {
+            return Err("module unequip was not confirmed by accepted state".into());
+        }
+
+        Ok(ModuleMutationOutcome {
+            tx_hash: format!("{:?}", receipt.transaction_hash),
+            loadout,
+        })
+    }
+
     /// A Marketplace deal this address is involved in (as buyer or seller),
     /// with its real on-chain status — this IS the "an agent is dealing with
     /// this listing" signal: `active` means a buyer has locked funds against
@@ -1515,6 +1706,7 @@ mod offline_signing_tests {
             ),
             storage_path: tmp_dir.join("snapshot.enc"),
             chain_cache_path: tmp_dir.join("chain_cache.json"),
+            module_loadout_cache_path: tmp_dir.join("module_loadout_cache.json"),
             pending_relay_path: tmp_dir.join("pending_relay_txs.json"),
             relayed_history_path: tmp_dir.join("relayed_history.json"),
             content_store_path: tmp_dir.join("content_store.json"),
@@ -1578,6 +1770,7 @@ mod content_commitment_tests {
             ),
             storage_path: tmp_dir.join("snapshot.enc"),
             chain_cache_path: tmp_dir.join("chain_cache.json"),
+            module_loadout_cache_path: tmp_dir.join("module_loadout_cache.json"),
             pending_relay_path: tmp_dir.join("pending_relay_txs.json"),
             relayed_history_path: tmp_dir.join("relayed_history.json"),
             content_store_path: tmp_dir.join("content_store.json"),
@@ -1628,6 +1821,48 @@ mod content_commitment_tests {
             .expect("receive_content should not error even on mismatch");
         assert!(!rejected, "a signature from someone else must never be silently accepted");
         assert!(buyer_bridge.get_received_content(2).is_none());
+
+        std::fs::remove_dir_all(&tmp_dir).ok();
+    }
+
+    #[test]
+    fn cached_loadout_is_scoped_to_the_current_wallet_and_collection() {
+        let tmp_dir = std::env::temp_dir().join(format!(
+            "cabalmesh_loadout_cache_test_{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+
+        let mut bridge = test_bridge(&tmp_dir);
+        bridge
+            .generate_new_identity("Operator".to_string(), "📡".to_string())
+            .unwrap();
+        let collection = Address::from_str(
+            "0x00000000000000000000000000000000000000a7",
+        )
+        .unwrap();
+        bridge.modules_address = Some(collection);
+        let snapshot = ModuleLoadoutChainSnapshot {
+            collection: collection.to_string(),
+            operator: bridge.get_primary_address(),
+            verified_block: 42,
+            verified_at: Utc::now(),
+            modules: Vec::new(),
+        };
+
+        bridge.save_module_loadout_cache(&snapshot).unwrap();
+        assert_eq!(bridge.cached_module_loadout(), Some(snapshot.clone()));
+
+        let mut wrong_wallet = snapshot.clone();
+        wrong_wallet.operator = "0x00000000000000000000000000000000000000ff".into();
+        bridge.save_module_loadout_cache(&wrong_wallet).unwrap();
+        assert!(bridge.cached_module_loadout().is_none());
+
+        bridge.save_module_loadout_cache(&snapshot).unwrap();
+        bridge.modules_address = Some(
+            Address::from_str("0x00000000000000000000000000000000000000b8").unwrap(),
+        );
+        assert!(bridge.cached_module_loadout().is_none());
 
         std::fs::remove_dir_all(&tmp_dir).ok();
     }

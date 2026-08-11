@@ -243,6 +243,18 @@ elapsed: string, };
  */
 export type InvalidReason = "missing" | "malformed" | "out_of_range" | "too_precise" | "insufficient_funds";
 
+export type LoadoutSlotView = { slot: ModuleSlot, module: ModuleView | null,
+/**
+ * Present only after a downstream verifier actually honors the effect.
+ * Tickets 14–16 will populate this; ticket 09 deliberately returns none.
+ */
+activeEffect: string | null, };
+
+/**
+ * Whether a node loadout is live chain evidence or display-only history.
+ */
+export type LoadoutVerificationStatus = "verified" | "cached" | "chain_unavailable" | "collection_unavailable";
+
 /**
  * One rendered terminal line.
  *
@@ -290,6 +302,19 @@ export type ModuleSlot = "NONE" | "RADIO" | "CRYPTO" | "POWER";
  * One authentic token, rendered only from canonical on-chain structured data.
  */
 export type ModuleView = { tokenId: string, contract: string, owner: string, moduleId: string, provenanceHash: string, displayName: string, assetClass: ModuleAssetClass, slot: ModuleSlot, rarity: ModuleRarity, effectType: ModuleEffectType, primaryEffectValue: number, secondaryEffectValue: number, effect: string, artworkUri: string, artworkDigest: string, schemaVersion: number, mintedBy: string, soulbound: boolean, revoked: boolean, };
+
+/**
+ * On-chain node loadout plus an explicit freshness classification.
+ */
+export type NodeLoadout = { status: LoadoutVerificationStatus, operator: string | null, contract: string | null,
+/**
+ * Decimal string so block heights never cross IPC as lossy JS numbers.
+ */
+verifiedBlock: string | null, verifiedAt: string | null, slots: Array<LoadoutSlotView>,
+/**
+ * A receipt hash is present only on the response to a confirmed mutation.
+ */
+mutationTxHash: string | null, };
 
 /**
  * A peer, as the nodes screen shows it.

@@ -2446,6 +2446,44 @@ pub struct ModuleInventory {
     pub modules: Vec<ModuleView>,
 }
 
+/// Whether a node loadout is live chain evidence or display-only history.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "snake_case")]
+pub enum LoadoutVerificationStatus {
+    Verified,
+    Cached,
+    ChainUnavailable,
+    CollectionUnavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "camelCase")]
+pub struct LoadoutSlotView {
+    pub slot: ModuleSlot,
+    pub module: Option<ModuleView>,
+    /// Present only after a downstream verifier actually honors the effect.
+    /// Tickets 14–16 will populate this; ticket 09 deliberately returns none.
+    pub active_effect: Option<String>,
+}
+
+/// On-chain node loadout plus an explicit freshness classification.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "camelCase")]
+pub struct NodeLoadout {
+    pub status: LoadoutVerificationStatus,
+    pub operator: Option<String>,
+    pub contract: Option<String>,
+    /// Decimal string so block heights never cross IPC as lossy JS numbers.
+    pub verified_block: Option<String>,
+    pub verified_at: Option<String>,
+    pub slots: Vec<LoadoutSlotView>,
+    /// A receipt hash is present only on the response to a confirmed mutation.
+    pub mutation_tx_hash: Option<String>,
+}
+
 fn bps_label(value: u32) -> String {
     let whole = value / 100;
     let fraction = value % 100;
@@ -2561,6 +2599,85 @@ fn module_view(record: crate::blockchain_bridge::ModuleChainRecord) -> Result<Mo
     })
 }
 
+fn empty_loadout(status: LoadoutVerificationStatus) -> NodeLoadout {
+    NodeLoadout {
+        status,
+        operator: None,
+        contract: None,
+        verified_block: None,
+        verified_at: None,
+        slots: [ModuleSlot::Radio, ModuleSlot::Crypto, ModuleSlot::Power]
+            .into_iter()
+            .map(|slot| LoadoutSlotView {
+                slot,
+                module: None,
+                active_effect: None,
+            })
+            .collect(),
+        mutation_tx_hash: None,
+    }
+}
+
+fn loadout_view(
+    snapshot: &crate::blockchain_bridge::ModuleLoadoutChainSnapshot,
+    status: LoadoutVerificationStatus,
+    mutation_tx_hash: Option<String>,
+) -> Result<NodeLoadout, ()> {
+    if !is_address(&snapshot.collection)
+        || !is_address(&snapshot.operator)
+        || snapshot.modules.len() > 3
+    {
+        return Err(());
+    }
+
+    let mut slots = [ModuleSlot::Radio, ModuleSlot::Crypto, ModuleSlot::Power]
+        .into_iter()
+        .map(|slot| LoadoutSlotView {
+            slot,
+            module: None,
+            active_effect: None,
+        })
+        .collect::<Vec<_>>();
+    let mut token_keys = std::collections::HashSet::with_capacity(snapshot.modules.len());
+
+    for record in &snapshot.modules {
+        if record.collection != snapshot.collection
+            || record.owner != snapshot.operator
+            || record.asset_class != 0
+            || record.soulbound
+            || record.revoked
+        {
+            return Err(());
+        }
+        let view = module_view(record.clone())?;
+        let index = match view.slot {
+            ModuleSlot::Radio => 0,
+            ModuleSlot::Crypto => 1,
+            ModuleSlot::Power => 2,
+            ModuleSlot::None => return Err(()),
+        };
+        if slots[index].module.is_some()
+            || !token_keys.insert((view.contract.clone(), view.token_id.clone()))
+        {
+            return Err(());
+        }
+        slots[index].module = Some(view);
+    }
+
+    Ok(NodeLoadout {
+        status,
+        operator: Some(snapshot.operator.clone()),
+        contract: Some(snapshot.collection.clone()),
+        verified_block: Some(snapshot.verified_block.to_string()),
+        verified_at: Some(snapshot.verified_at.to_rfc3339()),
+        slots,
+        // Nominal metadata is visible in module detail, but no effect is
+        // called active until the corresponding settlement/routing verifier
+        // is implemented and can prove it used this snapshot.
+        mutation_tx_hash,
+    })
+}
+
 /// Current authentic modules for the primary wallet.
 ///
 /// No pending transaction, receipt cache, listing description, or legacy
@@ -2592,10 +2709,117 @@ pub async fn vault_modules(state: State<'_, AppState>) -> Result<ModuleInventory
     })
 }
 
+/// The primary node operator's loadout, explicitly classified as verified,
+/// cached, or unavailable.
+#[tauri::command]
+pub async fn module_loadout(state: State<'_, AppState>) -> Result<NodeLoadout, AppError> {
+    let services = state.services()?;
+    let bridge = services.bridge.lock().await;
+    if !bridge.modules_configured() {
+        return Ok(empty_loadout(
+            LoadoutVerificationStatus::CollectionUnavailable,
+        ));
+    }
+
+    match bridge.get_module_loadout().await {
+        Ok(snapshot) => {
+            let view = loadout_view(&snapshot, LoadoutVerificationStatus::Verified, None)
+                .map_err(|_| AppError::Internal)?;
+            if bridge.save_module_loadout_cache(&snapshot).is_err() {
+                tracing::warn!(target: "cabalmesh::loadout", "loadout cache write failed");
+            }
+            Ok(view)
+        }
+        Err(_) => match bridge.cached_module_loadout() {
+            Some(snapshot) => match loadout_view(
+                &snapshot,
+                LoadoutVerificationStatus::Cached,
+                None,
+            ) {
+                Ok(view) => Ok(view),
+                Err(()) => Ok(empty_loadout(
+                    LoadoutVerificationStatus::ChainUnavailable,
+                )),
+            },
+            None => Ok(empty_loadout(
+                LoadoutVerificationStatus::ChainUnavailable,
+            )),
+        },
+    }
+}
+
+fn parse_module_token_id(token_id: &str) -> Result<alloy::primitives::U256, AppError> {
+    let token_id = token_id
+        .parse::<alloy::primitives::U256>()
+        .map_err(|_| AppError::InvalidIntent {
+            field: "token_id",
+            reason: crate::error::InvalidReason::Malformed,
+        })?;
+    if token_id == alloy::primitives::U256::ZERO {
+        return Err(AppError::InvalidIntent {
+            field: "token_id",
+            reason: crate::error::InvalidReason::OutOfRange,
+        });
+    }
+    Ok(token_id)
+}
+
+/// Equips one owned canonical module. There is no offline optimistic mutation:
+/// the returned loadout is re-read from accepted state after the receipt.
+#[tauri::command]
+pub async fn equip_module(
+    token_id: String,
+    state: State<'_, AppState>,
+) -> Result<NodeLoadout, AppError> {
+    let token_id = parse_module_token_id(&token_id)?;
+    let services = state.services()?;
+    let bridge = services.bridge.lock().await;
+    let outcome = bridge
+        .equip_module(token_id)
+        .await
+        .map_err(|_| AppError::Chain { retryable: true })?;
+    let view = loadout_view(
+        &outcome.loadout,
+        LoadoutVerificationStatus::Verified,
+        Some(outcome.tx_hash),
+    )
+    .map_err(|_| AppError::Internal)?;
+    if bridge.save_module_loadout_cache(&outcome.loadout).is_err() {
+        tracing::warn!(target: "cabalmesh::loadout", "loadout cache write failed");
+    }
+    Ok(view)
+}
+
+/// Unequips one currently bound module, confirming accepted state before the
+/// response can update UI or any downstream verifier input.
+#[tauri::command]
+pub async fn unequip_module(
+    token_id: String,
+    state: State<'_, AppState>,
+) -> Result<NodeLoadout, AppError> {
+    let token_id = parse_module_token_id(&token_id)?;
+    let services = state.services()?;
+    let bridge = services.bridge.lock().await;
+    let outcome = bridge
+        .unequip_module(token_id)
+        .await
+        .map_err(|_| AppError::Chain { retryable: true })?;
+    let view = loadout_view(
+        &outcome.loadout,
+        LoadoutVerificationStatus::Verified,
+        Some(outcome.tx_hash),
+    )
+    .map_err(|_| AppError::Internal)?;
+    if bridge.save_module_loadout_cache(&outcome.loadout).is_err() {
+        tracing::warn!(target: "cabalmesh::loadout", "loadout cache write failed");
+    }
+    Ok(view)
+}
+
 #[cfg(test)]
 mod module_tests {
     use super::*;
-    use crate::blockchain_bridge::ModuleChainRecord;
+    use crate::blockchain_bridge::{ModuleChainRecord, ModuleLoadoutChainSnapshot};
 
     fn bytes32(byte: &str) -> String {
         format!("0x{}", byte.repeat(32))
@@ -2621,6 +2845,16 @@ mod module_tests {
             minted_by: "0x00000000000000000000000000000000000000c9".into(),
             soulbound: false,
             revoked: false,
+        }
+    }
+
+    fn loadout_snapshot(modules: Vec<ModuleChainRecord>) -> ModuleLoadoutChainSnapshot {
+        ModuleLoadoutChainSnapshot {
+            collection: "0x00000000000000000000000000000000000000a7".into(),
+            operator: "0x00000000000000000000000000000000000000b8".into(),
+            verified_block: 42_113_009,
+            verified_at: chrono::Utc::now(),
+            modules,
         }
     }
 
@@ -2693,6 +2927,88 @@ mod module_tests {
 
         assert_eq!(view.effect, "REVOKED · NO ACTIVE EFFECT");
         assert!(view.revoked);
+    }
+
+    #[test]
+    fn verified_loadout_preserves_slots_but_activates_no_unwired_effect() {
+        let radio = radio_record();
+        let mut crypto = radio_record();
+        crypto.token_id = "8".into();
+        crypto.module_id = bytes32("44");
+        crypto.provenance_hash = bytes32("55");
+        crypto.display_name = "Ghost Cloak".into();
+        crypto.slot = 2;
+        crypto.effect_type = 2;
+        crypto.primary_effect_value = 2;
+
+        let view = loadout_view(
+            &loadout_snapshot(vec![radio, crypto]),
+            LoadoutVerificationStatus::Verified,
+            None,
+        )
+        .expect("valid loadout");
+
+        assert_eq!(view.status, LoadoutVerificationStatus::Verified);
+        assert_eq!(view.verified_block.as_deref(), Some("42113009"));
+        assert_eq!(view.slots[0].module.as_ref().unwrap().token_id, "7");
+        assert_eq!(view.slots[1].module.as_ref().unwrap().token_id, "8");
+        assert!(view.slots[2].module.is_none());
+        assert!(view.slots.iter().all(|slot| slot.active_effect.is_none()));
+    }
+
+    #[test]
+    fn cached_loadout_is_explicitly_advisory() {
+        let view = loadout_view(
+            &loadout_snapshot(vec![radio_record()]),
+            LoadoutVerificationStatus::Cached,
+            None,
+        )
+        .expect("valid cached loadout");
+
+        assert_eq!(view.status, LoadoutVerificationStatus::Cached);
+        assert!(view.mutation_tx_hash.is_none());
+        assert!(view.slots.iter().all(|slot| slot.active_effect.is_none()));
+    }
+
+    #[test]
+    fn inconsistent_loadout_ownership_slot_or_replay_fails_closed() {
+        let mut wrong_owner = radio_record();
+        wrong_owner.owner = "0x00000000000000000000000000000000000000ff".into();
+        assert!(loadout_view(
+            &loadout_snapshot(vec![wrong_owner]),
+            LoadoutVerificationStatus::Verified,
+            None,
+        )
+        .is_err());
+
+        let first = radio_record();
+        let mut duplicate_slot = radio_record();
+        duplicate_slot.token_id = "8".into();
+        duplicate_slot.module_id = bytes32("44");
+        duplicate_slot.provenance_hash = bytes32("55");
+        assert!(loadout_view(
+            &loadout_snapshot(vec![first, duplicate_slot]),
+            LoadoutVerificationStatus::Verified,
+            None,
+        )
+        .is_err());
+
+        let mut revoked = radio_record();
+        revoked.revoked = true;
+        assert!(loadout_view(
+            &loadout_snapshot(vec![revoked]),
+            LoadoutVerificationStatus::Verified,
+            None,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn module_action_token_ids_are_lossless_and_nonzero() {
+        let large = "340282366920938463463374607431768211457";
+        assert_eq!(parse_module_token_id(large).unwrap().to_string(), large);
+        assert!(parse_module_token_id("0").is_err());
+        assert!(parse_module_token_id("7.5").is_err());
     }
 }
 

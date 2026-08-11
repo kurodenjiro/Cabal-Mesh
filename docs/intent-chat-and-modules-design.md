@@ -7,7 +7,9 @@ now produces Rust-validated chips with fail-closed clarification and a manual
 fallback. Parsed chips are now correctable with constrained controls, exact
 balance feedback, and a frozen review/confirmation payload. Authentic milestone
 issuance and canonical confirmed ownership now feed VAULT → MODULES; marketplace
-execution, loadouts, and measured runtime effects remain in progress.
+execution and measured runtime effects remain in progress. NODE LOADOUT now
+reflects accepted on-chain slot bindings and labels offline snapshots as cached,
+never as current eligibility proof.
 
 Three connected changes: composing intents by conversation instead of by form,
 a marketplace for NFTs, and NFTs that measurably improve what a node earns.
@@ -264,6 +266,19 @@ reorganized mints cannot appear as confirmed holdings; failed refreshes clear
 the view, and a missing reviewed Fuji address renders the feature unavailable
 without a legacy fallback. Standing Badge transfer and token approval revert,
 and the official marketplace rejects it before a listing or value movement.
+
+**Resolved for verified loadouts 2026-08-12:** RADIO, CRYPTO, and POWER slots
+come from `equippedToken(operator, slot)` on the canonical collection at one
+accepted block. The node operator is the primary wallet that signs relay-proof
+work; arbitrary Bluetooth identifiers are not bindable identities. The V1 rule
+for an occupied slot is explicit refusal, so replacement requires UNEQUIP then
+EQUIP. Every mutation waits for its receipt and re-reads accepted state before
+the UI changes. Transfer, burn, escrow, and revocation clear the contract
+binding; a stale local preference cannot preserve eligibility. If RPC is down,
+the last matching wallet/collection snapshot is visibly `CACHED · DISPLAY
+ONLY`, actions are disabled, and every `activeEffect` remains empty. Nominal
+metadata stays inspectable, but NODE LOADOUT claims no active runtime bonus
+until tickets 14–16 wire the corresponding verifier.
 
 ### Where earnings are visible — HOME
 

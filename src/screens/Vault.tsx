@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Badge, Button, IconButton, Panel } from "../ds";
 import { ModalDialog } from "../shell/ModalDialog";
 import type { VaultTab } from "../shell/screen";
-import type { ModuleInventory, ModuleView, VaultRow } from "../types/bindings";
+import type { ModuleInventory, ModuleView, NodeLoadout, VaultRow } from "../types/bindings";
 
 const TABS: VaultTab[] = ["ASSETS", "MODULES", "IDENTITIES", "KEYS"];
 
@@ -34,8 +34,11 @@ const ROW_COMMAND: Record<Exclude<VaultTab, "MODULES">, string> = {
 export function Vault({ tab, onTabChange }: { tab: VaultTab; onTabChange: (tab: VaultTab) => void }) {
   const [rows, setRows] = useState<VaultRow[] | null>(null);
   const [modules, setModules] = useState<ModuleInventory | null>(null);
+  const [loadout, setLoadout] = useState<NodeLoadout | null>(null);
   const [moduleError, setModuleError] = useState(false);
   const [moduleBusy, setModuleBusy] = useState(false);
+  const [moduleActionBusy, setModuleActionBusy] = useState(false);
+  const [moduleActionError, setModuleActionError] = useState(false);
   const [moduleRefresh, setModuleRefresh] = useState(0);
   const [selectedModule, setSelectedModule] = useState<ModuleView | null>(null);
   const [revealed, setRevealed] = useState(false);
@@ -91,6 +94,38 @@ export function Vault({ tab, onTabChange }: { tab: VaultTab; onTabChange: (tab: 
       cancelled = true;
     };
   }, [moduleRefresh, tab]);
+
+  useEffect(() => {
+    if (tab !== "MODULES") return;
+
+    let cancelled = false;
+    setLoadout(null);
+    invoke<NodeLoadout>("module_loadout")
+      .then((next) => {
+        if (!cancelled) setLoadout(next);
+      })
+      .catch(() => {
+        if (!cancelled) setLoadout(null);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [moduleRefresh, tab]);
+
+  const mutateLoadout = useCallback(async (command: "equip_module" | "unequip_module", module: ModuleView) => {
+    setModuleActionBusy(true);
+    setModuleActionError(false);
+    try {
+      const next = await invoke<NodeLoadout>(command, { tokenId: module.tokenId });
+      setLoadout(next);
+    } catch {
+      setModuleActionError(true);
+      setModuleRefresh((value) => value + 1);
+    } finally {
+      setModuleActionBusy(false);
+    }
+  }, []);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-6)", padding: "var(--space-6)" }}>
@@ -165,13 +200,17 @@ export function Vault({ tab, onTabChange }: { tab: VaultTab; onTabChange: (tab: 
       ) : null}
 
       {tab === "MODULES" ? (
-        <ModuleInventoryPanel
-          inventory={modules}
-          busy={moduleBusy}
-          failed={moduleError}
-          onRefresh={refreshModules}
-          onSelect={setSelectedModule}
-        />
+        <>
+          <NodeLoadoutPanel loadout={loadout} actionFailed={moduleActionError} />
+          <ModuleInventoryPanel
+            inventory={modules}
+            loadout={loadout}
+            busy={moduleBusy || moduleActionBusy}
+            failed={moduleError}
+            onRefresh={refreshModules}
+            onSelect={setSelectedModule}
+          />
+        </>
       ) : (
         <Panel label={tab}>
           {rows === null ? null : rows.length === 0 ? (
@@ -182,19 +221,148 @@ export function Vault({ tab, onTabChange }: { tab: VaultTab; onTabChange: (tab: 
         </Panel>
       )}
 
-      <ModuleDetails module={selectedModule} onClose={() => setSelectedModule(null)} />
+      <ModuleDetails
+        module={selectedModule}
+        loadout={loadout}
+        busy={moduleActionBusy}
+        onMutate={mutateLoadout}
+        onClose={() => setSelectedModule(null)}
+      />
     </div>
+  );
+}
+
+function NodeLoadoutPanel({ loadout, actionFailed }: { loadout: NodeLoadout | null; actionFailed: boolean }) {
+  const state = loadoutStatus(loadout);
+
+  return (
+    <Panel
+      label="NODE LOADOUT"
+      action={<Badge tone={state.tone} size="sm">{state.label}</Badge>}
+    >
+      {actionFailed ? (
+        <ModuleNotice
+          title="LOADOUT CHANGE NOT CONFIRMED"
+          body="Accepted chain state did not confirm that change. The loadout was refreshed without optimistic state."
+        />
+      ) : null}
+
+      {loadout === null ? (
+        <ModuleNotice title="VERIFYING NODE LOADOUT" body="Reading ownership and slot bindings from one chain head." />
+      ) : loadout.status === "collection_unavailable" ? (
+        <ModuleNotice
+          title="CANONICAL COLLECTION UNAVAILABLE"
+          body="No reviewed module collection is configured, so this node has no authentic loadout."
+        />
+      ) : loadout.status === "chain_unavailable" ? (
+        <ModuleNotice
+          title="CHAIN AND CACHE UNAVAILABLE"
+          body="No currently verified loadout or matching prior snapshot can be shown."
+        />
+      ) : (
+        <div>
+          <div style={{ padding: "var(--space-4) var(--space-6)", borderTop: "var(--border-hairline-style)" }}>
+            <div
+              style={{
+                fontFamily: "var(--type-label-family)",
+                fontSize: "var(--text-2xs)",
+                letterSpacing: "var(--tracking-widest)",
+                color: "var(--text-muted)",
+              }}
+            >
+              NODE OPERATOR
+            </div>
+            <div
+              style={{
+                marginTop: "var(--space-2)",
+                fontFamily: "var(--type-data-family)",
+                fontSize: "var(--text-xs)",
+                color: "var(--text-primary)",
+                overflowWrap: "anywhere",
+              }}
+            >
+              {loadout.operator}
+            </div>
+          </div>
+
+          {loadout.slots.map((slot) => (
+            <div
+              key={slot.slot}
+              className="cm-row"
+              style={{
+                display: "grid",
+                gridTemplateColumns: "minmax(4.5rem, 0.4fr) minmax(0, 1fr)",
+                gap: "var(--space-5)",
+                alignItems: "center",
+              }}
+            >
+              <span
+                style={{
+                  fontFamily: "var(--type-label-family)",
+                  fontSize: "var(--text-xs)",
+                  letterSpacing: "var(--tracking-widest)",
+                  color: "var(--text-secondary)",
+                }}
+              >
+                {slot.slot}
+              </span>
+              <span style={{ minWidth: 0 }}>
+                <span
+                  style={{
+                    display: "block",
+                    fontFamily: "var(--type-heading-family)",
+                    fontSize: "var(--text-sm)",
+                    color: slot.module ? "var(--text-primary)" : "var(--text-muted)",
+                    overflowWrap: "anywhere",
+                  }}
+                >
+                  {slot.module?.displayName ?? "EMPTY"}
+                </span>
+                <span
+                  style={{
+                    display: "block",
+                    marginTop: "var(--space-1)",
+                    fontFamily: "var(--type-label-family)",
+                    fontSize: "var(--text-2xs)",
+                    letterSpacing: "var(--tracking-wider)",
+                    color: "var(--text-muted)",
+                  }}
+                >
+                  {slot.activeEffect ?? "NO ACTIVE VERIFIED EFFECT"}
+                </span>
+              </span>
+            </div>
+          ))}
+
+          <div
+            style={{
+              padding: "var(--space-4) var(--space-6)",
+              borderTop: "var(--border-hairline-style)",
+              fontSize: "var(--text-sm)",
+              color: "var(--text-muted)",
+            }}
+          >
+            {loadout.status === "cached"
+              ? `Cached from accepted block ${loadout.verifiedBlock ?? "unknown"}. Display only — not effect eligibility proof.`
+              : `Verified at accepted block ${loadout.verifiedBlock ?? "unknown"}. Runtime effects remain inactive until their verifier is implemented.`}
+            {loadout.mutationTxHash ? ` Confirmed transaction ${loadout.mutationTxHash}.` : ""}
+          </div>
+        </div>
+      )}
+    </Panel>
   );
 }
 
 function ModuleInventoryPanel({
   inventory,
+  loadout,
   busy,
   failed,
   onRefresh,
   onSelect,
 }: {
   inventory: ModuleInventory | null;
+  loadout: NodeLoadout | null;
   busy: boolean;
   failed: boolean;
   onRefresh: () => void;
@@ -236,14 +404,19 @@ function ModuleInventoryPanel({
         />
       ) : (
         inventory.modules.map((module) => (
-          <ModuleRow key={moduleKey(module)} module={module} onSelect={() => onSelect(module)} />
+          <ModuleRow
+            key={moduleKey(module)}
+            module={module}
+            equipped={isEquipped(loadout, module)}
+            onSelect={() => onSelect(module)}
+          />
         ))
       )}
     </Panel>
   );
 }
 
-function ModuleRow({ module, onSelect }: { module: ModuleView; onSelect: () => void }) {
+function ModuleRow({ module, equipped, onSelect }: { module: ModuleView; equipped: boolean; onSelect: () => void }) {
   return (
     <button
       type="button"
@@ -304,6 +477,7 @@ function ModuleRow({ module, onSelect }: { module: ModuleView; onSelect: () => v
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "var(--space-2)" }}>
+        {equipped ? <Badge tone="info" size="sm">EQUIPPED</Badge> : null}
         {module.soulbound ? <Badge tone="alert" size="sm">SOULBOUND</Badge> : null}
         <span
           style={{
@@ -320,16 +494,44 @@ function ModuleRow({ module, onSelect }: { module: ModuleView; onSelect: () => v
   );
 }
 
-function ModuleDetails({ module, onClose }: { module: ModuleView | null; onClose: () => void }) {
+function ModuleDetails({
+  module,
+  loadout,
+  busy,
+  onMutate,
+  onClose,
+}: {
+  module: ModuleView | null;
+  loadout: NodeLoadout | null;
+  busy: boolean;
+  onMutate: (command: "equip_module" | "unequip_module", module: ModuleView) => void;
+  onClose: () => void;
+}) {
+  const action = module ? loadoutAction(loadout, module) : null;
+
   return (
     <ModalDialog
       open={module !== null}
       title={module?.displayName ?? "MODULE DETAILS"}
       onClose={onClose}
       footer={
-        <Button type="button" tone="primary" size="md" className="cm-touch" onClick={onClose}>
-          CLOSE
-        </Button>
+        <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "flex-end", gap: "var(--space-3)" }}>
+          {module && action ? (
+            <Button
+              type="button"
+              tone="ghost"
+              size="md"
+              className="cm-touch"
+              disabled={busy || action.disabled}
+              onClick={() => onMutate(action.command, module)}
+            >
+              {busy ? "CONFIRMING CHAIN" : action.label}
+            </Button>
+          ) : null}
+          <Button type="button" tone="primary" size="md" className="cm-touch" onClick={onClose}>
+            CLOSE
+          </Button>
+        </div>
       }
     >
       {module ? (
@@ -351,6 +553,17 @@ function ModuleDetails({ module, onClose }: { module: ModuleView | null; onClose
           <DetailField label="RARITY" value={module.rarity} />
           <DetailField label="EFFECT TYPE" value={module.effectType.replace(/_/g, " ")} />
           <DetailField label="EFFECT" value={module.effect} />
+          <DetailField
+            label="NODE LOADOUT"
+            value={
+              isEquipped(loadout, module)
+                ? loadout?.status === "verified"
+                  ? "ON-CHAIN EQUIPPED"
+                  : "CACHED EQUIPPED · NOT CURRENT PROOF"
+                : "NOT EQUIPPED"
+            }
+          />
+          <DetailField label="ACTIVE VERIFIED EFFECT" value="NONE IN THIS BUILD" />
           <DetailField
             label="EFFECT PARAMETERS"
             value={`PRIMARY ${module.primaryEffectValue} · SECONDARY ${module.secondaryEffectValue}`}
@@ -498,4 +711,52 @@ function moduleKey(module: ModuleView): string {
 
 function moduleAssetClassLabel(module: ModuleView): string {
   return module.assetClass.replace(/_/g, " ");
+}
+
+function loadoutStatus(loadout: NodeLoadout | null): {
+  label: string;
+  tone: "quiet" | "info" | "alert";
+} {
+  switch (loadout?.status) {
+    case "verified":
+      return { label: `VERIFIED · #${loadout.verifiedBlock ?? "?"}`, tone: "info" };
+    case "cached":
+      return { label: "CACHED · DISPLAY ONLY", tone: "alert" };
+    case "chain_unavailable":
+      return { label: "CHAIN UNAVAILABLE", tone: "alert" };
+    case "collection_unavailable":
+      return { label: "COLLECTION UNAVAILABLE", tone: "alert" };
+    default:
+      return { label: "READING CHAIN", tone: "quiet" };
+  }
+}
+
+function isEquipped(loadout: NodeLoadout | null, module: ModuleView): boolean {
+  return Boolean(
+    loadout?.slots.some(
+      (slot) => slot.module !== null && moduleKey(slot.module) === moduleKey(module),
+    ),
+  );
+}
+
+type LoadoutAction = {
+  command: "equip_module" | "unequip_module";
+  label: string;
+  disabled: boolean;
+};
+
+function loadoutAction(loadout: NodeLoadout | null, module: ModuleView): LoadoutAction | null {
+  if (module.assetClass !== "MODULE" || module.revoked || module.slot === "NONE") return null;
+  if (loadout?.status !== "verified") {
+    return { command: "equip_module", label: "VERIFY CHAIN TO CHANGE", disabled: true };
+  }
+
+  const slot = loadout.slots.find((candidate) => candidate.slot === module.slot);
+  if (slot?.module && moduleKey(slot.module) === moduleKey(module)) {
+    return { command: "unequip_module", label: `UNEQUIP ${module.slot}`, disabled: false };
+  }
+  if (slot?.module) {
+    return { command: "equip_module", label: `UNEQUIP ${module.slot} FIRST`, disabled: true };
+  }
+  return { command: "equip_module", label: `EQUIP ${module.slot}`, disabled: false };
 }

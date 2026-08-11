@@ -166,6 +166,22 @@ node identifier on-chain.
    `revoked` at the policy-defined proof/block reference. Local cache state is
    advisory and cannot increase payment.
 
+The client reads all three slots at one accepted block and revalidates owner,
+`equippedBy`, asset class, declared slot, soulbound state, revocation state, and
+the complete V1 metadata/effect combination before rendering a verified
+loadout. EQUIP and UNEQUIP are online-only trust mutations: the client waits for
+the transaction receipt and then requires the desired binding in a fresh
+accepted-state read. It never converts a queued transaction or local button
+press into an equipped module.
+
+After a successful validation, the same wallet/collection snapshot may be
+cached for offline display. A cached loadout is labelled display-only, disables
+mutations, and contributes no active effect. A cache from another operator or
+collection is discarded. This preserves useful last-known context without
+letting offline state become reward or routing evidence. Until the RADIO,
+CRYPTO, and POWER verifiers land, the loadout preview exposes no active effects;
+it does not restate nominal metadata as a bonus already honored by runtime.
+
 ## Revocation and incident behavior
 
 Revocation is an irreversible eligibility quarantine, not metadata editing or
@@ -254,7 +270,9 @@ The suite covers unauthorized issuance, one-time milestone provenance, role
 changes and pause behavior, current-owner enumeration, structured/range
 validation, immutable parseable metadata, ERC interface discovery, soulbound
 approval and transfers, official marketplace rejection before value moves,
-loadout ownership/slot uniqueness, auto-unequip on escrow transfer, quarantine
-before purchase, and liveness when revocation occurs after a deal is already
-funded. Rust boundary tests additionally reject untrusted schema/effect
-combinations and prevent revoked assets from presenting an active effect.
+loadout ownership/slot uniqueness, auto-unequip on direct transfer, burn, and
+marketplace escrow, quarantine before purchase, and liveness when revocation occurs after a deal is already
+funded. Rust boundary tests additionally reject untrusted schema/effect and
+loadout combinations, distinguish cached state from accepted verification,
+preserve token IDs beyond JavaScript's safe integer range, and prevent revoked
+assets or not-yet-wired verifiers from presenting an active effect.
