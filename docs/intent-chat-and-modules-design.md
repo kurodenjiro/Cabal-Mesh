@@ -5,8 +5,9 @@
 proved on desktop, iOS, and Android on 2026-08-12. Conversational composition
 now produces Rust-validated chips with fail-closed clarification and a manual
 fallback. Parsed chips are now correctable with constrained controls, exact
-balance feedback, and a frozen review/confirmation payload; the marketplace and
-module loop remain in progress.
+balance feedback, and a frozen review/confirmation payload. Authentic milestone
+issuance and canonical confirmed ownership now feed VAULT → MODULES; marketplace
+execution, loadouts, and measured runtime effects remain in progress.
 
 Three connected changes: composing intents by conversation instead of by form,
 a marketplace for NFTs, and NFTs that measurably improve what a node earns.
@@ -31,11 +32,14 @@ for an instrument/terminal aesthetic and a literal fit for a mesh device.
             └──────── mint at milestones ─────────┘
 ```
 
-Modules are NFTs on `CabalMeshVoucher` (ERC721, deployed to Fuji). Minting is
-gated on an issuer-managed minter set, so "mint at milestones" is a thing an
-authority does rather than something any wallet can do for itself. The contract
-still has no on-chain slot, rarity or effect, and no soulbound tokens — see the
-open questions at the end. Three slots:
+Modules and Standing Badges are NFTs on the separate canonical
+`CabalMeshModules` ERC-721. Only the issuer-managed `MINTER_ROLE` can call
+`awardMilestone`, and each milestone provenance commitment is consumed once,
+so "mint at milestones" is an authorized verified path rather than something a
+wallet can invoke for itself. Slot, rarity, typed effect, artwork digest, issuer,
+and provenance are immutable structured state; Standing Badges implement
+ERC-5192. Fuji remains unavailable until the reviewed replacement deployment is
+published—legacy `CabalMeshVoucher` tokens are never substitutes. Three slots:
 
 | Slot | Example modules | Effect |
 |---|---|---|
@@ -231,8 +235,9 @@ seller still owes.
 │  SLOT          RADIO                     │
 │  EFFECT        +18% RELAY YIELD          │
 │  TOKEN ID      #1204                     │
-│  CONTRACT      0x…CMV                    │
-│  MINTED        2026-07-14                │
+│  CONTRACT      0x…CMM                    │
+│  PROVENANCE    0x…A91C                   │
+│  MINTED BY     0x…71E2                   │
 │                                          │
 │  ─── WHILE EQUIPPED ───────────────────  │
 │  RELAYED TODAY       412 MB              │
@@ -247,6 +252,18 @@ seller still owes.
 
 Showing the bonus this specific module actually produced is what makes owning it
 feel real rather than decorative.
+
+**Resolved for acquisition and inspection 2026-08-12:** the collection exposes
+ERC-721 Enumerable current-owner indexes and atomically rejects reused milestone
+provenance. VAULT → MODULES reads only the configured canonical collection,
+validates every structured v1 slot/effect combination in Rust, and shows token
+ID, contract, current owner, provenance, issuer, slot, rarity, exact effect
+parameters, artwork commitment, soulbound state, and revocation state. It does
+not use listing copy or optimistic mint state. Pending, failed, replaced, and
+reorganized mints cannot appear as confirmed holdings; failed refreshes clear
+the view, and a missing reviewed Fuji address renders the feature unavailable
+without a legacy fallback. Standing Badge transfer and token approval revert,
+and the official marketplace rejects it before a listing or value movement.
 
 ### Where earnings are visible — HOME
 

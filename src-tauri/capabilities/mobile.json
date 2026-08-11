@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/mobile-schema.json",
   "identifier": "mobile",
-  "description": "Main webview on iOS and Android. Mobile and desktop now share the same implemented screens and 23 least-privilege app commands; opener remains desktop-only. Never grant commands speculatively. See capabilities/README.md.",
+  "description": "Main webview on iOS and Android. Mobile and desktop now share the same implemented screens and 24 least-privilege app commands; opener remains desktop-only. Never grant commands speculatively. See capabilities/README.md.",
   "platforms": [
     "iOS",
     "android"
@@ -30,6 +30,7 @@
     "allow-cancel-intent",
     "allow-intent-proof",
     "allow-vault-assets",
+    "allow-vault-modules",
     "allow-vault-identities",
     "allow-vault-keys",
     "allow-profile-summary",

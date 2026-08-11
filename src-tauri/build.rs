@@ -33,6 +33,7 @@ const COMMANDS: &[&str] = &[
     "cancel_intent",
     "intent_proof",
     "vault_assets",
+    "vault_modules",
     "vault_identities",
     "vault_keys",
     "profile_summary",

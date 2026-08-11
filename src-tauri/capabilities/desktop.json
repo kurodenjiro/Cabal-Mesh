@@ -32,6 +32,7 @@
     "allow-cancel-intent",
     "allow-intent-proof",
     "allow-vault-assets",
+    "allow-vault-modules",
     "allow-vault-identities",
     "allow-vault-keys",
     "allow-profile-summary",

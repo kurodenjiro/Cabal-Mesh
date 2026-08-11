@@ -3,6 +3,8 @@ pragma solidity ^0.8.24;
 
 import {AccessControlDefaultAdminRules} from "@openzeppelin/contracts/access/extensions/AccessControlDefaultAdminRules.sol";
 import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
+import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
+import {ERC721Enumerable} from "@openzeppelin/contracts/token/ERC721/extensions/ERC721Enumerable.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {Base64} from "@openzeppelin/contracts/utils/Base64.sol";
 import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
@@ -19,6 +21,7 @@ import {IERC5192} from "./interfaces/IERC5192.sol";
 /// ERC-5192 soulbound and can never be equipped or transferred into escrow.
 contract CabalMeshModules is
     ERC721,
+    ERC721Enumerable,
     AccessControlDefaultAdminRules,
     Pausable,
     ICabalMeshAsset,
@@ -111,10 +114,15 @@ contract CabalMeshModules is
     error TokenNotEquipped(uint256 tokenId);
     error InvalidRevocationReason();
     error AssetAlreadyRevoked(uint256 tokenId);
+    error MilestoneAlreadyAwarded(bytes32 provenanceHash, uint256 tokenId);
 
     uint256 public nextTokenId = 1;
     mapping(uint256 tokenId => AssetData data) private _assets;
     mapping(bytes32 moduleId => uint256 count) public mintedCount;
+    /// One qualifying milestone can produce at most one token. The commitment
+    /// includes the recipient and evidence off-chain; the contract enforces
+    /// the replay/concurrency boundary synchronously before `_safeMint`.
+    mapping(bytes32 provenanceHash => uint256 tokenId) public tokenForProvenance;
     mapping(uint256 tokenId => bool value) public revoked;
 
     /// The paid node identity is its operator wallet. A token can therefore
@@ -144,7 +152,12 @@ contract CabalMeshModules is
         _grantRole(REVOKER_ROLE, initialRevoker);
     }
 
-    function mint(address to, MintSpec calldata spec)
+    /// @notice Awards one schema-valid asset for one verified milestone.
+    ///
+    /// There is deliberately no generic public mint path. The role-bearing
+    /// milestone service commits its verified evidence in `provenanceHash`,
+    /// and that commitment is consumed exactly once.
+    function awardMilestone(address to, MintSpec calldata spec)
         external
         onlyRole(MINTER_ROLE)
         whenNotPaused
@@ -152,8 +165,15 @@ contract CabalMeshModules is
     {
         if (to == address(0)) revert ZeroRecipient();
         _validateSpec(spec);
+        uint256 priorToken = tokenForProvenance[spec.provenanceHash];
+        if (priorToken != 0) {
+            revert MilestoneAlreadyAwarded(spec.provenanceHash, priorToken);
+        }
 
         tokenId = nextTokenId++;
+        // Set before the receiver callback in `_safeMint`; a role-bearing
+        // receiver cannot re-enter with the same milestone while minting.
+        tokenForProvenance[spec.provenanceHash] = tokenId;
         _assets[tokenId] = AssetData({
             moduleId: spec.moduleId,
             provenanceHash: spec.provenanceHash,
@@ -232,6 +252,13 @@ contract CabalMeshModules is
         return _assets[tokenId].assetClass == AssetClass.StandingBadge;
     }
 
+    /// A token-specific approval for a soulbound badge is misleading even
+    /// though transfer would later revert, so refuse it at the first boundary.
+    function approve(address to, uint256 tokenId) public override(ERC721, IERC721) {
+        if (locked(tokenId)) revert SoulboundToken(tokenId);
+        super.approve(to, tokenId);
+    }
+
     function isMarketplaceEligible(uint256 tokenId) external view override returns (bool) {
         return !locked(tokenId) && !revoked[tokenId];
     }
@@ -265,7 +292,7 @@ contract CabalMeshModules is
     function supportsInterface(bytes4 interfaceId)
         public
         view
-        override(ERC721, AccessControlDefaultAdminRules, IERC165)
+        override(ERC721, ERC721Enumerable, AccessControlDefaultAdminRules, IERC165)
         returns (bool)
     {
         return interfaceId == type(ICabalMeshAsset).interfaceId
@@ -274,7 +301,7 @@ contract CabalMeshModules is
 
     function _update(address to, uint256 tokenId, address auth)
         internal
-        override
+        override(ERC721, ERC721Enumerable)
         returns (address from)
     {
         from = _ownerOf(tokenId);
@@ -285,6 +312,13 @@ contract CabalMeshModules is
             _clearLoadout(tokenId, from);
         }
         return super._update(to, tokenId, auth);
+    }
+
+    function _increaseBalance(address account, uint128 value)
+        internal
+        override(ERC721, ERC721Enumerable)
+    {
+        super._increaseBalance(account, value);
     }
 
     function _clearLoadout(uint256 tokenId, address operator) private {

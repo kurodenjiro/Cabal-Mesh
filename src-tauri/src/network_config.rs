@@ -80,11 +80,15 @@ impl Network {
                 escrow: Some("0xCaFF53657191d75Aa4f5C2182210302656d8B392"),
                 marketplace: Some("0xb6F2B9415fc599130084b7F20B84738aCBB15930"),
                 voucher: Some("0x3649E46eCD6A0bd187f0046C4C35a7B31C92bA1E"),
+                // No reviewed deployment yet. Never substitute the legacy
+                // voucher: it has no authentic structured module semantics.
+                modules: None,
             },
             Self::Mainnet => Contracts {
                 escrow: None,
                 marketplace: None,
                 voucher: None,
+                modules: None,
             },
         }
     }
@@ -97,6 +101,7 @@ pub struct Contracts {
     pub escrow: Option<&'static str>,
     pub marketplace: Option<&'static str>,
     pub voucher: Option<&'static str>,
+    pub modules: Option<&'static str>,
 }
 
 /// Resolved chain configuration.
@@ -114,6 +119,8 @@ pub struct NetworkConfig {
     pub marketplace_address: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub voucher_address: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modules_address: Option<String>,
 }
 
 impl Default for NetworkConfig {
@@ -124,6 +131,7 @@ impl Default for NetworkConfig {
             escrow_address: None,
             marketplace_address: None,
             voucher_address: None,
+            modules_address: None,
         }
     }
 }
@@ -163,6 +171,9 @@ impl NetworkConfig {
         if let Some(address) = var("VOUCHER_CONTRACT_ADDRESS") {
             self.voucher_address = Some(address);
         }
+        if let Some(address) = var("MODULES_CONTRACT_ADDRESS") {
+            self.modules_address = Some(address);
+        }
     }
 
     /// The endpoint to use.
@@ -195,6 +206,17 @@ impl NetworkConfig {
         self.voucher_address
             .clone()
             .or_else(|| self.network.contracts().voucher.map(ToOwned::to_owned))
+    }
+
+    /// Authentic module address, resolved as [`NetworkConfig::escrow`].
+    ///
+    /// Absence is intentional until a reviewed deployment is published. There
+    /// is no fallback to the legacy voucher collection.
+    #[must_use]
+    pub fn modules(&self) -> Option<String> {
+        self.modules_address
+            .clone()
+            .or_else(|| self.network.contracts().modules.map(ToOwned::to_owned))
     }
 }
 
@@ -242,6 +264,7 @@ mod tests {
         assert!(mainnet.escrow.is_none());
         assert!(mainnet.marketplace.is_none());
         assert!(mainnet.voucher.is_none());
+        assert!(mainnet.modules.is_none());
     }
 
     #[test]
@@ -255,6 +278,7 @@ mod tests {
             let address = address.expect("Fuji contracts are deployed");
             assert!(address.starts_with("0x") && address.len() == 42, "{address} is not an address");
         }
+        assert!(fuji.modules.is_none(), "unreviewed legacy voucher must not become a module collection");
     }
 
     #[test]

@@ -13,7 +13,7 @@
 export type IntentId = string;
 
 export type IntentTab = "ACTIVE" | "PENDING" | "HISTORY";
-export type VaultTab = "ASSETS" | "IDENTITIES" | "KEYS";
+export type VaultTab = "ASSETS" | "MODULES" | "IDENTITIES" | "KEYS";
 
 export type Screen =
   | { name: "splash" }

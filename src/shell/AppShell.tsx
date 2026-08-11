@@ -142,6 +142,9 @@ function TabBar({
         position: "sticky",
         bottom: 0,
         zIndex: "var(--z-nav)",
+        // Expanded .cm-touch hit areas extend 8px past the edge buttons. Clip
+        // only that horizontal overhang so it cannot create page scrolling.
+        overflowX: "clip",
       }}
     >
       {TABS.map((tab) => {
@@ -158,6 +161,7 @@ function TabBar({
             style={{
               ...buttonReset,
               flex: 1,
+              minWidth: 0,
               display: "flex",
               flexDirection: "column",
               alignItems: "center",

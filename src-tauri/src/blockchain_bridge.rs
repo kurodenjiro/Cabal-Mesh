@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 // Crypto Imports
 use alloy::{
     consensus::{Transaction as _, TxEnvelope},
-    eips::eip2718::{Decodable2718, Encodable2718},
+    eips::{eip2718::{Decodable2718, Encodable2718}, BlockId},
     network::{EthereumWallet, TransactionBuilder},
     primitives::{keccak256, Address, Bytes, Signature, U256},
     providers::{Provider, ProviderBuilder},
@@ -38,6 +38,38 @@ sol! {
     #[sol(rpc)]
     IVoucher,
     "abi/CabalMeshVoucher.abi.json"
+}
+
+sol! {
+    #[sol(rpc)]
+    interface IModules {
+        function balanceOf(address owner) external view returns (uint256 balance);
+        function tokenOfOwnerByIndex(address owner, uint256 index)
+            external
+            view
+            returns (uint256 tokenId);
+        function ownerOf(uint256 tokenId) external view returns (address owner);
+        function locked(uint256 tokenId) external view returns (bool isLocked);
+        function revoked(uint256 tokenId) external view returns (bool isRevoked);
+        function assetData(uint256 tokenId)
+            external
+            view
+            returns (
+                bytes32 moduleId,
+                bytes32 provenanceHash,
+                string displayName,
+                uint8 assetClass,
+                uint8 slot,
+                uint8 rarity,
+                uint8 effectType,
+                uint32 primaryEffectValue,
+                uint32 secondaryEffectValue,
+                string artworkUri,
+                bytes32 artworkDigest,
+                uint16 schemaVersion,
+                address mintedBy
+            );
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -103,6 +135,32 @@ pub struct VoucherView {
     /// listing time) — lets the UI distinguish "I bought this from someone"
     /// from "I minted this myself to sell and still hold it unsold".
     pub minted_by: String,
+}
+
+/// Structured state read directly from the configured canonical collection.
+///
+/// This is intentionally not marketplace/listing metadata. The command layer
+/// validates and renders these immutable contract fields before they cross IPC.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModuleChainRecord {
+    pub token_id: String,
+    pub collection: String,
+    pub owner: String,
+    pub module_id: String,
+    pub provenance_hash: String,
+    pub display_name: String,
+    pub asset_class: u8,
+    pub slot: u8,
+    pub rarity: u8,
+    pub effect_type: u8,
+    pub primary_effect_value: u32,
+    pub secondary_effect_value: u32,
+    pub artwork_uri: String,
+    pub artwork_digest: String,
+    pub schema_version: u16,
+    pub minted_by: String,
+    pub soulbound: bool,
+    pub revoked: bool,
 }
 
 /// A Marketplace deal (real on-chain state: Active/Released/Refunded) —
@@ -248,6 +306,7 @@ pub struct BlockchainBridge {
     pub escrow_address: Option<Address>,
     pub marketplace_address: Option<Address>,
     pub voucher_address: Option<Address>,
+    pub modules_address: Option<Address>,
     pub current_session: Option<InstantSession>,
 }
 
@@ -268,6 +327,7 @@ impl BlockchainBridge {
         let escrow_address = network.escrow().and_then(|s| Address::from_str(&s).ok());
         let marketplace_address = network.marketplace().and_then(|s| Address::from_str(&s).ok());
         let voucher_address = network.voucher().and_then(|s| Address::from_str(&s).ok());
+        let modules_address = network.modules().and_then(|s| Address::from_str(&s).ok());
 
         let app_dir = crate::app_paths::data_dir();
 
@@ -288,6 +348,7 @@ impl BlockchainBridge {
             escrow_address,
             marketplace_address,
             voucher_address,
+            modules_address,
             current_session: None,
         };
         let _ = bridge.load_identities();
@@ -1218,6 +1279,81 @@ impl BlockchainBridge {
         Ok(owned)
     }
 
+    /// Whether this build has an explicitly configured canonical collection.
+    ///
+    /// `false` is a supported state. It must never fall back to the legacy
+    /// voucher address because that would turn unstructured tokens into
+    /// authentic reward-bearing modules.
+    #[must_use]
+    pub const fn modules_configured(&self) -> bool {
+        self.modules_address.is_some()
+    }
+
+    /// Reads every module currently owned by this bridge's primary wallet.
+    ///
+    /// Ownership comes from ERC-721 Enumerable at one accepted canonical head;
+    /// there is no pending-mint cache. Every call is pinned to the same block,
+    /// so an ownership change while the inventory is loading cannot combine
+    /// indexes and metadata from two different states.
+    pub async fn get_owned_modules(&self) -> Result<Vec<ModuleChainRecord>, Box<dyn Error>> {
+        const MAX_OWNED_MODULES: usize = 512;
+
+        let collection = self
+            .modules_address
+            .ok_or("MODULES_CONTRACT_ADDRESS not configured")?;
+        let owner = self.primary_signer()?.address();
+        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        let contract = IModules::new(collection, provider);
+
+        // Avalanche's ordinary C-Chain RPC exposes accepted/finalized state by
+        // default. Pin the returned head anyway: a sequence of independent
+        // `latest` calls could otherwise straddle a later accepted transfer.
+        let snapshot_block = BlockId::number(contract.provider().get_block_number().await?);
+        let balance = contract.balanceOf(owner).block(snapshot_block).call().await?;
+        if balance > U256::from(MAX_OWNED_MODULES) {
+            return Err("module inventory exceeds the supported bound".into());
+        }
+
+        let mut owned = Vec::with_capacity(balance.to::<usize>());
+        for index in 0..balance.to::<usize>() {
+            let token_id = contract
+                .tokenOfOwnerByIndex(owner, U256::from(index))
+                .block(snapshot_block)
+                .call()
+                .await?;
+            let data = contract.assetData(token_id).block(snapshot_block).call().await?;
+            let soulbound = contract.locked(token_id).block(snapshot_block).call().await?;
+            let revoked = contract.revoked(token_id).block(snapshot_block).call().await?;
+            let current_owner = contract.ownerOf(token_id).block(snapshot_block).call().await?;
+            if current_owner != owner {
+                continue;
+            }
+
+            owned.push(ModuleChainRecord {
+                token_id: token_id.to_string(),
+                collection: collection.to_string(),
+                owner: current_owner.to_string(),
+                module_id: format!("{:#x}", data.moduleId),
+                provenance_hash: format!("{:#x}", data.provenanceHash),
+                display_name: data.displayName,
+                asset_class: data.assetClass,
+                slot: data.slot,
+                rarity: data.rarity,
+                effect_type: data.effectType,
+                primary_effect_value: data.primaryEffectValue,
+                secondary_effect_value: data.secondaryEffectValue,
+                artwork_uri: data.artworkUri,
+                artwork_digest: format!("{:#x}", data.artworkDigest),
+                schema_version: data.schemaVersion,
+                minted_by: data.mintedBy.to_string(),
+                soulbound,
+                revoked,
+            });
+        }
+
+        Ok(owned)
+    }
+
     /// A Marketplace deal this address is involved in (as buyer or seller),
     /// with its real on-chain status — this IS the "an agent is dealing with
     /// this listing" signal: `active` means a buyer has locked funds against
@@ -1389,6 +1525,7 @@ mod offline_signing_tests {
             escrow_address: None,
             marketplace_address: None,
             voucher_address: None,
+            modules_address: None,
             current_session: None,
         };
         bridge.generate_new_identity("Test".to_string(), "🧪".to_string()).unwrap();
@@ -1450,6 +1587,7 @@ mod content_commitment_tests {
             escrow_address: None,
             marketplace_address: None,
             voucher_address: None,
+            modules_address: None,
             current_session: None,
         }
     }

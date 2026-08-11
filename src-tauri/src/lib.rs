@@ -314,6 +314,7 @@ pub fn run() {
             commands::cancel_intent,
             commands::intent_proof,
             commands::vault_assets,
+            commands::vault_modules,
             commands::vault_identities,
             commands::vault_keys,
             commands::profile_summary,

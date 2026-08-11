@@ -271,6 +271,26 @@ uptime: string, connected: boolean, stats: Array<StatTile>, };
 
 export type ModeOption = { label: string, description: string, };
 
+export type ModuleAssetClass = "MODULE" | "STANDING_BADGE";
+
+export type ModuleEffectType = "NONE" | "RELAY_REWARD_BPS" | "PRIVACY_HOP_INCREASE" | "GATEWAY_LICENSE";
+
+export type ModuleInventory = { status: ModuleInventoryStatus, modules: Array<ModuleView>, };
+
+/**
+ * Whether the canonical module collection can be queried by this build.
+ */
+export type ModuleInventoryStatus = "available" | "unavailable";
+
+export type ModuleRarity = "COMMON" | "RARE" | "EPIC" | "LEGENDARY";
+
+export type ModuleSlot = "NONE" | "RADIO" | "CRYPTO" | "POWER";
+
+/**
+ * One authentic token, rendered only from canonical on-chain structured data.
+ */
+export type ModuleView = { tokenId: string, contract: string, owner: string, moduleId: string, provenanceHash: string, displayName: string, assetClass: ModuleAssetClass, slot: ModuleSlot, rarity: ModuleRarity, effectType: ModuleEffectType, primaryEffectValue: number, secondaryEffectValue: number, effect: string, artworkUri: string, artworkDigest: string, schemaVersion: number, mintedBy: string, soulbound: boolean, revoked: boolean, };
+
 /**
  * A peer, as the nodes screen shows it.
  *

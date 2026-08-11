@@ -30,7 +30,7 @@ The collection separates three authorities:
 | Authority | Contract rule | Production holder |
 |---|---|---|
 | Default admin | One account, two-step transfer, two-day acceptance delay | A reviewed 2-of-3 or stronger Safe; never a phone wallet |
-| `MINTER_ROLE` | The only role that can call `mint` | Milestone/settlement issuer with narrowly scoped signing operations |
+| `MINTER_ROLE` | The only role that can call `awardMilestone` | Milestone/settlement issuer with narrowly scoped signing operations |
 | `REVOKER_ROLE` | May irreversibly quarantine a bad issuance with a public reason hash | Separate incident-response Safe |
 
 OpenZeppelin recommends `AccessControlDefaultAdminRules` because the default
@@ -54,7 +54,7 @@ rewrite path.
 | Field | Type | Meaning |
 |---|---|---|
 | `moduleId` | `bytes32` | Stable definition/family identifier, normally a namespaced `keccak256` |
-| `provenanceHash` | `bytes32` | Commitment to the qualifying milestone, settlement, campaign, or approved legacy reissue evidence |
+| `provenanceHash` | `bytes32` | Unique commitment to the qualifying milestone, recipient, settlement, campaign, or approved legacy reissue evidence; the collection consumes it once |
 | `displayName` | Printable ASCII string, 1–80 bytes | Human-readable asset identity; JSON control, quote, backslash, non-ASCII, and invalid UTF-8 bytes are rejected |
 | `assetClass` | enum | `Module` or `StandingBadge` |
 | `slot` | enum | `None`, `Radio`, `Crypto`, or `Power` |
@@ -108,12 +108,38 @@ they are soulbound. Every non-mint transfer reverts. ERC-5192 specifies this
 minimal interface and discovery behavior; see
 [ERC-5192](https://eips.ethereum.org/EIPS/eip-5192).
 
+Token-specific `approve` also reverts for a badge, so a wallet cannot present a
+badge approval as if it could lead to a transfer. ERC-721 blanket operator
+approval is wallet-wide rather than token-specific and may already exist; it
+does not make the badge transferable or marketplace-eligible.
+
 The official Marketplace also queries
 `ICabalMeshAsset.isMarketplaceEligible` both when a listing is created and
 again before `buy`. A badge therefore cannot become a live official listing,
 cannot receive buyer AVAX, and cannot enter escrow even when its owner granted
 blanket operator approval. Badges remain wallet-visible evidence and are never
 loadout modules or reward multipliers.
+
+## Issuance and confirmed ownership
+
+There is no generic public mint function. The milestone service first verifies
+the qualifying evidence and derives a domain-separated `provenanceHash` that
+commits to the milestone and intended recipient. It then calls
+`awardMilestone`. The contract checks `MINTER_ROLE`, validates the complete v1
+definition, and atomically records `tokenForProvenance[provenanceHash]` before
+the ERC-721 receiver callback. A replay, a competing transaction, or reentrant
+submission for the same commitment therefore reverts with the token that
+already consumed it.
+
+The app discovers holdings through ERC-721 Enumerable (`balanceOf` plus
+`tokenOfOwnerByIndex`) on the explicitly configured canonical collection. It
+reads `assetData`, `locked`, and `revoked`, then rechecks `ownerOf` before a row
+crosses IPC. It never promotes pending receipts, replacement transactions,
+marketplace descriptions, locally cached mint responses, or legacy vouchers to
+confirmed ownership. Failed and replaced transactions never enter the owner
+enumeration; a reorg is reflected on the next canonical refresh. When the
+collection address is absent, VAULT → MODULES says unavailable rather than
+falling back to the Fuji voucher.
 
 ## Loadout rules
 
@@ -224,9 +250,11 @@ cd contracts
 npm test
 ```
 
-The suite covers unauthorized minting, role changes and pause behavior,
-structured/range validation, immutable parseable metadata, ERC interface
-discovery, soulbound transfers, official marketplace rejection before value
-moves, loadout ownership/slot uniqueness, auto-unequip on escrow transfer,
-quarantine before purchase, and liveness when revocation occurs after a deal is
-already funded.
+The suite covers unauthorized issuance, one-time milestone provenance, role
+changes and pause behavior, current-owner enumeration, structured/range
+validation, immutable parseable metadata, ERC interface discovery, soulbound
+approval and transfers, official marketplace rejection before value moves,
+loadout ownership/slot uniqueness, auto-unequip on escrow transfer, quarantine
+before purchase, and liveness when revocation occurs after a deal is already
+funded. Rust boundary tests additionally reject untrusted schema/effect
+combinations and prevent revoked assets from presenting an active effect.

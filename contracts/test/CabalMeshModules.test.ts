@@ -13,6 +13,7 @@ const EffectType = {
 } as const;
 
 describe("CabalMeshModules", function () {
+  let milestoneSequence = 0;
   async function deployFixture() {
     const [admin, minter, owner, buyer, other] = await ethers.getSigners();
     const Modules = await ethers.getContractFactory("CabalMeshModules");
@@ -76,9 +77,12 @@ describe("CabalMeshModules", function () {
     };
   }
 
-  async function mint(modules: any, minter: any, to: string, spec = radioSpec()) {
+  async function mint(modules: any, minter: any, to: string, spec?: any) {
+    const award = spec ?? radioSpec({
+      provenanceHash: ethers.id(`test-milestone-${++milestoneSequence}`),
+    });
     const tokenId = await modules.nextTokenId();
-    await modules.connect(minter).mint(to, spec);
+    await modules.connect(minter).awardMilestone(to, award);
     return tokenId;
   }
 
@@ -119,9 +123,28 @@ describe("CabalMeshModules", function () {
       const { modules, owner } = await deployFixture();
       const minterRole = await modules.MINTER_ROLE();
 
-      await expect(modules.connect(owner).mint(owner.address, radioSpec()))
+      await expect(modules.connect(owner).awardMilestone(owner.address, radioSpec()))
         .to.be.revertedWithCustomError(modules, "AccessControlUnauthorizedAccount")
         .withArgs(owner.address, minterRole);
+    });
+
+    it("consumes one milestone provenance exactly once", async function () {
+      const { modules, minter, owner, buyer } = await deployFixture();
+      const spec = radioSpec({ provenanceHash: ethers.id("verified-settlement-42") });
+
+      await expect(modules.connect(minter).awardMilestone(owner.address, spec))
+        .to.emit(modules, "AssetMinted")
+        .withArgs(1, owner.address, spec.moduleId, AssetClass.Module, Slot.Radio, EffectType.RelayRewardBps);
+      expect(await modules.tokenForProvenance(spec.provenanceHash)).to.equal(1);
+
+      // Competing submissions are serialized by the EVM; once either consumes
+      // the commitment, every replay observes the same non-zero token id.
+      await expect(modules.connect(minter).awardMilestone(buyer.address, spec))
+        .to.be.revertedWithCustomError(modules, "MilestoneAlreadyAwarded")
+        .withArgs(spec.provenanceHash, 1);
+      expect(await modules.balanceOf(owner.address)).to.equal(1);
+      expect(await modules.balanceOf(buyer.address)).to.equal(0);
+      expect(await modules.nextTokenId()).to.equal(2);
     });
 
     it("lets only the admin grant or revoke a minter", async function () {
@@ -131,12 +154,12 @@ describe("CabalMeshModules", function () {
       await expect(modules.connect(other).grantRole(minterRole, owner.address))
         .to.be.revertedWithCustomError(modules, "AccessControlUnauthorizedAccount");
       await modules.connect(admin).grantRole(minterRole, owner.address);
-      await expect(modules.connect(owner).mint(owner.address, cryptoSpec())).to.emit(
+      await expect(modules.connect(owner).awardMilestone(owner.address, cryptoSpec())).to.emit(
         modules,
         "AssetMinted"
       );
       await modules.connect(admin).revokeRole(minterRole, owner.address);
-      await expect(modules.connect(owner).mint(owner.address, cryptoSpec()))
+      await expect(modules.connect(owner).awardMilestone(owner.address, cryptoSpec()))
         .to.be.revertedWithCustomError(modules, "AccessControlUnauthorizedAccount");
 
       expect(await modules.hasRole(minterRole, minter.address)).to.equal(true);
@@ -147,13 +170,17 @@ describe("CabalMeshModules", function () {
       const tokenId = await mint(modules, minter, owner.address);
 
       await modules.connect(admin).pauseMinting();
-      await expect(modules.connect(minter).mint(owner.address, radioSpec()))
+      await expect(modules.connect(minter).awardMilestone(owner.address, radioSpec({
+        provenanceHash: ethers.id("paused-milestone"),
+      })))
         .to.be.revertedWithCustomError(modules, "EnforcedPause");
       await modules.connect(owner).transferFrom(owner.address, buyer.address, tokenId);
       expect(await modules.ownerOf(tokenId)).to.equal(buyer.address);
 
       await modules.connect(admin).unpauseMinting();
-      await expect(modules.connect(minter).mint(owner.address, radioSpec())).to.emit(
+      await expect(modules.connect(minter).awardMilestone(owner.address, radioSpec({
+        provenanceHash: ethers.id("unpaused-milestone"),
+      }))).to.emit(
         modules,
         "AssetMinted"
       );
@@ -225,6 +252,23 @@ describe("CabalMeshModules", function () {
       expect(await modules.tokenURI(tokenId)).to.equal(before);
       expect(await modules.assetData(tokenId)).to.deep.equal(dataBefore);
     });
+
+    it("enumerates only tokens in the current owner's balance", async function () {
+      const { modules, minter, owner, buyer } = await deployFixture();
+      const first = await mint(modules, minter, owner.address);
+      const second = await mint(modules, minter, owner.address);
+
+      expect(await modules.balanceOf(owner.address)).to.equal(2);
+      expect([
+        await modules.tokenOfOwnerByIndex(owner.address, 0),
+        await modules.tokenOfOwnerByIndex(owner.address, 1),
+      ]).to.have.members([first, second]);
+
+      await modules.connect(owner).transferFrom(owner.address, buyer.address, first);
+      expect(await modules.balanceOf(owner.address)).to.equal(1);
+      expect(await modules.tokenOfOwnerByIndex(owner.address, 0)).to.equal(second);
+      expect(await modules.tokenOfOwnerByIndex(buyer.address, 0)).to.equal(first);
+    });
   });
 
   describe("metadata interoperability", function () {
@@ -264,6 +308,7 @@ describe("CabalMeshModules", function () {
 
       expect(await modules.supportsInterface("0x80ac58cd")).to.equal(true);
       expect(await modules.supportsInterface("0x5b5e139f")).to.equal(true);
+      expect(await modules.supportsInterface("0x780e9d63")).to.equal(true);
       expect(await modules.supportsInterface("0xb45a3c0e")).to.equal(true);
       expect(await modules.supportsInterface(marketplaceEligibilitySelector)).to.equal(true);
     });
@@ -284,11 +329,11 @@ describe("CabalMeshModules", function () {
       ];
 
       for (const [overrides, error] of cases) {
-        await expect(modules.connect(minter).mint(owner.address, radioSpec(overrides)))
+        await expect(modules.connect(minter).awardMilestone(owner.address, radioSpec(overrides)))
           .to.be.revertedWithCustomError(modules, error);
       }
       await expect(
-        modules.connect(minter).mint(
+        modules.connect(minter).awardMilestone(
           owner.address,
           badgeSpec({ slot: Slot.Radio, effectType: EffectType.RelayRewardBps })
         )
@@ -301,7 +346,7 @@ describe("CabalMeshModules", function () {
       const { modules, minter, owner } = await deployFixture();
       const tokenId = await modules.nextTokenId();
 
-      await expect(modules.connect(minter).mint(owner.address, badgeSpec()))
+      await expect(modules.connect(minter).awardMilestone(owner.address, badgeSpec()))
         .to.emit(modules, "Locked")
         .withArgs(tokenId);
 
@@ -320,6 +365,16 @@ describe("CabalMeshModules", function () {
         .to.be.revertedWithCustomError(modules, "NotLoadoutModule")
         .withArgs(tokenId);
       expect(await modules.ownerOf(tokenId)).to.equal(owner.address);
+    });
+
+    it("rejects token approval for a soulbound badge", async function () {
+      const { modules, minter, owner, buyer } = await deployFixture();
+      const tokenId = await mint(modules, minter, owner.address, badgeSpec());
+
+      await expect(modules.connect(owner).approve(buyer.address, tokenId))
+        .to.be.revertedWithCustomError(modules, "SoulboundToken")
+        .withArgs(tokenId);
+      expect(await modules.getApproved(tokenId)).to.equal(ethers.ZeroAddress);
     });
 
     it("rejects a badge at marketplace listing before AVAX or escrow can move", async function () {

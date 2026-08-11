@@ -2365,6 +2365,337 @@ pub async fn vault_assets(state: State<'_, AppState>) -> Result<Vec<VaultRow>, A
     Ok(rows)
 }
 
+/// Whether the canonical module collection can be queried by this build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "snake_case")]
+pub enum ModuleInventoryStatus {
+    Available,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ModuleAssetClass {
+    Module,
+    StandingBadge,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ModuleSlot {
+    None,
+    Radio,
+    Crypto,
+    Power,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ModuleRarity {
+    Common,
+    Rare,
+    Epic,
+    Legendary,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ModuleEffectType {
+    None,
+    RelayRewardBps,
+    PrivacyHopIncrease,
+    GatewayLicense,
+}
+
+/// One authentic token, rendered only from canonical on-chain structured data.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "camelCase")]
+pub struct ModuleView {
+    pub token_id: String,
+    pub contract: String,
+    pub owner: String,
+    pub module_id: String,
+    pub provenance_hash: String,
+    pub display_name: String,
+    pub asset_class: ModuleAssetClass,
+    pub slot: ModuleSlot,
+    pub rarity: ModuleRarity,
+    pub effect_type: ModuleEffectType,
+    pub primary_effect_value: u32,
+    pub secondary_effect_value: u32,
+    pub effect: String,
+    pub artwork_uri: String,
+    pub artwork_digest: String,
+    pub schema_version: u16,
+    pub minted_by: String,
+    pub soulbound: bool,
+    pub revoked: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "camelCase")]
+pub struct ModuleInventory {
+    pub status: ModuleInventoryStatus,
+    pub modules: Vec<ModuleView>,
+}
+
+fn bps_label(value: u32) -> String {
+    let whole = value / 100;
+    let fraction = value % 100;
+    if fraction == 0 {
+        format!("+{whole}% RELAY REWARD")
+    } else {
+        format!("+{whole}.{fraction:02}% RELAY REWARD")
+    }
+}
+
+fn is_address(value: &str) -> bool {
+    value.len() == 42
+        && value.starts_with("0x")
+        && value[2..].bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn is_nonzero_bytes32(value: &str) -> bool {
+    value.len() == 66
+        && value.starts_with("0x")
+        && value[2..].bytes().all(|byte| byte.is_ascii_hexdigit())
+        && value[2..].bytes().any(|byte| byte != b'0')
+}
+
+fn is_safe_metadata_text(value: &str, max_bytes: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= max_bytes
+        && value.bytes().all(|byte| {
+            (0x20..=0x7e).contains(&byte) && byte != b'"' && byte != b'\\'
+        })
+}
+
+fn module_view(record: crate::blockchain_bridge::ModuleChainRecord) -> Result<ModuleView, ()> {
+    if record.schema_version != 1
+        || !is_address(&record.collection)
+        || !is_address(&record.owner)
+        || !is_address(&record.minted_by)
+        || !is_nonzero_bytes32(&record.module_id)
+        || !is_nonzero_bytes32(&record.provenance_hash)
+        || !is_nonzero_bytes32(&record.artwork_digest)
+        || !is_safe_metadata_text(&record.display_name, 80)
+        || !record.artwork_uri.starts_with("ipfs://")
+        || !is_safe_metadata_text(&record.artwork_uri, 200)
+    {
+        return Err(());
+    }
+
+    let rarity = match record.rarity {
+        0 => ModuleRarity::Common,
+        1 => ModuleRarity::Rare,
+        2 => ModuleRarity::Epic,
+        3 => ModuleRarity::Legendary,
+        _ => return Err(()),
+    };
+    let (asset_class, slot, effect_type, effect) = match (
+        record.asset_class,
+        record.slot,
+        record.effect_type,
+        record.primary_effect_value,
+        record.secondary_effect_value,
+        record.soulbound,
+    ) {
+        (0, 1, 1, primary @ 1..=10_000, 0, false) => (
+            ModuleAssetClass::Module,
+            ModuleSlot::Radio,
+            ModuleEffectType::RelayRewardBps,
+            bps_label(primary),
+        ),
+        (0, 2, 2, primary @ 1..=3, 0, false) => (
+            ModuleAssetClass::Module,
+            ModuleSlot::Crypto,
+            ModuleEffectType::PrivacyHopIncrease,
+            format!("+{primary} PRIVACY HOPS"),
+        ),
+        (0, 3, 3, sessions @ 1..=32, window @ 1..=1_048_576, false) => (
+            ModuleAssetClass::Module,
+            ModuleSlot::Power,
+            ModuleEffectType::GatewayLicense,
+            format!("{sessions} SESSIONS · {window} KIB WINDOW"),
+        ),
+        (1, 0, 0, 0, 0, true) => (
+            ModuleAssetClass::StandingBadge,
+            ModuleSlot::None,
+            ModuleEffectType::None,
+            "SOULBOUND · NO RUNTIME EFFECT".to_string(),
+        ),
+        _ => return Err(()),
+    };
+
+    Ok(ModuleView {
+        token_id: record.token_id,
+        contract: record.collection,
+        owner: record.owner,
+        module_id: record.module_id,
+        provenance_hash: record.provenance_hash,
+        display_name: record.display_name,
+        asset_class,
+        slot,
+        rarity,
+        effect_type,
+        primary_effect_value: record.primary_effect_value,
+        secondary_effect_value: record.secondary_effect_value,
+        effect: if record.revoked {
+            "REVOKED · NO ACTIVE EFFECT".into()
+        } else {
+            effect
+        },
+        artwork_uri: record.artwork_uri,
+        artwork_digest: record.artwork_digest,
+        schema_version: record.schema_version,
+        minted_by: record.minted_by,
+        soulbound: record.soulbound,
+        revoked: record.revoked,
+    })
+}
+
+/// Current authentic modules for the primary wallet.
+///
+/// No pending transaction, receipt cache, listing description, or legacy
+/// voucher is consulted. Reads use one accepted chain head, so failed,
+/// replaced, or unaccepted mint transactions never become holdings.
+#[tauri::command]
+pub async fn vault_modules(state: State<'_, AppState>) -> Result<ModuleInventory, AppError> {
+    let services = state.services()?;
+    let bridge = services.bridge.lock().await;
+    if !bridge.modules_configured() {
+        return Ok(ModuleInventory {
+            status: ModuleInventoryStatus::Unavailable,
+            modules: Vec::new(),
+        });
+    }
+
+    let records = bridge
+        .get_owned_modules()
+        .await
+        .map_err(|_| AppError::Chain { retryable: true })?;
+    let modules = records
+        .into_iter()
+        .map(module_view)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| AppError::Internal)?;
+    Ok(ModuleInventory {
+        status: ModuleInventoryStatus::Available,
+        modules,
+    })
+}
+
+#[cfg(test)]
+mod module_tests {
+    use super::*;
+    use crate::blockchain_bridge::ModuleChainRecord;
+
+    fn bytes32(byte: &str) -> String {
+        format!("0x{}", byte.repeat(32))
+    }
+
+    fn radio_record() -> ModuleChainRecord {
+        ModuleChainRecord {
+            token_id: "7".into(),
+            collection: "0x00000000000000000000000000000000000000a7".into(),
+            owner: "0x00000000000000000000000000000000000000b8".into(),
+            module_id: bytes32("11"),
+            provenance_hash: bytes32("22"),
+            display_name: "Relay Amplifier MK-II".into(),
+            asset_class: 0,
+            slot: 1,
+            rarity: 1,
+            effect_type: 1,
+            primary_effect_value: 1_850,
+            secondary_effect_value: 0,
+            artwork_uri: "ipfs://bafybeiradioamplifiermk2".into(),
+            artwork_digest: bytes32("33"),
+            schema_version: 1,
+            minted_by: "0x00000000000000000000000000000000000000c9".into(),
+            soulbound: false,
+            revoked: false,
+        }
+    }
+
+    #[test]
+    fn authentic_radio_module_preserves_chain_identity_and_exact_effect() {
+        let view = module_view(radio_record()).expect("valid radio module");
+
+        assert_eq!(view.token_id, "7");
+        assert_eq!(view.contract, "0x00000000000000000000000000000000000000a7");
+        assert_eq!(view.provenance_hash, bytes32("22"));
+        assert_eq!(view.minted_by, "0x00000000000000000000000000000000000000c9");
+        assert_eq!(view.asset_class, ModuleAssetClass::Module);
+        assert_eq!(view.slot, ModuleSlot::Radio);
+        assert_eq!(view.rarity, ModuleRarity::Rare);
+        assert_eq!(view.effect, "+18.50% RELAY REWARD");
+    }
+
+    #[test]
+    fn standing_badge_is_soulbound_and_has_no_runtime_effect() {
+        let mut record = radio_record();
+        record.display_name = "First Ten Settlements".into();
+        record.asset_class = 1;
+        record.slot = 0;
+        record.rarity = 0;
+        record.effect_type = 0;
+        record.primary_effect_value = 0;
+        record.soulbound = true;
+
+        let view = module_view(record).expect("valid standing badge");
+
+        assert_eq!(view.asset_class, ModuleAssetClass::StandingBadge);
+        assert_eq!(view.slot, ModuleSlot::None);
+        assert_eq!(view.effect_type, ModuleEffectType::None);
+        assert_eq!(view.effect, "SOULBOUND · NO RUNTIME EFFECT");
+        assert!(view.soulbound);
+    }
+
+    #[test]
+    fn mismatched_or_untrusted_metadata_fails_closed() {
+        let mut wrong_schema = radio_record();
+        wrong_schema.schema_version = 2;
+        assert!(module_view(wrong_schema).is_err());
+
+        let mut mutable_badge = radio_record();
+        mutable_badge.asset_class = 1;
+        mutable_badge.slot = 0;
+        mutable_badge.effect_type = 0;
+        mutable_badge.primary_effect_value = 0;
+        assert!(module_view(mutable_badge).is_err());
+
+        let mut listing_artwork = radio_record();
+        listing_artwork.artwork_uri = "https://market.example/module.png".into();
+        assert!(module_view(listing_artwork).is_err());
+
+        let mut zero_provenance = radio_record();
+        zero_provenance.provenance_hash = bytes32("00");
+        assert!(module_view(zero_provenance).is_err());
+
+        let mut unsafe_name = radio_record();
+        unsafe_name.display_name = "Relay \"Amplifier\"".into();
+        assert!(module_view(unsafe_name).is_err());
+    }
+
+    #[test]
+    fn revoked_module_never_presents_an_active_effect() {
+        let mut record = radio_record();
+        record.revoked = true;
+
+        let view = module_view(record).expect("valid revoked record");
+
+        assert_eq!(view.effect, "REVOKED · NO ACTIVE EFFECT");
+        assert!(view.revoked);
+    }
+}
+
 /// Identities this device holds.
 ///
 /// # Errors
