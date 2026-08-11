@@ -95,6 +95,24 @@ export type FailureReason = "no_route" | "node_failure" | "condition_unmet" | "s
 export type FormOptions = { actions: Array<string>, assets: Array<AssetOption>, conditions: Array<string>, modes: Array<ModeOption>, privacyLevels: Array<string>, };
 
 /**
+ * Exact fixed-point affordability feedback for the compose screen.
+ */
+export type IntentAffordability = { status: IntentAffordabilityStatus,
+/**
+ * Canonical known balance. Absent means unknown, never zero-by-default.
+ */
+available: string | null,
+/**
+ * Exact amount missing when `status` is `shortfall`.
+ */
+shortfall: string | null, };
+
+/**
+ * Whether the selected amount fits inside the latest known balance.
+ */
+export type IntentAffordabilityStatus = "unknown" | "invalid_amount" | "affordable" | "shortfall";
+
+/**
  * One model proposal rendered without carrying the original intent text.
  */
 export type IntentChip = { field: IntentFieldView,

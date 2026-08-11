@@ -655,6 +655,28 @@ fn decimals_for(asset: &str) -> Option<u8> {
         .map(|(_, _, decimals)| *decimals)
 }
 
+/// Latest spendable balances known to the bridge.
+///
+/// Missing services or a missing snapshot mean "unknown", not zero. Keeping
+/// that distinction here ensures the form, MAX, and the shortfall check all
+/// describe the same chain snapshot semantics.
+async fn current_balances(state: &AppState) -> Vec<(String, String)> {
+    let Ok(services) = state.services() else {
+        return Vec::new();
+    };
+    let bridge = services.bridge.lock().await;
+    bridge
+        .get_latest_snapshot()
+        .map(|snapshot| {
+            snapshot
+                .assets
+                .into_iter()
+                .map(|asset| (asset.symbol, asset.amount))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Options for the compose screen.
 ///
 /// Supplied by Rust rather than hardcoded on the frontend so a mode and its
@@ -671,22 +693,7 @@ pub async fn intent_form_options(state: State<'_, AppState>) -> Result<FormOptio
 
     // Balances are best-effort. Before bootstrap, or with no chain snapshot,
     // every asset simply has no maximum.
-    let balances = match state.services() {
-        Ok(services) => {
-            let bridge = services.bridge.lock().await;
-            bridge
-                .get_latest_snapshot()
-                .map(|snapshot| {
-                    snapshot
-                        .assets
-                        .into_iter()
-                        .map(|asset| (asset.symbol, asset.amount))
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default()
-        }
-        Err(_) => Vec::new(),
-    };
+    let balances = current_balances(&state).await;
 
     Ok(FormOptions {
         actions: Action::ALL.iter().map(|a| format!("{a:?}").to_uppercase()).collect(),
@@ -715,6 +722,113 @@ pub async fn intent_form_options(state: State<'_, AppState>) -> Result<FormOptio
             .map(|level| format!("{level:?}").to_uppercase())
             .collect(),
     })
+}
+
+/// Whether the selected amount fits inside the latest known balance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "snake_case")]
+pub enum IntentAffordabilityStatus {
+    /// No chain snapshot exists for this asset. This is deliberately distinct
+    /// from a known balance of zero.
+    Unknown,
+    /// The amount or asset cannot pass the fixed-point domain parser.
+    InvalidAmount,
+    /// The known balance covers the amount.
+    Affordable,
+    /// The amount exceeds the known balance.
+    Shortfall,
+}
+
+/// Exact fixed-point affordability feedback for the compose screen.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "camelCase")]
+pub struct IntentAffordability {
+    pub status: IntentAffordabilityStatus,
+    /// Canonical known balance. Absent means unknown, never zero-by-default.
+    pub available: Option<String>,
+    /// Exact amount missing when `status` is `shortfall`.
+    pub shortfall: Option<String>,
+}
+
+fn affordability_for(
+    asset: &str,
+    amount: &str,
+    available: Option<&str>,
+) -> IntentAffordability {
+    use cabal_core::TokenAmount;
+
+    let Some(decimals) = decimals_for(asset) else {
+        return IntentAffordability {
+            status: IntentAffordabilityStatus::InvalidAmount,
+            available: None,
+            shortfall: None,
+        };
+    };
+    let Some(available) = available else {
+        return IntentAffordability {
+            status: IntentAffordabilityStatus::Unknown,
+            available: None,
+            shortfall: None,
+        };
+    };
+    let Ok(available) = TokenAmount::parse(available, decimals) else {
+        // A malformed bridge value is not evidence of a zero balance.
+        return IntentAffordability {
+            status: IntentAffordabilityStatus::Unknown,
+            available: None,
+            shortfall: None,
+        };
+    };
+    let available_view = Some(available.to_string());
+    let Ok(requested) = TokenAmount::parse(amount, decimals) else {
+        return IntentAffordability {
+            status: IntentAffordabilityStatus::InvalidAmount,
+            available: available_view,
+            shortfall: None,
+        };
+    };
+    if requested.is_zero() {
+        return IntentAffordability {
+            status: IntentAffordabilityStatus::InvalidAmount,
+            available: available_view,
+            shortfall: None,
+        };
+    }
+    if requested.raw() <= available.raw() {
+        return IntentAffordability {
+            status: IntentAffordabilityStatus::Affordable,
+            available: available_view,
+            shortfall: None,
+        };
+    }
+
+    let missing = TokenAmount::from_raw(requested.raw() - available.raw(), decimals);
+    IntentAffordability {
+        status: IntentAffordabilityStatus::Shortfall,
+        available: available_view,
+        shortfall: Some(missing.to_string()),
+    }
+}
+
+/// Returns exact balance and shortfall feedback without creating an intent.
+///
+/// This command can read the latest balance snapshot, but has no path to the
+/// ledger, signer, queue, or mesh. Invalid input remains feedback only; review
+/// and confirmation still re-parse the complete [`IntentFields`].
+#[tauri::command]
+pub async fn intent_affordability(
+    asset: String,
+    amount: String,
+    state: State<'_, AppState>,
+) -> Result<IntentAffordability, AppError> {
+    let balances = current_balances(&state).await;
+    let available = balances
+        .iter()
+        .find(|(symbol, _)| symbol.eq_ignore_ascii_case(&asset))
+        .map(|(_, amount)| amount.as_str());
+    Ok(affordability_for(&asset, &amount, available))
 }
 
 /// One row of the confirm dialog.
@@ -1873,6 +1987,46 @@ mod intent_tests {
             assert!(composition.fields.is_none());
             assert!(composition.chips.is_empty());
             assert!(composition.missing.is_empty());
+        }
+    }
+
+    // -- exact affordability feedback -------------------------------------
+
+    #[test]
+    fn an_unknown_balance_is_not_reported_as_zero() {
+        let result = affordability_for("AVAX", "1", None);
+        assert_eq!(result.status, IntentAffordabilityStatus::Unknown);
+        assert_eq!(result.available, None);
+        assert_eq!(result.shortfall, None);
+    }
+
+    #[test]
+    fn a_known_zero_balance_reports_the_full_shortfall() {
+        let result = affordability_for("AVAX", "1.25", Some("0"));
+        assert_eq!(result.status, IntentAffordabilityStatus::Shortfall);
+        assert_eq!(result.available.as_deref(), Some("0"));
+        assert_eq!(result.shortfall.as_deref(), Some("1.25"));
+    }
+
+    #[test]
+    fn shortfalls_use_asset_precision_without_floating_point() {
+        let result = affordability_for("USDC", "10.000001", Some("10"));
+        assert_eq!(result.status, IntentAffordabilityStatus::Shortfall);
+        assert_eq!(result.available.as_deref(), Some("10"));
+        assert_eq!(result.shortfall.as_deref(), Some("0.000001"));
+
+        let covered = affordability_for("USDC", "9.999999", Some("10"));
+        assert_eq!(covered.status, IntentAffordabilityStatus::Affordable);
+        assert_eq!(covered.shortfall, None);
+    }
+
+    #[test]
+    fn invalid_amounts_do_not_produce_a_made_up_shortfall() {
+        for amount in ["", "0", "1.0000001", "not-money"] {
+            let result = affordability_for("USDC", amount, Some("10"));
+            assert_eq!(result.status, IntentAffordabilityStatus::InvalidAmount);
+            assert_eq!(result.available.as_deref(), Some("10"));
+            assert_eq!(result.shortfall, None);
         }
     }
 

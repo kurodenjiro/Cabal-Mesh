@@ -4,7 +4,9 @@
 [local intent inference runtime](intent-inference-runtime.md) was accepted and
 proved on desktop, iOS, and Android on 2026-08-12. Conversational composition
 now produces Rust-validated chips with fail-closed clarification and a manual
-fallback; chip correction and the marketplace/module loop remain in progress.
+fallback. Parsed chips are now correctable with constrained controls, exact
+balance feedback, and a frozen review/confirmation payload; the marketplace and
+module loop remain in progress.
 
 Three connected changes: composing intents by conversation instead of by form,
 a marketplace for NFTs, and NFTs that measurably improve what a node earns.
@@ -108,7 +110,17 @@ vault, signer, queue, or chain. Complete proposals pass through the same
 are returned. Partial or ambiguous input names missing fields without defaults;
 unavailable, timed-out, refused, or domain-invalid inference leaves the phrase
 editable and offers the manual fields. No intent text or model output enters a
-log or IPC response. Ticket 07 owns constrained chip editing and affordability.
+log or IPC response.
+
+**Resolved 2026-08-12:** all six parsed chips open focus-trapped editors whose
+options and precision come from Rust. Amount editing reads the latest real
+snapshot through `intent_affordability`, uses fixed-point token arithmetic for
+MAX and shortfall, and keeps an unknown balance distinct from a known zero.
+Review rows still come only from `preview_intent`; the frontend freezes the
+exact `IntentFields` accepted for preview and confirmation sends that snapshot
+back through `broadcast_intent`, which re-parses it. Escape, mobile back, focus
+return, radiogroup arrow keys, wrapped controls, and 200-percent type scaling
+remain usable. The model still has no state-bearing or execution command.
 
 ## Marketplace
 

@@ -22,6 +22,7 @@
     "allow-ble-status",
     "allow-list-intents",
     "allow-intent-form-options",
+    "allow-intent-affordability",
     "allow-propose-intent",
     "allow-preview-intent",
     "allow-broadcast-intent",

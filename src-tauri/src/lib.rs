@@ -304,6 +304,7 @@ pub fn run() {
             commands::ble_status,
             commands::list_intents,
             commands::intent_form_options,
+            commands::intent_affordability,
             commands::propose_intent,
             commands::preview_intent,
             commands::broadcast_intent,

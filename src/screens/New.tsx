@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Button, Input, Panel } from "../ds";
 import { ModalDialog } from "../shell/ModalDialog";
@@ -7,11 +7,15 @@ import type { IntentId } from "../shell/screen";
 import type {
   AssetOption,
   FormOptions,
+  IntentAffordability,
   IntentComposition,
   IntentCompositionStatus,
   IntentFields,
+  IntentFieldView,
   IntentPreview,
 } from "../types/bindings";
+
+const EDITABLE_FIELDS: IntentFieldView[] = ["action", "asset", "condition", "amount", "mode", "privacy"];
 
 /**
  * Composing an intent.
@@ -35,14 +39,19 @@ import type {
  *
  * **Conversation text never becomes an execution command.** `propose_intent`
  * has no app-state argument and returns only typed candidate fields. This
- * screen enables review only for a candidate that Rust marked validated, and
+ * screen enables review only after every candidate field is supplied, and
  * confirmation still goes through the existing preview/broadcast boundary.
- * The manual fields remain an explicit fallback if local inference cannot run.
+ * The exact fields Rust previewed are frozen while the dialog is open, so a
+ * later render cannot substitute live form state at confirmation time. The
+ * manual fields remain an explicit fallback if local inference cannot run.
  */
 export function New({ onBroadcast }: { onBroadcast: (id: IntentId) => void }) {
   const [intentText, setIntentText] = useState("");
   const [submittedText, setSubmittedText] = useState<string | null>(null);
   const [composition, setComposition] = useState<IntentComposition | null>(null);
+  const [userEditedComposition, setUserEditedComposition] = useState(false);
+  const [editingField, setEditingField] = useState<IntentFieldView | null>(null);
+  const [editDraft, setEditDraft] = useState<IntentFields | null>(null);
   const [inferenceBusy, setInferenceBusy] = useState(false);
   const [manualMode, setManualMode] = useState(false);
   const fieldsClaimed = useRef(false);
@@ -57,8 +66,20 @@ export function New({ onBroadcast }: { onBroadcast: (id: IntentId) => void }) {
   const [privacy, setPrivacy] = useState("HIGH");
 
   const [preview, setPreview] = useState<IntentPreview | null>(null);
+  const [reviewedFields, setReviewedFields] = useState<IntentFields | null>(null);
+  const [reviewBusy, setReviewBusy] = useState(false);
+  const reviewSequence = useRef(0);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  const closePreview = useCallback(() => {
+    setPreview(null);
+    setReviewedFields(null);
+  }, []);
+  const closeEditor = useCallback(() => {
+    setEditingField(null);
+    setEditDraft(null);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -91,6 +112,24 @@ export function New({ onBroadcast }: { onBroadcast: (id: IntentId) => void }) {
   // the identical value, which is what makes "the dialog describes what goes
   // out" a property rather than a promise.
   const fields: IntentFields = { action, asset, condition, price, amount, mode, privacy };
+  const liveAffordability = useIntentAffordability(
+    asset,
+    amount,
+    manualMode || composition?.fields != null,
+  );
+  const editAffordability = useIntentAffordability(
+    editDraft?.asset ?? "",
+    editDraft?.amount ?? "",
+    editingField === "amount",
+  );
+
+  // Any field change invalidates an in-flight or open preview. A slow preview
+  // response must never reopen a dialog for fields the user has since changed.
+  useEffect(() => {
+    reviewSequence.current += 1;
+    setReviewBusy(false);
+    closePreview();
+  }, [action, amount, asset, closePreview, condition, mode, price, privacy]);
 
   const applyFields = (next: IntentFields) => {
     fieldsClaimed.current = true;
@@ -108,9 +147,12 @@ export function New({ onBroadcast }: { onBroadcast: (id: IntentId) => void }) {
     if (!text || inferenceBusy) return;
 
     setInferenceBusy(true);
+    reviewSequence.current += 1;
     setError(null);
-    setPreview(null);
+    closePreview();
+    closeEditor();
     setComposition(null);
+    setUserEditedComposition(false);
     setSubmittedText(text);
     try {
       const next = await invoke<IntentComposition>("propose_intent", { text });
@@ -126,27 +168,73 @@ export function New({ onBroadcast }: { onBroadcast: (id: IntentId) => void }) {
     }
   };
 
-  const canReview = manualMode || composition?.status === "validated";
+  const hasEditableFields = manualMode || composition?.fields != null;
+  const missing = hasEditableFields ? missingIntentFields(fields) : (composition?.missing ?? []);
+  const canReview = hasEditableFields && missing.length === 0 && !inferenceBusy && !reviewBusy;
+  const conversationChips = composition?.fields
+    ? EDITABLE_FIELDS.map((field) => ({ field, value: chipValue(field, fields) }))
+    : (composition?.chips ?? []);
+  const compositionCopy = composition
+    ? compositionMessage(
+        composition.status,
+        missing.map(fieldLabel),
+        composition.fields != null,
+        userEditedComposition,
+      )
+    : "";
+  const liveAvailable = liveAffordability.feedback
+    ? liveAffordability.feedback.available
+    : (selectedAsset?.available ?? null);
+  const editSelectedAsset = options?.assets.find((candidate) => candidate.name === editDraft?.asset);
+  const editAvailable = editAffordability.feedback
+    ? editAffordability.feedback.available
+    : (editSelectedAsset?.available ?? null);
+
+  const openEditor = (field: IntentFieldView) => {
+    reviewSequence.current += 1;
+    setReviewBusy(false);
+    setError(null);
+    closePreview();
+    setEditDraft({ ...fields });
+    setEditingField(field);
+  };
+
+  const saveEditor = () => {
+    if (!editDraft) return;
+    applyFields(editDraft);
+    setUserEditedComposition(true);
+    closeEditor();
+  };
 
   const review = async () => {
     if (!canReview) return;
     setError(null);
+    const candidate = { ...fields };
+    const sequence = ++reviewSequence.current;
+    setReviewBusy(true);
     try {
-      setPreview(await invoke<IntentPreview>("preview_intent", { fields }));
+      const nextPreview = await invoke<IntentPreview>("preview_intent", { fields: candidate });
+      if (sequence !== reviewSequence.current) return;
+      setReviewedFields(candidate);
+      setPreview(nextPreview);
     } catch (failure) {
+      if (sequence !== reviewSequence.current) return;
+      setReviewedFields(null);
       setError(errorCopy(failure));
+    } finally {
+      if (sequence === reviewSequence.current) setReviewBusy(false);
     }
   };
 
   const broadcast = async () => {
-    if (busy) return;
+    if (busy || !reviewedFields) return;
     setBusy(true);
     try {
-      const id = await invoke<string>("broadcast_intent", { fields });
-      setPreview(null);
+      const id = await invoke<string>("broadcast_intent", { fields: reviewedFields });
+      closePreview();
       onBroadcast(id);
     } catch (failure) {
-      setPreview(null);
+      closePreview();
       setError(errorCopy(failure));
     } finally {
       setBusy(false);
@@ -213,43 +301,69 @@ export function New({ onBroadcast }: { onBroadcast: (id: IntentId) => void }) {
       {composition ? (
         <Panel label="◇ PARSED · LOCAL MODEL">
           <div
-            aria-live="polite"
             style={{ padding: "var(--space-6)", display: "flex", flexDirection: "column", gap: "var(--space-5)" }}
           >
-            {composition.chips.length > 0 ? (
+            {conversationChips.length > 0 ? (
               <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--space-3)" }}>
-                {composition.chips.map((chip) => {
+                {conversationChips.map((chip) => {
                   const label = fieldLabel(chip.field);
                   const missing = chip.value === null;
                   return (
-                    <span
+                    <button
                       key={chip.field}
+                      type="button"
+                      className="cm-touch"
+                      disabled={composition.fields === null || options === null}
+                      aria-expanded={editingField === chip.field}
+                      aria-haspopup="dialog"
+                      aria-label={`Edit ${label}: ${chip.value ?? "missing"}`}
+                      onClick={() => openEditor(chip.field)}
                       style={{
                         padding: "var(--space-3) var(--space-4)",
                         border: `var(--border-width) solid ${
                           missing ? "var(--accent-blood-red)" : "var(--border-default)"
                         }`,
+                        background: "none",
                         color: missing ? "var(--accent-blood-red)" : "var(--text-primary)",
+                        cursor: composition.fields === null || options === null ? "not-allowed" : "pointer",
                         fontFamily: "var(--type-data-family)",
                         fontSize: "var(--text-xs)",
                         overflowWrap: "anywhere",
+                        textAlign: "left",
                       }}
                     >
                       <span style={{ color: "var(--text-muted)" }}>{label} · </span>
                       {chip.value ?? "MISSING"}
-                    </span>
+                    </button>
                   );
                 })}
               </div>
             ) : null}
-            <p style={{ margin: 0, color: "var(--text-secondary)", fontSize: "var(--text-base)" }}>
-              {compositionMessage(composition.status, composition.missing.map(fieldLabel))}
+            {composition.fields ? (
+              <span style={{ color: "var(--text-muted)", fontSize: "var(--text-2xs)" }}>
+                TAP A CHIP TO CHANGE IT. CHANGES STAY LOCAL UNTIL REVIEW.
+              </span>
+            ) : null}
+            <p
+              aria-live="polite"
+              style={{ margin: 0, color: "var(--text-secondary)", fontSize: "var(--text-base)" }}
+            >
+              {compositionCopy}
             </p>
             <span style={{ color: "var(--text-muted)", fontSize: "var(--text-2xs)" }}>
               MODEL {composition.modelVersion}
             </span>
           </div>
         </Panel>
+      ) : null}
+
+      {composition?.fields ? (
+        <BalanceNotice
+          asset={asset}
+          available={liveAvailable}
+          feedback={liveAffordability.feedback}
+          checking={liveAffordability.checking}
+        />
       ) : null}
 
       <Button
@@ -310,12 +424,13 @@ export function New({ onBroadcast }: { onBroadcast: (id: IntentId) => void }) {
             value={amount}
             onChange={setAmount}
             placeholder="0.0"
+            describedBy="intent-amount-balance"
             suffix={
-              selectedAsset?.available ? (
+              liveAvailable !== null ? (
                 <button
                   type="button"
                   className="cm-touch"
-                  onClick={() => setAmount(selectedAsset.available ?? "")}
+                  onClick={() => setAmount(liveAvailable)}
                   style={{
                     background: "none",
                     border: "none",
@@ -333,8 +448,20 @@ export function New({ onBroadcast }: { onBroadcast: (id: IntentId) => void }) {
           />
           {/* Absent, not zero. An asset this wallet has never held has no
               known balance, and "0" would claim it holds none. */}
-          <span style={{ fontSize: "var(--text-2xs)", letterSpacing: "var(--tracking-widest)", color: "var(--text-muted)" }}>
-            {selectedAsset?.available ? `AVAILABLE ${selectedAsset.available} ${asset}` : "BALANCE NOT KNOWN"}
+          <span
+            id="intent-amount-balance"
+            role={liveAffordability.feedback?.status === "shortfall" ? "alert" : "status"}
+            aria-live="polite"
+            style={{
+              fontSize: "var(--text-2xs)",
+              letterSpacing: "var(--tracking-widest)",
+              color:
+                liveAffordability.feedback?.status === "shortfall"
+                  ? "var(--accent-blood-red)"
+                  : "var(--text-muted)",
+            }}
+          >
+            {balanceMessage(asset, liveAvailable, liveAffordability.feedback, liveAffordability.checking)}
           </span>
         </div>
       </Panel>
@@ -375,19 +502,53 @@ export function New({ onBroadcast }: { onBroadcast: (id: IntentId) => void }) {
       ) : null}
 
       <Button tone="primary" size="lg" block className="cm-touch" disabled={!canReview} onClick={review}>
-        REVIEW INTENT
+        {reviewBusy ? "VALIDATING INTENT" : "REVIEW INTENT"}
       </Button>
+
+      <ModalDialog
+        open={editingField !== null && editDraft !== null}
+        title={`EDIT ${editingField ? fieldLabel(editingField) : "FIELD"}`}
+        onClose={closeEditor}
+        footer={
+          <>
+            <Button tone="ghost" size="md" className="cm-touch" onClick={closeEditor}>
+              CANCEL
+            </Button>
+            <Button tone="primary" size="md" className="cm-touch" onClick={saveEditor}>
+              SET
+            </Button>
+          </>
+        }
+      >
+        {editingField && editDraft ? (
+          <IntentFieldEditor
+            field={editingField}
+            fields={editDraft}
+            options={options}
+            affordability={editAffordability.feedback}
+            affordabilityChecking={editAffordability.checking}
+            available={editAvailable}
+            onChange={setEditDraft}
+          />
+        ) : null}
+      </ModalDialog>
 
       <ModalDialog
         open={preview !== null}
         title="CONFIRM INTENT"
-        onClose={() => setPreview(null)}
+        onClose={closePreview}
         footer={
           <>
-            <Button tone="ghost" size="md" className="cm-touch" onClick={() => setPreview(null)}>
+            <Button tone="ghost" size="md" className="cm-touch" onClick={closePreview}>
               CANCEL
             </Button>
-            <Button tone="primary" size="md" className="cm-touch" disabled={busy} onClick={broadcast}>
+            <Button
+              tone="primary"
+              size="md"
+              className="cm-touch"
+              disabled={busy || reviewedFields === null}
+              onClick={broadcast}
+            >
               {/* The verb matches the prose above it, and both come from the
                   same answer about whether the mesh is reachable. */}
               {preview?.willBroadcast ? "BROADCAST" : "QUEUE LOCALLY"}
@@ -420,11 +581,271 @@ export function New({ onBroadcast }: { onBroadcast: (id: IntentId) => void }) {
   );
 }
 
-function fieldLabel(field: IntentComposition["missing"][number]): string {
+function IntentFieldEditor({
+  field,
+  fields,
+  options,
+  affordability,
+  affordabilityChecking,
+  available,
+  onChange,
+}: {
+  field: IntentFieldView;
+  fields: IntentFields;
+  options: FormOptions | null;
+  affordability: IntentAffordability | null;
+  affordabilityChecking: boolean;
+  available: string | null;
+  onChange: (next: IntentFields) => void;
+}) {
+  const update = (patch: Partial<IntentFields>) => onChange({ ...fields, ...patch });
+  const mode = options?.modes.find((candidate) => candidate.label === fields.mode);
+
+  switch (field) {
+    case "action":
+      return (
+        <Segmented
+          name="Action"
+          options={options?.actions ?? []}
+          value={fields.action}
+          onChange={(action) => update({ action })}
+        />
+      );
+    case "asset":
+      return (
+        <Segmented
+          name="Asset"
+          options={(options?.assets ?? []).map((candidate) => candidate.name)}
+          value={fields.asset}
+          onChange={(asset) => update({ asset })}
+        />
+      );
+    case "condition":
+      return (
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-5)" }}>
+          <Segmented
+            name="Condition"
+            options={options?.conditions ?? []}
+            value={fields.condition}
+            onChange={(condition) => update({ condition })}
+          />
+          {!fields.condition.toLowerCase().startsWith("any") ? (
+            <DecimalField
+              id="chip-intent-price"
+              label="PRICE (USD)"
+              value={fields.price}
+              onChange={(price) => update({ price })}
+              prefix="$"
+              placeholder="95.00"
+            />
+          ) : null}
+        </div>
+      );
+    case "amount":
+      return (
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
+          <DecimalField
+            id="chip-intent-amount"
+            label={`AMOUNT (${fields.asset || "SELECT ASSET"})`}
+            value={fields.amount}
+            onChange={(amount) => update({ amount })}
+            describedBy="chip-intent-amount-balance"
+            placeholder="0.0"
+            suffix={
+              available !== null ? (
+                <button
+                  type="button"
+                  className="cm-touch"
+                  onClick={() => update({ amount: available })}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    padding: 0,
+                    cursor: "pointer",
+                    font: "inherit",
+                    color: "var(--text-primary)",
+                    letterSpacing: "var(--tracking-widest)",
+                  }}
+                >
+                  MAX
+                </button>
+              ) : undefined
+            }
+          />
+          <span
+            id="chip-intent-amount-balance"
+            role={affordability?.status === "shortfall" ? "alert" : "status"}
+            aria-live="polite"
+            style={{
+              color:
+                affordability?.status === "shortfall"
+                  ? "var(--accent-blood-red)"
+                  : "var(--text-muted)",
+              fontSize: "var(--text-2xs)",
+              letterSpacing: "var(--tracking-widest)",
+            }}
+          >
+            {balanceMessage(fields.asset, available, affordability, affordabilityChecking)}
+          </span>
+        </div>
+      );
+    case "mode":
+      return (
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
+          <Segmented
+            name="Execution mode"
+            options={(options?.modes ?? []).map((candidate) => candidate.label)}
+            value={fields.mode}
+            onChange={(mode) => update({ mode })}
+          />
+          <span style={{ color: "var(--text-muted)", fontSize: "var(--text-base)" }}>
+            {mode?.description ?? ""}
+          </span>
+        </div>
+      );
+    case "privacy":
+      return (
+        <Segmented
+          name="Privacy level"
+          options={options?.privacyLevels ?? []}
+          value={fields.privacy}
+          onChange={(privacy) => update({ privacy })}
+        />
+      );
+  }
+}
+
+function BalanceNotice({
+  asset,
+  available,
+  feedback,
+  checking,
+}: {
+  asset: string;
+  available: string | null;
+  feedback: IntentAffordability | null;
+  checking: boolean;
+}) {
+  const shortfall = feedback?.status === "shortfall";
+  return (
+    <Panel label={shortfall ? "⚠ AFFORDABILITY" : "BALANCE"}>
+      <p
+        role={shortfall ? "alert" : "status"}
+        aria-live="polite"
+        style={{
+          margin: 0,
+          padding: "var(--space-5) var(--space-6)",
+          color: shortfall ? "var(--accent-blood-red)" : "var(--text-secondary)",
+          fontFamily: "var(--type-data-family)",
+          fontSize: "var(--text-sm)",
+          overflowWrap: "anywhere",
+        }}
+      >
+        {balanceMessage(asset, available, feedback, checking)}
+      </p>
+    </Panel>
+  );
+}
+
+function balanceMessage(
+  asset: string,
+  available: string | null,
+  feedback: IntentAffordability | null,
+  checking: boolean,
+): string {
+  if (checking) return "CHECKING LATEST BALANCE…";
+  if (feedback?.status === "shortfall") {
+    return `SHORT BY ${feedback.shortfall ?? "?"} ${asset} · AVAILABLE ${feedback.available ?? "?"} ${asset}`;
+  }
+  if (feedback?.status === "invalid_amount") {
+    return available === null
+      ? "ENTER A VALID AMOUNT · BALANCE NOT KNOWN"
+      : `ENTER A VALID AMOUNT · AVAILABLE ${available} ${asset}`;
+  }
+  if (feedback?.status === "affordable" && available !== null) {
+    return `AVAILABLE ${available} ${asset} · AMOUNT COVERED`;
+  }
+  return available === null ? "BALANCE NOT KNOWN" : `AVAILABLE ${available} ${asset}`;
+}
+
+function useIntentAffordability(asset: string, amount: string, active: boolean) {
+  const [feedback, setFeedback] = useState<IntentAffordability | null>(null);
+  const [checking, setChecking] = useState(false);
+
+  useEffect(() => {
+    if (!active || !asset) {
+      setFeedback(null);
+      setChecking(false);
+      return;
+    }
+
+    let cancelled = false;
+    setFeedback(null);
+    setChecking(true);
+    const timer = window.setTimeout(() => {
+      invoke<IntentAffordability>("intent_affordability", { asset, amount })
+        .then((next) => {
+          if (!cancelled) setFeedback(next);
+        })
+        .catch(() => {
+          if (!cancelled) setFeedback(null);
+        })
+        .finally(() => {
+          if (!cancelled) setChecking(false);
+        });
+    }, 120);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [active, amount, asset]);
+
+  return { feedback, checking };
+}
+
+function fieldLabel(field: IntentFieldView): string {
   return field.replace(/_/g, " ").toUpperCase();
 }
 
-function compositionMessage(status: IntentCompositionStatus, missing: string[]): string {
+function chipValue(field: IntentFieldView, fields: IntentFields): string | null {
+  switch (field) {
+    case "action":
+      return fields.action || null;
+    case "asset":
+      return fields.asset || null;
+    case "condition": {
+      if (!fields.condition) return null;
+      if (fields.condition.toLowerCase().startsWith("any")) return "ANY PRICE";
+      if (!fields.price) return null;
+      const direction = fields.condition.toLowerCase().includes("above") ? "ABOVE" : "UNDER";
+      return `${direction} $${fields.price.replace(/^\$/, "")}`;
+    }
+    case "amount":
+      return fields.amount ? `${fields.amount}${fields.asset ? ` ${fields.asset}` : ""}` : null;
+    case "mode":
+      return fields.mode || null;
+    case "privacy":
+      return fields.privacy || null;
+  }
+}
+
+function missingIntentFields(fields: IntentFields): IntentFieldView[] {
+  return EDITABLE_FIELDS.filter((field) => chipValue(field, fields) === null);
+}
+
+function compositionMessage(
+  status: IntentCompositionStatus,
+  missing: string[],
+  hasFields: boolean,
+  userEdited: boolean,
+): string {
+  if (hasFields && missing.length > 0) {
+    return `Clarify: ${missing.join(", ")}. No financial value was invented.`;
+  }
+  if (hasFields && (userEdited || status === "needs_clarification")) {
+    return "All six fields are supplied. Rust will validate this update before review.";
+  }
   switch (status) {
     case "validated":
       return "All six fields passed Rust domain validation. Review before anything leaves this device.";
@@ -466,7 +887,7 @@ function Segmented({
     // radiogroup, not tablist: these choose a value, they do not switch views,
     // and the distinction is what a screen reader announces.
     <div role="radiogroup" aria-label={name} style={{ display: "flex", flexWrap: "wrap", gap: "var(--space-3)" }}>
-      {options.map((option) => {
+      {options.map((option, index) => {
         const selected = option === value;
         return (
           <button
@@ -474,8 +895,27 @@ function Segmented({
             type="button"
             role="radio"
             aria-checked={selected}
+            tabIndex={selected || (!options.includes(value) && index === 0) ? 0 : -1}
             className="cm-touch"
             onClick={() => onChange(option)}
+            onKeyDown={(event) => {
+              if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) {
+                return;
+              }
+              event.preventDefault();
+              const nextIndex =
+                event.key === "Home"
+                  ? 0
+                  : event.key === "End"
+                    ? options.length - 1
+                    : (index + (event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 1) + options.length) %
+                      options.length;
+              const next = options[nextIndex];
+              if (!next) return;
+              onChange(next);
+              const buttons = event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="radio"]');
+              window.requestAnimationFrame(() => buttons?.[nextIndex]?.focus());
+            }}
             style={{
               flex: "1 1 auto",
               padding: "var(--space-4) var(--space-5)",
@@ -518,6 +958,7 @@ function DecimalField({
   prefix,
   suffix,
   placeholder,
+  describedBy,
 }: {
   id: string;
   label: string;
@@ -526,6 +967,7 @@ function DecimalField({
   prefix?: string;
   suffix?: React.ReactNode;
   placeholder?: string;
+  describedBy?: string;
 }) {
   const wrapper = useRef<HTMLDivElement | null>(null);
 
@@ -544,6 +986,7 @@ function DecimalField({
       </label>
       <Input
         id={id}
+        aria-describedby={describedBy}
         value={value}
         inputMode="decimal"
         // A pattern rather than a filter: rejecting keystrokes here would mean
