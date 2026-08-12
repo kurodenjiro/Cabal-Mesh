@@ -3115,9 +3115,23 @@ impl RelaySettlementWriter {
             acknowledgement: relay_acknowledgement_contract(&acknowledgement),
             acknowledgementSignature: signature_bytes(&acknowledgement_signature)?,
         };
+        // `settle` costs more gas than an estimate of it reports, and the gap
+        // is not noise. `_meteredExecutorNavax` returns zero when `tx.gasprice`
+        // is zero, which makes the executor credit zero, which makes `_credit`
+        // return before it writes. Avalanche's RPC estimates with a zero gas
+        // price, so the estimate always walks that cheaper branch while the
+        // real transaction — sent at a real gas price — pays for two cold
+        // storage writes the estimate never saw. Sending the estimate verbatim
+        // runs out of gas at the last instruction and burns the whole limit.
+        // Unused gas is refunded, so the headroom costs nothing when unneeded.
+        let call = contract.settle(contract_proof);
+        let gas_limit = call
+            .estimate_gas()
+            .await?
+            .saturating_mul(2);
         let receipt = timeout(Self::TRANSACTION_TIMEOUT, async {
-            let pending = contract
-                .settle(contract_proof)
+            let pending = call
+                .gas(gas_limit)
                 .send()
                 .await
                 .map_err(|error| error.to_string())?;

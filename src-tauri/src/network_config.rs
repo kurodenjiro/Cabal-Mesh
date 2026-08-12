@@ -97,8 +97,11 @@ impl Network {
                 // must be reviewed and published as one pair before MARKET can
                 // claim that its catalog is authentic.
                 module_marketplace: None,
-                // Filled only by a reviewed CabalRelaySettlement release.
-                relay_settlement: None,
+                // A reviewed CabalRelaySettlement release, verified against a
+                // real three-identity route on Fuji: one funded route settled
+                // to a distinct relayer, one unfulfilled route reclaimed, and
+                // the contract left holding exactly its outstanding credit.
+                relay_settlement: Some("0x78D714e1b47Bb86FE15788B917C9CC7B77975529"),
             },
             Self::Mainnet => Contracts {
                 escrow: None,
@@ -396,9 +399,15 @@ mod tests {
             fuji.module_marketplace.is_none(),
             "legacy voucher marketplace must not become the module market"
         );
+        // Relay settlement is the one contract in this group that has been
+        // reviewed and exercised end to end on Fuji, so it is the one address
+        // published here. The two above stay closed until theirs is.
+        let relay_settlement = fuji
+            .relay_settlement
+            .expect("the verified relay settlement release is published");
         assert!(
-            fuji.relay_settlement.is_none(),
-            "unreviewed relay settlement must fail closed"
+            relay_settlement.starts_with("0x") && relay_settlement.len() == 42,
+            "{relay_settlement} is not an address"
         );
         assert!(Network::Fuji.standing_release().is_none());
     }

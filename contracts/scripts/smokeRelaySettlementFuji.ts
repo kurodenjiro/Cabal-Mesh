@@ -206,7 +206,16 @@ async function main() {
     acknowledgementSignature,
   };
 
-  const settlementTransaction = await settlement.settle(proof);
+  // Settling costs more gas than estimating it reports. `_meteredExecutorNavax`
+  // returns zero at a zero gas price, so the executor credit is zero and
+  // `_credit` returns before writing; Avalanche's RPC estimates at a zero gas
+  // price, so the estimate walks that branch while the real transaction pays
+  // for two cold storage writes it never counted. Sending the bare estimate
+  // runs out of gas on the final instruction. Unused gas is refunded.
+  const settlementGas = await settlement.settle.estimateGas(proof);
+  const settlementTransaction = await settlement.settle(proof, {
+    gasLimit: settlementGas * 2n,
+  });
   const settlementReceipt = await settlementTransaction.wait();
   if (!settlementReceipt || settlementReceipt.status !== 1) {
     throw new Error("Fuji settlement transaction was not accepted");
