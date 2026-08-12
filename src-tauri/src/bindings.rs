@@ -32,7 +32,11 @@ use ts_rs::TS;
 
 /// Status tone. Domain matches the design system's `StatusDot` prop exactly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "lowercase")]
 pub enum StatusTone {
     Online,
@@ -44,7 +48,11 @@ pub enum StatusTone {
 
 /// Terminal line tone. Domain matches `TerminalLine`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts-rs", derive(TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "lowercase")]
 pub enum LogTone {
     Out,
@@ -57,7 +65,11 @@ pub enum LogTone {
 
 /// Delta direction. Domain matches `StatBlock`'s `deltaTone`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "lowercase")]
 pub enum DeltaTone {
     Up,
@@ -67,7 +79,11 @@ pub enum DeltaTone {
 
 /// Toast tone. Domain matches `Toast`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "lowercase")]
 pub enum ToastTone {
     Neutral,
@@ -81,7 +97,11 @@ pub enum ToastTone {
 /// `Box<str>` rather than `String`: these are built once, never mutated, and
 /// arrive in the hundreds, so `String`'s spare-capacity word is dead weight.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts-rs", derive(TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 pub struct LogLine {
     pub text: Box<str>,
     pub tone: LogTone,
@@ -91,7 +111,10 @@ impl LogLine {
     /// A line at the given tone.
     #[must_use]
     pub fn new(text: impl Into<Box<str>>, tone: LogTone) -> Self {
-        Self { text: text.into(), tone }
+        Self {
+            text: text.into(),
+            tone,
+        }
     }
 }
 
@@ -101,7 +124,11 @@ impl LogLine {
 /// there would mean reimplementing the separator and precision rules per
 /// screen, and drifting from them.
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "camelCase")]
 pub struct StatTile {
     pub label: &'static str,
@@ -171,10 +198,16 @@ mod tests {
     fn tones_serialize_as_the_design_system_expects() {
         // These strings are the design system's prop domains. A rename here is
         // a breaking change for every component that switches on them.
-        assert_eq!(serde_json::to_string(&StatusTone::Online).unwrap(), "\"online\"");
+        assert_eq!(
+            serde_json::to_string(&StatusTone::Online).unwrap(),
+            "\"online\""
+        );
         assert_eq!(serde_json::to_string(&LogTone::Err).unwrap(), "\"err\"");
         assert_eq!(serde_json::to_string(&DeltaTone::Up).unwrap(), "\"up\"");
-        assert_eq!(serde_json::to_string(&ToastTone::Alert).unwrap(), "\"alert\"");
+        assert_eq!(
+            serde_json::to_string(&ToastTone::Alert).unwrap(),
+            "\"alert\""
+        );
     }
 
     #[test]
@@ -209,7 +242,10 @@ mod tests {
         // to this shape until there is a previous week to compare with.
         let tile = StatTile::plain("RELAYED BYTES", "—");
         let json = serde_json::to_string(&tile).unwrap();
-        assert!(!json.contains("delta\""), "absent delta must be omitted: {json}");
+        assert!(
+            !json.contains("delta\""),
+            "absent delta must be omitted: {json}"
+        );
     }
 
     #[test]

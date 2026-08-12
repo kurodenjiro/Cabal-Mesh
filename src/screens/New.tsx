@@ -13,6 +13,7 @@ import type {
   IntentFields,
   IntentFieldView,
   IntentPreview,
+  PaidRelayRouteFields,
 } from "../types/bindings";
 
 const EDITABLE_FIELDS: IntentFieldView[] = ["action", "asset", "condition", "amount", "mode", "privacy"];
@@ -64,9 +65,13 @@ export function New({ onBroadcast }: { onBroadcast: (id: IntentId) => void }) {
   const [amount, setAmount] = useState("");
   const [mode, setMode] = useState("SHARK MODE");
   const [privacy, setPrivacy] = useState("HIGH");
+  const [paidRelay, setPaidRelay] = useState(false);
+  const [relayerWallet, setRelayerWallet] = useState("");
+  const [recipientWallet, setRecipientWallet] = useState("");
 
   const [preview, setPreview] = useState<IntentPreview | null>(null);
   const [reviewedFields, setReviewedFields] = useState<IntentFields | null>(null);
+  const [reviewedPaidRoute, setReviewedPaidRoute] = useState<PaidRelayRouteFields | null>(null);
   const [reviewBusy, setReviewBusy] = useState(false);
   const reviewSequence = useRef(0);
   const [error, setError] = useState<string | null>(null);
@@ -75,6 +80,7 @@ export function New({ onBroadcast }: { onBroadcast: (id: IntentId) => void }) {
   const closePreview = useCallback(() => {
     setPreview(null);
     setReviewedFields(null);
+    setReviewedPaidRoute(null);
   }, []);
   const closeEditor = useCallback(() => {
     setEditingField(null);
@@ -112,6 +118,9 @@ export function New({ onBroadcast }: { onBroadcast: (id: IntentId) => void }) {
   // the identical value, which is what makes "the dialog describes what goes
   // out" a property rather than a promise.
   const fields: IntentFields = { action, asset, condition, price, amount, mode, privacy };
+  const paidRoute: PaidRelayRouteFields | null = paidRelay
+    ? { relayer: relayerWallet.trim(), recipient: recipientWallet.trim() }
+    : null;
   const liveAffordability = useIntentAffordability(
     asset,
     amount,
@@ -129,7 +138,7 @@ export function New({ onBroadcast }: { onBroadcast: (id: IntentId) => void }) {
     reviewSequence.current += 1;
     setReviewBusy(false);
     closePreview();
-  }, [action, amount, asset, closePreview, condition, mode, price, privacy]);
+  }, [action, amount, asset, closePreview, condition, mode, paidRelay, price, privacy, recipientWallet, relayerWallet]);
 
   const applyFields = (next: IntentFields) => {
     fieldsClaimed.current = true;
@@ -170,7 +179,8 @@ export function New({ onBroadcast }: { onBroadcast: (id: IntentId) => void }) {
 
   const hasEditableFields = manualMode || composition?.fields != null;
   const missing = hasEditableFields ? missingIntentFields(fields) : (composition?.missing ?? []);
-  const canReview = hasEditableFields && missing.length === 0 && !inferenceBusy && !reviewBusy;
+  const paidRouteComplete = !paidRelay || (relayerWallet.trim().length > 0 && recipientWallet.trim().length > 0);
+  const canReview = hasEditableFields && missing.length === 0 && paidRouteComplete && !inferenceBusy && !reviewBusy;
   const conversationChips = composition?.fields
     ? EDITABLE_FIELDS.map((field) => ({ field, value: chipValue(field, fields) }))
     : (composition?.chips ?? []);
@@ -213,9 +223,13 @@ export function New({ onBroadcast }: { onBroadcast: (id: IntentId) => void }) {
     const sequence = ++reviewSequence.current;
     setReviewBusy(true);
     try {
-      const nextPreview = await invoke<IntentPreview>("preview_intent", { fields: candidate });
+      const nextPreview = await invoke<IntentPreview>("preview_intent", {
+        fields: candidate,
+        paidRoute,
+      });
       if (sequence !== reviewSequence.current) return;
       setReviewedFields(candidate);
+      setReviewedPaidRoute(paidRoute ? { ...paidRoute } : null);
       setPreview(nextPreview);
     } catch (failure) {
       if (sequence !== reviewSequence.current) return;
@@ -230,7 +244,11 @@ export function New({ onBroadcast }: { onBroadcast: (id: IntentId) => void }) {
     if (busy || !reviewedFields) return;
     setBusy(true);
     try {
-      const id = await invoke<string>("broadcast_intent", { fields: reviewedFields });
+      const id = await invoke<string>("broadcast_intent", {
+        fields: reviewedFields,
+        paidRoute: reviewedPaidRoute,
+        authorizedMaximumNavax: preview?.relayCharge?.maximumChargeNavax ?? null,
+      });
       closePreview();
       onBroadcast(id);
     } catch (failure) {
@@ -495,6 +513,56 @@ export function New({ onBroadcast }: { onBroadcast: (id: IntentId) => void }) {
         </>
       ) : null}
 
+      <Panel label="RELAY ROUTE">
+        <div style={{ padding: "var(--space-6)", display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
+          <Button
+            tone={paidRelay ? "signal" : "ghost"}
+            size="sm"
+            block
+            className="cm-touch"
+            aria-pressed={paidRelay}
+            onClick={() => setPaidRelay((enabled) => !enabled)}
+          >
+            {paidRelay ? "PAID TESTNET RELAY SELECTED" : "USE UNPAID BEST-EFFORT ROUTE"}
+          </Button>
+          {paidRelay ? (
+            <>
+              <label htmlFor="paid-relayer-wallet" style={relayLabelStyle}>
+                RELAYER OPERATOR WALLET
+              </label>
+              <Input
+                id="paid-relayer-wallet"
+                value={relayerWallet}
+                maxLength={42}
+                autoComplete="off"
+                spellCheck="false"
+                placeholder="0x… distinct relay wallet"
+                onChange={(event) => setRelayerWallet((event.target as HTMLInputElement).value)}
+              />
+              <label htmlFor="paid-recipient-wallet" style={relayLabelStyle}>
+                RECIPIENT OPERATOR WALLET
+              </label>
+              <Input
+                id="paid-recipient-wallet"
+                value={recipientWallet}
+                maxLength={42}
+                autoComplete="off"
+                spellCheck="false"
+                placeholder="0x… distinct recipient wallet"
+                onChange={(event) => setRecipientWallet((event.target as HTMLInputElement).value)}
+              />
+              <span style={{ fontSize: "var(--text-2xs)", color: "var(--text-muted)" }}>
+                THREE DISTINCT WALLETS REQUIRED. REVIEW SHOWS THE EXACT ESCROW MAXIMUM BEFORE ANY SIGNATURE OR BROADCAST.
+              </span>
+            </>
+          ) : (
+            <span style={{ fontSize: "var(--text-2xs)", color: "var(--text-muted)" }}>
+              UNPAID ROUTES CREATE NO PENDING OR SETTLED EARNINGS.
+            </span>
+          )}
+        </div>
+      </Panel>
+
       {error ? (
         <p role="alert" style={{ fontSize: "var(--text-base)", color: "var(--accent-blood-red)" }}>
           {error}
@@ -551,7 +619,11 @@ export function New({ onBroadcast }: { onBroadcast: (id: IntentId) => void }) {
             >
               {/* The verb matches the prose above it, and both come from the
                   same answer about whether the mesh is reachable. */}
-              {preview?.willBroadcast ? "BROADCAST" : "QUEUE LOCALLY"}
+              {preview?.relayCharge
+                ? "FUND MAX & BROADCAST"
+                : preview?.willBroadcast
+                  ? "BROADCAST"
+                  : "QUEUE LOCALLY"}
             </Button>
           </>
         }
@@ -572,6 +644,29 @@ export function New({ onBroadcast }: { onBroadcast: (id: IntentId) => void }) {
               <span style={{ fontFamily: "var(--type-data-family)", color: "var(--text-primary)" }}>{row.value}</span>
             </div>
           ))}
+          {preview?.relayCharge ? (
+            <div
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: "var(--space-4)",
+                paddingTop: "var(--space-4)",
+                borderTop: "var(--border-width) solid var(--border-default)",
+              }}
+            >
+              {preview.relayCharge.rows.map((row) => (
+                <div key={row.key} style={{ display: "flex", justifyContent: "space-between", gap: "var(--space-5)" }}>
+                  <span style={relayLabelStyle}>{row.key}</span>
+                  <span style={{ fontFamily: "var(--type-data-family)", color: "var(--text-primary)", textAlign: "right", overflowWrap: "anywhere" }}>
+                    {row.value}
+                  </span>
+                </div>
+              ))}
+              <span style={{ color: "var(--text-muted)", fontSize: "var(--text-2xs)", overflowWrap: "anywhere" }}>
+                FUJI CHAIN {preview.relayCharge.chainId} · SETTLEMENT {preview.relayCharge.contract}
+              </span>
+            </div>
+          ) : null}
           <p style={{ fontSize: "var(--text-base)", color: "var(--text-secondary)", margin: 0 }}>
             {preview?.confirm}
           </p>
@@ -580,6 +675,13 @@ export function New({ onBroadcast }: { onBroadcast: (id: IntentId) => void }) {
     </div>
   );
 }
+
+const relayLabelStyle: React.CSSProperties = {
+  fontFamily: "var(--type-label-family)",
+  fontSize: "var(--text-2xs)",
+  letterSpacing: "var(--tracking-widest)",
+  color: "var(--text-muted)",
+};
 
 function IntentFieldEditor({
   field,

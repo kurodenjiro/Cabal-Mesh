@@ -97,6 +97,8 @@ impl Network {
                 // must be reviewed and published as one pair before MARKET can
                 // claim that its catalog is authentic.
                 module_marketplace: None,
+                // Filled only by a reviewed CabalRelaySettlement release.
+                relay_settlement: None,
             },
             Self::Mainnet => Contracts {
                 escrow: None,
@@ -104,6 +106,7 @@ impl Network {
                 voucher: None,
                 modules: None,
                 module_marketplace: None,
+                relay_settlement: None,
             },
         }
     }
@@ -133,6 +136,8 @@ pub struct Contracts {
     ///
     /// Kept separate from `marketplace`, which is the legacy voucher market.
     pub module_marketplace: Option<&'static str>,
+    /// Sender-funded relay settlement for this exact reward/proof policy.
+    pub relay_settlement: Option<&'static str>,
 }
 
 /// One independently operated RPC approved for public-standing verification.
@@ -172,6 +177,8 @@ pub struct NetworkConfig {
     pub voucher_address: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub modules_address: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay_settlement_address: Option<String>,
 }
 
 impl Default for NetworkConfig {
@@ -183,6 +190,7 @@ impl Default for NetworkConfig {
             marketplace_address: None,
             voucher_address: None,
             modules_address: None,
+            relay_settlement_address: None,
         }
     }
 }
@@ -224,6 +232,9 @@ impl NetworkConfig {
         }
         if let Some(address) = var("MODULES_CONTRACT_ADDRESS") {
             self.modules_address = Some(address);
+        }
+        if let Some(address) = var("RELAY_SETTLEMENT_CONTRACT_ADDRESS") {
+            self.relay_settlement_address = Some(address);
         }
     }
 
@@ -295,6 +306,18 @@ impl NetworkConfig {
             .map(ToOwned::to_owned)
     }
 
+    /// Relay settlement: a desktop development override may exercise a local
+    /// deployment; mobile uses the reviewed compiled release address.
+    #[must_use]
+    pub fn relay_settlement(&self) -> Option<String> {
+        self.relay_settlement_address.clone().or_else(|| {
+            self.network
+                .contracts()
+                .relay_settlement
+                .map(ToOwned::to_owned)
+        })
+    }
+
     /// Approved public-standing source for this release, if one exists.
     #[must_use]
     pub const fn standing_release(&self) -> Option<StandingRelease> {
@@ -348,6 +371,7 @@ mod tests {
         assert!(mainnet.voucher.is_none());
         assert!(mainnet.modules.is_none());
         assert!(mainnet.module_marketplace.is_none());
+        assert!(mainnet.relay_settlement.is_none());
     }
 
     #[test]
@@ -359,12 +383,22 @@ mod tests {
         let fuji = Network::Fuji.contracts();
         for address in [fuji.escrow, fuji.marketplace, fuji.voucher] {
             let address = address.expect("Fuji contracts are deployed");
-            assert!(address.starts_with("0x") && address.len() == 42, "{address} is not an address");
+            assert!(
+                address.starts_with("0x") && address.len() == 42,
+                "{address} is not an address"
+            );
         }
-        assert!(fuji.modules.is_none(), "unreviewed legacy voucher must not become a module collection");
+        assert!(
+            fuji.modules.is_none(),
+            "unreviewed legacy voucher must not become a module collection"
+        );
         assert!(
             fuji.module_marketplace.is_none(),
             "legacy voucher marketplace must not become the module market"
+        );
+        assert!(
+            fuji.relay_settlement.is_none(),
+            "unreviewed relay settlement must fail closed"
         );
         assert!(Network::Fuji.standing_release().is_none());
     }

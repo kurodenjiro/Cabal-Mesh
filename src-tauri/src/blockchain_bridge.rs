@@ -1,26 +1,28 @@
-use serde::{Deserialize, Serialize};
 use cabal_store::JsonStore;
 use cabal_vault::{Secret, Vault};
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
-use std::error::Error;
 use std::str::FromStr;
-use chrono::{DateTime, Utc};
 // Crypto Imports
+use aes_gcm::aead::{rand_core::RngCore, OsRng};
 use alloy::{
     consensus::{BlockHeader as _, Transaction as _, TxEnvelope},
-    eips::{eip2718::{Decodable2718, Encodable2718}, BlockId, BlockNumberOrTag},
-    network::{
-        primitives::HeaderResponse as _,
-        BlockResponse as _, EthereumWallet, TransactionBuilder,
+    eips::{
+        eip2718::{Decodable2718, Encodable2718},
+        BlockId, BlockNumberOrTag,
     },
-    primitives::{keccak256, Address, Bytes, Signature, U256},
+    network::{
+        primitives::HeaderResponse as _, BlockResponse as _, EthereumWallet, TransactionBuilder,
+    },
+    primitives::{keccak256, Address, Bytes, Signature, B256, U256},
     providers::{Provider, ProviderBuilder},
     rpc::types::TransactionRequest,
     signers::{local::PrivateKeySigner, SignerSync},
     sol,
 };
-use aes_gcm::aead::{OsRng, rand_core::RngCore};
 use tokio::time::{timeout, Duration};
 
 pub const DEFAULT_AVAX_RPC_URL: &str = "https://api.avax-test.network/ext/bc/C/rpc";
@@ -29,6 +31,104 @@ sol! {
     #[sol(rpc)]
     IEscrow,
     "abi/Escrow.abi.json"
+}
+
+sol! {
+    #[sol(rpc)]
+    interface IRelaySettlement {
+        struct RelayAuthorization {
+            bytes32 policyHash;
+            bytes32 routeNonce;
+            bytes32 payloadCommitment;
+            uint8 deliveryMode;
+            bytes32 relayRouteHash;
+            address sender;
+            address recipient;
+            uint64 authorizedBytes;
+            uint8 relayCount;
+            uint64 maximumChargeNavax;
+            uint64 issuedAt;
+            uint64 expiresAt;
+        }
+
+        struct RelayContribution {
+            bytes32 authorizationHash;
+            uint8 hopIndex;
+            address relayer;
+            address ingress;
+            address egress;
+            bytes32 payloadCommitment;
+            uint64 deliveredBytes;
+            uint64 forwardedAt;
+        }
+
+        struct RecipientAcknowledgement {
+            bytes32 authorizationHash;
+            bytes32 contributionsHash;
+            address recipient;
+            bytes32 payloadCommitment;
+            uint64 deliveredBytes;
+            uint64 receivedAt;
+        }
+
+        struct RelayProof {
+            RelayAuthorization authorization;
+            address[] relayers;
+            bytes senderSignature;
+            RelayContribution[] contributions;
+            bytes[] contributionSignatures;
+            RecipientAcknowledgement acknowledgement;
+            bytes acknowledgementSignature;
+        }
+
+        event RouteFunded(
+            bytes32 indexed routeId,
+            address indexed sender,
+            address indexed recipient,
+            uint64 maximumChargeNavax,
+            uint64 expiresAt
+        );
+        event RouteSettled(
+            bytes32 indexed routeId,
+            address indexed executor,
+            uint64 deliveredBytes,
+            uint64 workPaidNavax,
+            uint64 executorPaidNavax,
+            uint64 senderRefundNavax
+        );
+        event RelayRewardCredited(
+            bytes32 indexed routeId,
+            address indexed relayer,
+            uint64 amountNavax
+        );
+
+        function fundRoute(
+            RelayAuthorization authorization,
+            address[] relayers,
+            bytes senderSignature
+        ) external payable returns (bytes32 routeId);
+        function settle(RelayProof proof) external returns (bytes32 routeId);
+        function expireRoute(bytes32 routeId) external;
+        function withdraw() external;
+        function routes(bytes32 routeId)
+            external
+            view
+            returns (
+                address sender,
+                address recipient,
+                bytes32 payloadCommitment,
+                uint64 authorizedBytes,
+                uint64 maximumChargeNavax,
+                uint64 expiresAt,
+                uint8 state
+            );
+        function consumedRoutes(bytes32 routeId) external view returns (bool consumed);
+        function settledRelayEarningsNavax(address relayer)
+            external
+            view
+            returns (uint256 amountNavax);
+        function withdrawableWei(address account) external view returns (uint256 amountWei);
+    }
 }
 
 sol! {
@@ -364,6 +464,110 @@ pub struct ModuleMarketWriter {
     signer: PrivateKeySigner,
 }
 
+/// Sender authorization carried from the accepted funding transaction to the
+/// one named relay. Every integer remains inside the protocol's u64 bounds;
+/// hashes, signatures, and addresses stay explicit hex strings on the wire.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RelayAuthorizationWire {
+    pub policy_hash: String,
+    pub route_nonce: String,
+    pub payload_commitment: String,
+    pub delivery_mode: u8,
+    pub relay_route_hash: String,
+    pub sender: String,
+    pub recipient: String,
+    pub authorized_bytes: u64,
+    pub relay_count: u8,
+    pub maximum_charge_navax: u64,
+    pub issued_at: u64,
+    pub expires_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PaidRelayRequestWire {
+    pub intent_id: String,
+    pub authorization: RelayAuthorizationWire,
+    pub relayers: Vec<String>,
+    pub sender_signature: String,
+    pub route_id: String,
+    pub funding_tx_hash: String,
+    /// Exact draft JSON committed by `payload_commitment` and forwarded once
+    /// by the selected relay. It is never logged by the reward path.
+    pub payload: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RelayContributionWire {
+    pub authorization_hash: String,
+    pub hop_index: u8,
+    pub relayer: String,
+    pub ingress: String,
+    pub egress: String,
+    pub payload_commitment: String,
+    pub delivered_bytes: u64,
+    pub forwarded_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PaidRelayDeliveryWire {
+    pub request: PaidRelayRequestWire,
+    pub contribution: RelayContributionWire,
+    pub contribution_signature: String,
+    pub contribution_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PaidRelaySettlementWire {
+    pub intent_id: String,
+    pub route_id: String,
+    pub settlement_tx_hash: String,
+    pub funding_tx_hash: String,
+    pub sender: String,
+    pub relayer: String,
+    pub recipient: String,
+    pub settled_reward_navax: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelayFundingQuoteChain {
+    pub chain_id: u64,
+    pub contract: String,
+    pub sender: String,
+    pub relayer: String,
+    pub recipient: String,
+    pub authorized_bytes: u64,
+    pub billed_bytes: u64,
+    pub base_reward_navax: u64,
+    pub maximum_work_navax: u64,
+    pub settlement_gas_reserve_navax: u64,
+    pub maximum_charge_navax: u64,
+    pub balance_wei: String,
+    pub estimated_wallet_gas_wei: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelaySettlementOutcome {
+    pub route_id: String,
+    pub funding_tx_hash: String,
+    pub settlement_tx_hash: String,
+    pub relayer_reward_navax: u64,
+}
+
+/// Detached relay settlement client. It deliberately has no `Debug`: the
+/// cloned signer must never enter logs or IPC error text.
+#[derive(Clone)]
+pub struct RelaySettlementWriter {
+    rpc_url: String,
+    chain_id: u64,
+    contract: Address,
+    signer: PrivateKeySigner,
+}
+
 /// One accepted-head view of the operator wallet's complete on-chain loadout.
 ///
 /// This can be cached for offline display, but only a freshly queried snapshot
@@ -525,6 +729,7 @@ pub struct BlockchainBridge {
     pub received_content_path: PathBuf,
     pub relay_boost_path: PathBuf,
     pub rpc_url: String,
+    pub chain_id: u64,
     pub escrow_address: Option<Address>,
     pub marketplace_address: Option<Address>,
     /// Marketplace reviewed and deployed together with
@@ -536,6 +741,7 @@ pub struct BlockchainBridge {
     pub module_market_modules_address: Option<Address>,
     pub voucher_address: Option<Address>,
     pub modules_address: Option<Address>,
+    pub relay_settlement_address: Option<Address>,
     /// Reviewed registry and independent RPC quorum for public seller standing.
     pub standing_release: Option<crate::network_config::StandingRelease>,
     pub current_session: Option<InstantSession>,
@@ -556,7 +762,9 @@ impl BlockchainBridge {
         ));
 
         let escrow_address = network.escrow().and_then(|s| Address::from_str(&s).ok());
-        let marketplace_address = network.marketplace().and_then(|s| Address::from_str(&s).ok());
+        let marketplace_address = network
+            .marketplace()
+            .and_then(|s| Address::from_str(&s).ok());
         let module_marketplace_address = network
             .module_marketplace()
             .and_then(|s| Address::from_str(&s).ok());
@@ -564,6 +772,9 @@ impl BlockchainBridge {
             .module_market_modules()
             .and_then(|s| Address::from_str(&s).ok());
         let voucher_address = network.voucher().and_then(|s| Address::from_str(&s).ok());
+        let relay_settlement_address = network
+            .relay_settlement()
+            .and_then(|address| Address::from_str(&address).ok());
         // Once a reviewed release pair exists, VAULT and loadout must use the
         // same collection as MARKET so a confirmed purchase appears in the
         // buyer's MODULES view. Development overrides remain useful only
@@ -592,12 +803,14 @@ impl BlockchainBridge {
             received_content_path: app_dir.join("received_content.json"),
             relay_boost_path: app_dir.join("relay_boost.json"),
             rpc_url,
+            chain_id: network.network.chain_id(),
             escrow_address,
             marketplace_address,
             module_marketplace_address,
             module_market_modules_address,
             voucher_address,
             modules_address,
+            relay_settlement_address,
             standing_release,
             current_session: None,
         };
@@ -635,7 +848,8 @@ impl BlockchainBridge {
                 Ok(records) => {
                     self.identities = records;
                     if self.identities.is_empty() {
-                        return self.generate_new_identity("Primary Fox".to_string(), "🦊".to_string());
+                        return self
+                            .generate_new_identity("Primary Fox".to_string(), "🦊".to_string());
                     }
                     self.get_identity_views()
                 }
@@ -658,11 +872,19 @@ impl BlockchainBridge {
         crate::app_paths::in_data_dir("identities.json")
     }
 
-    pub fn generate_new_identity(&mut self, alias: String, emoji: String) -> Result<Vec<IdentityView>, Box<dyn Error>> {
+    pub fn generate_new_identity(
+        &mut self,
+        alias: String,
+        emoji: String,
+    ) -> Result<Vec<IdentityView>, Box<dyn Error>> {
         tracing::info!("🆕 Generating NEW Identity '{}' [{}]...", alias, emoji);
         let signer = PrivateKeySigner::random();
         let private_key_hex = format!("0x{}", hex::encode(signer.to_bytes()));
-        self.identities.push(IdentityRecord { alias, emoji, private_key_hex: private_key_hex.into() });
+        self.identities.push(IdentityRecord {
+            alias,
+            emoji,
+            private_key_hex: private_key_hex.into(),
+        });
         self.save_identities()?;
         self.get_identity_views()
     }
@@ -708,7 +930,11 @@ impl BlockchainBridge {
         };
         PrivateKeySigner::from_str(&normalized)?;
 
-        self.identities = vec![IdentityRecord { alias, emoji, private_key_hex: normalized.into() }];
+        self.identities = vec![IdentityRecord {
+            alias,
+            emoji,
+            private_key_hex: normalized.into(),
+        }];
         let _ = self.delete_snapshot();
         let _ = fs::remove_file(&self.relay_boost_path);
         self.save_identities()?;
@@ -720,7 +946,9 @@ impl BlockchainBridge {
     /// way to actually get back to a wallet after switching away from it,
     /// since nothing else persists it anywhere recoverable.
     pub fn get_primary_private_key(&self) -> Option<String> {
-        self.identities.first().map(|id| id.private_key_hex.expose().to_owned())
+        self.identities
+            .first()
+            .map(|id| id.private_key_hex.expose().to_owned())
     }
 
     pub fn get_primary_address(&self) -> String {
@@ -782,13 +1010,24 @@ impl BlockchainBridge {
     /// the cached nonce so a second queued call doesn't collide), and queues
     /// the raw signed bytes for a mesh peer with connectivity to relay.
     /// The private key never leaves this function — only the signed bytes do.
-    async fn sign_offline(&self, to: Address, calldata: Bytes, value: U256, summary: &str) -> Result<QueuedTx, Box<dyn Error>> {
-        let cache = self.load_chain_cache().ok_or("No cached chain state available — never been online yet")?;
+    async fn sign_offline(
+        &self,
+        to: Address,
+        calldata: Bytes,
+        value: U256,
+        summary: &str,
+    ) -> Result<QueuedTx, Box<dyn Error>> {
+        let cache = self
+            .load_chain_cache()
+            .ok_or("No cached chain state available — never been online yet")?;
         let signer = self.primary_signer()?;
         let wallet = EthereumWallet::from(signer);
 
         // +20% buffer on the cached gas price in case it's gone slightly stale.
-        let gas_price: u128 = cache.gas_price_wei.parse::<u128>().unwrap_or(30_000_000_000);
+        let gas_price: u128 = cache
+            .gas_price_wei
+            .parse::<u128>()
+            .unwrap_or(30_000_000_000);
         let buffered_gas_price = gas_price + (gas_price / 5);
 
         let tx = TransactionRequest::default()
@@ -815,7 +1054,11 @@ impl BlockchainBridge {
 
         let mut suffix = [0u8; 4];
         OsRng.fill_bytes(&mut suffix);
-        let id = format!("tx-{}-{}", Utc::now().timestamp_millis(), hex::encode(suffix));
+        let id = format!(
+            "tx-{}-{}",
+            Utc::now().timestamp_millis(),
+            hex::encode(suffix)
+        );
 
         let queued = QueuedTx {
             id,
@@ -832,7 +1075,11 @@ impl BlockchainBridge {
         pending.push(queued.clone());
         self.save_pending_relay_txs(&pending)?;
 
-        tracing::info!("📡 [Bridge] Signed offline, queued for mesh relay: {} ({})", queued.id, summary);
+        tracing::info!(
+            "📡 [Bridge] Signed offline, queued for mesh relay: {} ({})",
+            queued.id,
+            summary
+        );
         Ok(queued)
     }
 
@@ -908,9 +1155,16 @@ impl BlockchainBridge {
         let raw_bytes = hex::decode(hex_str)?;
 
         let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
-        let receipt = provider.send_raw_transaction(&raw_bytes).await?.get_receipt().await?;
+        let receipt = provider
+            .send_raw_transaction(&raw_bytes)
+            .await?
+            .get_receipt()
+            .await?;
 
-        tracing::info!("✅ [Bridge] Relayed transaction confirmed. Tx: {:?}", receipt.transaction_hash);
+        tracing::info!(
+            "✅ [Bridge] Relayed transaction confirmed. Tx: {:?}",
+            receipt.transaction_hash
+        );
         Ok(format!("{:?}", receipt.transaction_hash))
     }
 
@@ -937,8 +1191,12 @@ impl BlockchainBridge {
                 return true;
             }
             let hex_str = tx.raw_tx_hex.trim_start_matches("0x");
-            let Ok(raw_bytes) = hex::decode(hex_str) else { return true };
-            let Ok(envelope) = TxEnvelope::decode_2718(&mut raw_bytes.as_slice()) else { return true };
+            let Ok(raw_bytes) = hex::decode(hex_str) else {
+                return true;
+            };
+            let Ok(envelope) = TxEnvelope::decode_2718(&mut raw_bytes.as_slice()) else {
+                return true;
+            };
             envelope.nonce() >= current_nonce
         });
         let pruned = before - pending.len();
@@ -954,7 +1212,12 @@ impl BlockchainBridge {
 
     /// Real, persisted credit for helping other peers: every transaction this
     /// node successfully relayed to the chain on someone else's behalf.
-    pub fn record_relayed_tx(&self, summary: &str, tx_hash: &str, reward_avax: &str) -> Result<(), Box<dyn Error>> {
+    pub fn record_relayed_tx(
+        &self,
+        summary: &str,
+        tx_hash: &str,
+        reward_avax: &str,
+    ) -> Result<(), Box<dyn Error>> {
         let mut history = self.load_relayed_history();
         history.push(RelayedTxRecord {
             summary: summary.to_string(),
@@ -999,7 +1262,12 @@ impl BlockchainBridge {
         Ok(updated)
     }
 
-    pub fn mark_relay_tx_status(&self, id: &str, status: &str, tx_hash: Option<String>) -> Result<(), Box<dyn Error>> {
+    pub fn mark_relay_tx_status(
+        &self,
+        id: &str,
+        status: &str,
+        tx_hash: Option<String>,
+    ) -> Result<(), Box<dyn Error>> {
         let mut pending = self.load_pending_relay_txs();
         if let Some(entry) = pending.iter_mut().find(|t| t.id == id) {
             entry.status = status.to_string();
@@ -1015,20 +1283,35 @@ impl BlockchainBridge {
     /// endpoint is unreachable or the machine has no real route to it).
     /// Cheap and short-timeout so it's safe to poll frequently.
     pub async fn check_rpc_reachable(&self) -> bool {
-        let Ok(url) = self.rpc_url.parse() else { return false };
+        let Ok(url) = self.rpc_url.parse() else {
+            return false;
+        };
         let provider = ProviderBuilder::new().connect_http(url);
-        matches!(timeout(Duration::from_secs(4), provider.get_block_number()).await, Ok(Ok(_)))
+        matches!(
+            timeout(Duration::from_secs(4), provider.get_block_number()).await,
+            Ok(Ok(_))
+        )
     }
 
     /// Spanned so the RPC round trip and everything it logs is attributable to
     /// one sync, which matters when several run concurrently after a reconnect.
     #[tracing::instrument(skip(self), fields(rpc = %self.rpc_url))]
-    pub async fn sync_state(&self, wallet_address_override: &str) -> Result<Snapshot, Box<dyn Error>> {
+    pub async fn sync_state(
+        &self,
+        wallet_address_override: &str,
+    ) -> Result<Snapshot, Box<dyn Error>> {
         let primary = self.get_primary_address();
-        let target = if primary != "unknown" { primary } else { wallet_address_override.to_string() };
+        let target = if primary != "unknown" {
+            primary
+        } else {
+            wallet_address_override.to_string()
+        };
         let address = Address::from_str(&target)?;
 
-        tracing::info!("🔄 [Bridge] Fetching native AVAX balance from {}", self.rpc_url);
+        tracing::info!(
+            "🔄 [Bridge] Fetching native AVAX balance from {}",
+            self.rpc_url
+        );
 
         let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
         let balance_wei: U256 = provider.get_balance(address).await?;
@@ -1117,7 +1400,10 @@ impl BlockchainBridge {
 
     pub fn get_status(&self) -> String {
         match &self.current_session {
-            Some(s) if s.is_active => format!("Instant Session Engine: Active [Agent: {}...]", &s.authority[..6]),
+            Some(s) if s.is_active => format!(
+                "Instant Session Engine: Active [Agent: {}...]",
+                &s.authority[..6]
+            ),
             _ => "Instant Session Engine: Inactive".to_string(),
         }
     }
@@ -1127,13 +1413,23 @@ impl BlockchainBridge {
     /// signing the transaction offline and queuing it for mesh relay.
     /// `skip(self)` keeps the bridge — which holds signers — out of the span,
     /// while the escrow parameters stay visible.
-    pub async fn create_escrow(&self, payee: &str, amount_wei: U256, expiry_unix: u64) -> Result<TxResult, Box<dyn Error>> {
+    pub async fn create_escrow(
+        &self,
+        payee: &str,
+        amount_wei: U256,
+        expiry_unix: u64,
+    ) -> Result<TxResult, Box<dyn Error>> {
         // A thin wrapper so the frozen desktop surface keeps the exact
         // signature ticket 09 snapshotted. Everything below is shared.
-        Ok(match self.create_escrow_detailed(payee, amount_wei, expiry_unix).await? {
-            EscrowOutcome::Confirmed { escrow_id, .. } => TxResult::Confirmed { id: escrow_id },
-            EscrowOutcome::Queued { queue_id } => TxResult::Queued { queue_id },
-        })
+        Ok(
+            match self
+                .create_escrow_detailed(payee, amount_wei, expiry_unix)
+                .await?
+            {
+                EscrowOutcome::Confirmed { escrow_id, .. } => TxResult::Confirmed { id: escrow_id },
+                EscrowOutcome::Queued { queue_id } => TxResult::Queued { queue_id },
+            },
+        )
     }
 
     /// Creates an escrow and reports the transaction hash alongside the id.
@@ -1143,15 +1439,25 @@ impl BlockchainBridge {
     /// second call would be a different transaction's worth of trust — the
     /// receipt in hand is the only thing that actually proves this settlement.
     #[tracing::instrument(skip(self), fields(payee = %payee, expiry = expiry_unix))]
-    pub async fn create_escrow_detailed(&self, payee: &str, amount_wei: U256, expiry_unix: u64) -> Result<EscrowOutcome, Box<dyn Error>> {
+    pub async fn create_escrow_detailed(
+        &self,
+        payee: &str,
+        amount_wei: U256,
+        expiry_unix: u64,
+    ) -> Result<EscrowOutcome, Box<dyn Error>> {
         let signer = self.primary_signer()?;
-        let escrow_address = self.escrow_address.ok_or("ESCROW_CONTRACT_ADDRESS not configured")?;
+        let escrow_address = self
+            .escrow_address
+            .ok_or("ESCROW_CONTRACT_ADDRESS not configured")?;
         let payee_addr = Address::from_str(payee)?;
 
         // Build calldata once — reused for both the online path and the offline fallback.
         let unsigned_provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
         let unsigned_contract = IEscrow::new(escrow_address, unsigned_provider);
-        let calldata = unsigned_contract.createEscrow(payee_addr, U256::from(expiry_unix)).calldata().clone();
+        let calldata = unsigned_contract
+            .createEscrow(payee_addr, U256::from(expiry_unix))
+            .calldata()
+            .clone();
 
         let provider = ProviderBuilder::new()
             .wallet(signer)
@@ -1169,15 +1475,22 @@ impl BlockchainBridge {
                 .await
                 .map_err(|e| e.to_string())?;
             pending.get_receipt().await.map_err(|e| e.to_string())
-        }).await;
+        })
+        .await;
 
         let receipt = match online_result {
             Ok(Ok(receipt)) => receipt,
             Ok(Err(e)) => return Err(e.into()),
             Err(_timed_out) => {
-                tracing::warn!("⚠️  [Bridge] RPC unreachable — signing create_escrow offline for mesh relay.");
-                let queued = self.sign_offline(escrow_address, calldata, amount_wei, "Create escrow").await?;
-                return Ok(EscrowOutcome::Queued { queue_id: queued.id });
+                tracing::warn!(
+                    "⚠️  [Bridge] RPC unreachable — signing create_escrow offline for mesh relay."
+                );
+                let queued = self
+                    .sign_offline(escrow_address, calldata, amount_wei, "Create escrow")
+                    .await?;
+                return Ok(EscrowOutcome::Queued {
+                    queue_id: queued.id,
+                });
             }
         };
 
@@ -1188,7 +1501,11 @@ impl BlockchainBridge {
             .map(|l| l.inner.data.escrowId.to::<u64>())
             .ok_or("EscrowCreated event not found in receipt")?;
 
-        tracing::info!("✅ [Bridge] Escrow {} created. Tx: {:?}", escrow_id, receipt.transaction_hash);
+        tracing::info!(
+            "✅ [Bridge] Escrow {} created. Tx: {:?}",
+            escrow_id,
+            receipt.transaction_hash
+        );
         Ok(EscrowOutcome::Confirmed {
             escrow_id,
             tx_hash: format!("{:?}", receipt.transaction_hash),
@@ -1197,31 +1514,62 @@ impl BlockchainBridge {
 
     pub async fn release_escrow(&self, escrow_id: u64) -> Result<String, Box<dyn Error>> {
         let signer = self.primary_signer()?;
-        let escrow_address = self.escrow_address.ok_or("ESCROW_CONTRACT_ADDRESS not configured")?;
+        let escrow_address = self
+            .escrow_address
+            .ok_or("ESCROW_CONTRACT_ADDRESS not configured")?;
 
-        let provider = ProviderBuilder::new().wallet(signer).connect_http(self.rpc_url.parse()?);
+        let provider = ProviderBuilder::new()
+            .wallet(signer)
+            .connect_http(self.rpc_url.parse()?);
         let contract = IEscrow::new(escrow_address, provider);
 
-        let receipt = contract.release(U256::from(escrow_id)).send().await?.get_receipt().await?;
-        tracing::info!("✅ [Bridge] Escrow {} released. Tx: {:?}", escrow_id, receipt.transaction_hash);
+        let receipt = contract
+            .release(U256::from(escrow_id))
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+        tracing::info!(
+            "✅ [Bridge] Escrow {} released. Tx: {:?}",
+            escrow_id,
+            receipt.transaction_hash
+        );
         Ok(format!("{:?}", receipt.transaction_hash))
     }
 
     pub async fn refund_escrow(&self, escrow_id: u64) -> Result<String, Box<dyn Error>> {
         let signer = self.primary_signer()?;
-        let escrow_address = self.escrow_address.ok_or("ESCROW_CONTRACT_ADDRESS not configured")?;
+        let escrow_address = self
+            .escrow_address
+            .ok_or("ESCROW_CONTRACT_ADDRESS not configured")?;
 
-        let provider = ProviderBuilder::new().wallet(signer).connect_http(self.rpc_url.parse()?);
+        let provider = ProviderBuilder::new()
+            .wallet(signer)
+            .connect_http(self.rpc_url.parse()?);
         let contract = IEscrow::new(escrow_address, provider);
 
-        let receipt = contract.refund(U256::from(escrow_id)).send().await?.get_receipt().await?;
-        tracing::info!("✅ [Bridge] Escrow {} refunded. Tx: {:?}", escrow_id, receipt.transaction_hash);
+        let receipt = contract
+            .refund(U256::from(escrow_id))
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+        tracing::info!(
+            "✅ [Bridge] Escrow {} refunded. Tx: {:?}",
+            escrow_id,
+            receipt.transaction_hash
+        );
         Ok(format!("{:?}", receipt.transaction_hash))
     }
 
     /// Reads the on-chain state of a deal (no signer required).
-    pub async fn get_escrow_status(&self, escrow_id: u64) -> Result<serde_json::Value, Box<dyn Error>> {
-        let escrow_address = self.escrow_address.ok_or("ESCROW_CONTRACT_ADDRESS not configured")?;
+    pub async fn get_escrow_status(
+        &self,
+        escrow_id: u64,
+    ) -> Result<serde_json::Value, Box<dyn Error>> {
+        let escrow_address = self
+            .escrow_address
+            .ok_or("ESCROW_CONTRACT_ADDRESS not configured")?;
         let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
         let contract = IEscrow::new(escrow_address, provider);
 
@@ -1239,11 +1587,19 @@ impl BlockchainBridge {
     /// Mints a new voucher NFT to the primary identity. This mint call is
     /// itself the proof-of-possession step: only the real key-holder can
     /// mint a token into their own name.
-    pub async fn mint_voucher(&self, voucher_type: &str, description: &str) -> Result<u64, Box<dyn Error>> {
+    pub async fn mint_voucher(
+        &self,
+        voucher_type: &str,
+        description: &str,
+    ) -> Result<u64, Box<dyn Error>> {
         let signer = self.primary_signer()?;
-        let voucher_address = self.voucher_address.ok_or("VOUCHER_CONTRACT_ADDRESS not configured")?;
+        let voucher_address = self
+            .voucher_address
+            .ok_or("VOUCHER_CONTRACT_ADDRESS not configured")?;
 
-        let provider = ProviderBuilder::new().wallet(signer).connect_http(self.rpc_url.parse()?);
+        let provider = ProviderBuilder::new()
+            .wallet(signer)
+            .connect_http(self.rpc_url.parse()?);
         let contract = IVoucher::new(voucher_address, provider);
 
         let receipt = contract
@@ -1260,7 +1616,11 @@ impl BlockchainBridge {
             .map(|l| l.inner.data.tokenId.to::<u64>())
             .ok_or("VoucherMinted event not found in receipt")?;
 
-        tracing::info!("✅ [Bridge] Voucher {} minted. Tx: {:?}", token_id, receipt.transaction_hash);
+        tracing::info!(
+            "✅ [Bridge] Voucher {} minted. Tx: {:?}",
+            token_id,
+            receipt.transaction_hash
+        );
         Ok(token_id)
     }
 
@@ -1268,10 +1628,16 @@ impl BlockchainBridge {
     /// the seller's wallet, required before that voucher can be listed.
     pub async fn approve_voucher(&self, token_id: u64) -> Result<String, Box<dyn Error>> {
         let signer = self.primary_signer()?;
-        let voucher_address = self.voucher_address.ok_or("VOUCHER_CONTRACT_ADDRESS not configured")?;
-        let marketplace_address = self.marketplace_address.ok_or("MARKETPLACE_CONTRACT_ADDRESS not configured")?;
+        let voucher_address = self
+            .voucher_address
+            .ok_or("VOUCHER_CONTRACT_ADDRESS not configured")?;
+        let marketplace_address = self
+            .marketplace_address
+            .ok_or("MARKETPLACE_CONTRACT_ADDRESS not configured")?;
 
-        let provider = ProviderBuilder::new().wallet(signer).connect_http(self.rpc_url.parse()?);
+        let provider = ProviderBuilder::new()
+            .wallet(signer)
+            .connect_http(self.rpc_url.parse()?);
         let contract = IVoucher::new(voucher_address, provider);
 
         let receipt = contract
@@ -1281,15 +1647,26 @@ impl BlockchainBridge {
             .get_receipt()
             .await?;
 
-        tracing::info!("✅ [Bridge] Voucher {} approved for Marketplace. Tx: {:?}", token_id, receipt.transaction_hash);
+        tracing::info!(
+            "✅ [Bridge] Voucher {} approved for Marketplace. Tx: {:?}",
+            token_id,
+            receipt.transaction_hash
+        );
         Ok(format!("{:?}", receipt.transaction_hash))
     }
 
     /// Publishes a real on-chain listing backed by an owned, approved voucher.
     /// Returns the generated listing id.
-    pub async fn create_asset_listing(&self, description: &str, price_wei: U256, token_id: u64) -> Result<u64, Box<dyn Error>> {
+    pub async fn create_asset_listing(
+        &self,
+        description: &str,
+        price_wei: U256,
+        token_id: u64,
+    ) -> Result<u64, Box<dyn Error>> {
         let signer = self.primary_signer()?;
-        let marketplace_address = self.marketplace_address.ok_or("MARKETPLACE_CONTRACT_ADDRESS not configured")?;
+        let marketplace_address = self
+            .marketplace_address
+            .ok_or("MARKETPLACE_CONTRACT_ADDRESS not configured")?;
 
         let provider = ProviderBuilder::new()
             .wallet(signer)
@@ -1311,13 +1688,19 @@ impl BlockchainBridge {
             .map(|l| l.inner.data.id.to::<u64>())
             .ok_or("ListingCreated event not found in receipt")?;
 
-        tracing::info!("✅ [Bridge] Listing {} created. Tx: {:?}", listing_id, receipt.transaction_hash);
+        tracing::info!(
+            "✅ [Bridge] Listing {} created. Tx: {:?}",
+            listing_id,
+            receipt.transaction_hash
+        );
         Ok(listing_id)
     }
 
     /// Reads all active listings from the Marketplace contract (no signer required).
     pub async fn get_active_asset_listings(&self) -> Result<Vec<AssetListingView>, Box<dyn Error>> {
-        let marketplace_address = self.marketplace_address.ok_or("MARKETPLACE_CONTRACT_ADDRESS not configured")?;
+        let marketplace_address = self
+            .marketplace_address
+            .ok_or("MARKETPLACE_CONTRACT_ADDRESS not configured")?;
         let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
         let contract = IMarketplace::new(marketplace_address, provider);
 
@@ -1345,9 +1728,15 @@ impl BlockchainBridge {
     /// the Marketplace contract in a single transaction. Returns the deal id.
     /// If the RPC can't be reached within a few seconds, falls back to
     /// signing the transaction offline and queuing it for mesh relay.
-    pub async fn buy_listing(&self, listing_id: u64, price_wei: U256) -> Result<TxResult, Box<dyn Error>> {
+    pub async fn buy_listing(
+        &self,
+        listing_id: u64,
+        price_wei: U256,
+    ) -> Result<TxResult, Box<dyn Error>> {
         let signer = self.primary_signer()?;
-        let marketplace_address = self.marketplace_address.ok_or("MARKETPLACE_CONTRACT_ADDRESS not configured")?;
+        let marketplace_address = self
+            .marketplace_address
+            .ok_or("MARKETPLACE_CONTRACT_ADDRESS not configured")?;
 
         let unsigned_provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
         let unsigned_contract = IMarketplace::new(marketplace_address, unsigned_provider);
@@ -1355,7 +1744,10 @@ impl BlockchainBridge {
         // The contract rejects a seller buying their own listing, so this is
         // not the safety check — it is the error message. Catching it here
         // turns a raw revert into a sentence.
-        let listing = unsigned_contract.listings(U256::from(listing_id)).call().await?;
+        let listing = unsigned_contract
+            .listings(U256::from(listing_id))
+            .call()
+            .await?;
         if listing.seller == signer.address() {
             return Err("You can't buy your own listing".into());
         }
@@ -1368,14 +1760,24 @@ impl BlockchainBridge {
         if let Some(voucher_address) = self.voucher_address {
             let voucher_provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
             let voucher_contract = IVoucher::new(voucher_address, voucher_provider);
-            if voucher_contract.ownerOf(listing.tokenId).call().await.is_err() {
+            if voucher_contract
+                .ownerOf(listing.tokenId)
+                .call()
+                .await
+                .is_err()
+            {
                 return Err("This listing's item no longer exists — it was likely redeemed by the seller before anyone bought it".into());
             }
         }
 
-        let calldata = unsigned_contract.buy(U256::from(listing_id)).calldata().clone();
+        let calldata = unsigned_contract
+            .buy(U256::from(listing_id))
+            .calldata()
+            .clone();
 
-        let provider = ProviderBuilder::new().wallet(signer).connect_http(self.rpc_url.parse()?);
+        let provider = ProviderBuilder::new()
+            .wallet(signer)
+            .connect_http(self.rpc_url.parse()?);
         let contract = IMarketplace::new(marketplace_address, provider);
 
         // See create_escrow's comment above: map to String here to keep this future Send.
@@ -1387,15 +1789,22 @@ impl BlockchainBridge {
                 .await
                 .map_err(|e| e.to_string())?;
             pending.get_receipt().await.map_err(|e| e.to_string())
-        }).await;
+        })
+        .await;
 
         let receipt = match online_result {
             Ok(Ok(receipt)) => receipt,
             Ok(Err(e)) => return Err(e.into()),
             Err(_timed_out) => {
-                tracing::warn!("⚠️  [Bridge] RPC unreachable — signing buy_listing offline for mesh relay.");
-                let queued = self.sign_offline(marketplace_address, calldata, price_wei, "Buy listing").await?;
-                return Ok(TxResult::Queued { queue_id: queued.id });
+                tracing::warn!(
+                    "⚠️  [Bridge] RPC unreachable — signing buy_listing offline for mesh relay."
+                );
+                let queued = self
+                    .sign_offline(marketplace_address, calldata, price_wei, "Buy listing")
+                    .await?;
+                return Ok(TxResult::Queued {
+                    queue_id: queued.id,
+                });
             }
         };
 
@@ -1406,7 +1815,11 @@ impl BlockchainBridge {
             .map(|l| l.inner.data.dealId.to::<u64>())
             .ok_or("DealCreated event not found in receipt")?;
 
-        tracing::info!("✅ [Bridge] Deal {} created (voucher + AVAX locked). Tx: {:?}", deal_id, receipt.transaction_hash);
+        tracing::info!(
+            "✅ [Bridge] Deal {} created (voucher + AVAX locked). Tx: {:?}",
+            deal_id,
+            receipt.transaction_hash
+        );
         Ok(TxResult::Confirmed { id: deal_id })
     }
 
@@ -1414,13 +1827,26 @@ impl BlockchainBridge {
     /// still active — once a buyer has paid, the deal rules take over.
     pub async fn cancel_listing(&self, listing_id: u64) -> Result<String, Box<dyn Error>> {
         let signer = self.primary_signer()?;
-        let marketplace_address = self.marketplace_address.ok_or("MARKETPLACE_CONTRACT_ADDRESS not configured")?;
+        let marketplace_address = self
+            .marketplace_address
+            .ok_or("MARKETPLACE_CONTRACT_ADDRESS not configured")?;
 
-        let provider = ProviderBuilder::new().wallet(signer).connect_http(self.rpc_url.parse()?);
+        let provider = ProviderBuilder::new()
+            .wallet(signer)
+            .connect_http(self.rpc_url.parse()?);
         let contract = IMarketplace::new(marketplace_address, provider);
 
-        let receipt = contract.cancelListing(U256::from(listing_id)).send().await?.get_receipt().await?;
-        tracing::info!("✅ [Bridge] Listing {} cancelled. Tx: {:?}", listing_id, receipt.transaction_hash);
+        let receipt = contract
+            .cancelListing(U256::from(listing_id))
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+        tracing::info!(
+            "✅ [Bridge] Listing {} cancelled. Tx: {:?}",
+            listing_id,
+            receipt.transaction_hash
+        );
         Ok(format!("{:?}", receipt.transaction_hash))
     }
 
@@ -1431,13 +1857,26 @@ impl BlockchainBridge {
     /// from stranding the seller's voucher and payment in the contract.
     pub async fn release_deal(&self, deal_id: u64) -> Result<String, Box<dyn Error>> {
         let signer = self.primary_signer()?;
-        let marketplace_address = self.marketplace_address.ok_or("MARKETPLACE_CONTRACT_ADDRESS not configured")?;
+        let marketplace_address = self
+            .marketplace_address
+            .ok_or("MARKETPLACE_CONTRACT_ADDRESS not configured")?;
 
-        let provider = ProviderBuilder::new().wallet(signer).connect_http(self.rpc_url.parse()?);
+        let provider = ProviderBuilder::new()
+            .wallet(signer)
+            .connect_http(self.rpc_url.parse()?);
         let contract = IMarketplace::new(marketplace_address, provider);
 
-        let receipt = contract.releaseDeal(U256::from(deal_id)).send().await?.get_receipt().await?;
-        tracing::info!("✅ [Bridge] Deal {} released. Tx: {:?}", deal_id, receipt.transaction_hash);
+        let receipt = contract
+            .releaseDeal(U256::from(deal_id))
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+        tracing::info!(
+            "✅ [Bridge] Deal {} released. Tx: {:?}",
+            deal_id,
+            receipt.transaction_hash
+        );
         Ok(format!("{:?}", receipt.transaction_hash))
     }
 
@@ -1445,13 +1884,26 @@ impl BlockchainBridge {
     /// only unlocks [`BlockchainBridge::refund_deal`] for the seller.
     pub async fn request_refund(&self, deal_id: u64) -> Result<String, Box<dyn Error>> {
         let signer = self.primary_signer()?;
-        let marketplace_address = self.marketplace_address.ok_or("MARKETPLACE_CONTRACT_ADDRESS not configured")?;
+        let marketplace_address = self
+            .marketplace_address
+            .ok_or("MARKETPLACE_CONTRACT_ADDRESS not configured")?;
 
-        let provider = ProviderBuilder::new().wallet(signer).connect_http(self.rpc_url.parse()?);
+        let provider = ProviderBuilder::new()
+            .wallet(signer)
+            .connect_http(self.rpc_url.parse()?);
         let contract = IMarketplace::new(marketplace_address, provider);
 
-        let receipt = contract.requestRefund(U256::from(deal_id)).send().await?.get_receipt().await?;
-        tracing::info!("✅ [Bridge] Refund requested on deal {}. Tx: {:?}", deal_id, receipt.transaction_hash);
+        let receipt = contract
+            .requestRefund(U256::from(deal_id))
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+        tracing::info!(
+            "✅ [Bridge] Refund requested on deal {}. Tx: {:?}",
+            deal_id,
+            receipt.transaction_hash
+        );
         Ok(format!("{:?}", receipt.transaction_hash))
     }
 
@@ -1462,13 +1914,26 @@ impl BlockchainBridge {
     /// sides, so neither holds a unilateral option over the other.
     pub async fn refund_deal(&self, deal_id: u64) -> Result<String, Box<dyn Error>> {
         let signer = self.primary_signer()?;
-        let marketplace_address = self.marketplace_address.ok_or("MARKETPLACE_CONTRACT_ADDRESS not configured")?;
+        let marketplace_address = self
+            .marketplace_address
+            .ok_or("MARKETPLACE_CONTRACT_ADDRESS not configured")?;
 
-        let provider = ProviderBuilder::new().wallet(signer).connect_http(self.rpc_url.parse()?);
+        let provider = ProviderBuilder::new()
+            .wallet(signer)
+            .connect_http(self.rpc_url.parse()?);
         let contract = IMarketplace::new(marketplace_address, provider);
 
-        let receipt = contract.refundDeal(U256::from(deal_id)).send().await?.get_receipt().await?;
-        tracing::info!("✅ [Bridge] Deal {} refunded. Tx: {:?}", deal_id, receipt.transaction_hash);
+        let receipt = contract
+            .refundDeal(U256::from(deal_id))
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+        tracing::info!(
+            "✅ [Bridge] Deal {} refunded. Tx: {:?}",
+            deal_id,
+            receipt.transaction_hash
+        );
         Ok(format!("{:?}", receipt.transaction_hash))
     }
 
@@ -1476,19 +1941,34 @@ impl BlockchainBridge {
     /// Requires real on-chain ownership (`ownerOf(tokenId) == msg.sender`).
     pub async fn redeem_voucher(&self, token_id: u64) -> Result<String, Box<dyn Error>> {
         let signer = self.primary_signer()?;
-        let voucher_address = self.voucher_address.ok_or("VOUCHER_CONTRACT_ADDRESS not configured")?;
+        let voucher_address = self
+            .voucher_address
+            .ok_or("VOUCHER_CONTRACT_ADDRESS not configured")?;
 
-        let provider = ProviderBuilder::new().wallet(signer).connect_http(self.rpc_url.parse()?);
+        let provider = ProviderBuilder::new()
+            .wallet(signer)
+            .connect_http(self.rpc_url.parse()?);
         let contract = IVoucher::new(voucher_address, provider);
 
-        let receipt = contract.redeemVoucher(U256::from(token_id)).send().await?.get_receipt().await?;
-        tracing::info!("✅ [Bridge] Voucher {} redeemed. Tx: {:?}", token_id, receipt.transaction_hash);
+        let receipt = contract
+            .redeemVoucher(U256::from(token_id))
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+        tracing::info!(
+            "✅ [Bridge] Voucher {} redeemed. Tx: {:?}",
+            token_id,
+            receipt.transaction_hash
+        );
         Ok(format!("{:?}", receipt.transaction_hash))
     }
 
     /// Reads the current on-chain owner of a voucher (no signer required).
     pub async fn get_voucher_owner(&self, token_id: u64) -> Result<String, Box<dyn Error>> {
-        let voucher_address = self.voucher_address.ok_or("VOUCHER_CONTRACT_ADDRESS not configured")?;
+        let voucher_address = self
+            .voucher_address
+            .ok_or("VOUCHER_CONTRACT_ADDRESS not configured")?;
         let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
         let contract = IVoucher::new(voucher_address, provider);
 
@@ -1499,8 +1979,13 @@ impl BlockchainBridge {
     /// Lists every voucher the given address currently owns on-chain — used
     /// by the Redeem page so it only ever shows vouchers the caller really
     /// holds, never a claim it has to trust.
-    pub async fn get_owned_vouchers(&self, owner: &str) -> Result<Vec<VoucherView>, Box<dyn Error>> {
-        let voucher_address = self.voucher_address.ok_or("VOUCHER_CONTRACT_ADDRESS not configured")?;
+    pub async fn get_owned_vouchers(
+        &self,
+        owner: &str,
+    ) -> Result<Vec<VoucherView>, Box<dyn Error>> {
+        let voucher_address = self
+            .voucher_address
+            .ok_or("VOUCHER_CONTRACT_ADDRESS not configured")?;
         let owner_addr = Address::from_str(owner)?;
         let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
         let contract = IVoucher::new(voucher_address, provider);
@@ -1573,6 +2058,21 @@ impl BlockchainBridge {
         }))
     }
 
+    /// A detached signer for the versioned sender-funded relay settlement.
+    /// `None` is the safe release state until an address is explicitly
+    /// configured; the old local reward estimate can never satisfy it.
+    pub fn relay_settlement_writer(&self) -> Result<Option<RelaySettlementWriter>, Box<dyn Error>> {
+        let Some(contract) = self.relay_settlement_address else {
+            return Ok(None);
+        };
+        Ok(Some(RelaySettlementWriter {
+            rpc_url: self.rpc_url.clone(),
+            chain_id: self.chain_id,
+            contract,
+            signer: self.primary_signer()?,
+        }))
+    }
+
     /// Reads every module currently owned by this bridge's primary wallet.
     ///
     /// Ownership comes from ERC-721 Enumerable at one accepted canonical head;
@@ -1593,7 +2093,11 @@ impl BlockchainBridge {
         // default. Pin the returned head anyway: a sequence of independent
         // `latest` calls could otherwise straddle a later accepted transfer.
         let snapshot_block = BlockId::number(contract.provider().get_block_number().await?);
-        let balance = contract.balanceOf(owner).block(snapshot_block).call().await?;
+        let balance = contract
+            .balanceOf(owner)
+            .block(snapshot_block)
+            .call()
+            .await?;
         if balance > U256::from(MAX_OWNED_MODULES) {
             return Err("module inventory exceeds the supported bound".into());
         }
@@ -1605,10 +2109,26 @@ impl BlockchainBridge {
                 .block(snapshot_block)
                 .call()
                 .await?;
-            let data = contract.assetData(token_id).block(snapshot_block).call().await?;
-            let soulbound = contract.locked(token_id).block(snapshot_block).call().await?;
-            let revoked = contract.revoked(token_id).block(snapshot_block).call().await?;
-            let current_owner = contract.ownerOf(token_id).block(snapshot_block).call().await?;
+            let data = contract
+                .assetData(token_id)
+                .block(snapshot_block)
+                .call()
+                .await?;
+            let soulbound = contract
+                .locked(token_id)
+                .block(snapshot_block)
+                .call()
+                .await?;
+            let revoked = contract
+                .revoked(token_id)
+                .block(snapshot_block)
+                .call()
+                .await?;
+            let current_owner = contract
+                .ownerOf(token_id)
+                .block(snapshot_block)
+                .call()
+                .await?;
             if current_owner != owner {
                 continue;
             }
@@ -1641,9 +2161,7 @@ impl BlockchainBridge {
     /// Reads the operator wallet's complete loadout at one accepted C-Chain
     /// head and rejects any contract state that does not satisfy the V1
     /// ownership/binding invariants.
-    pub async fn get_module_loadout(
-        &self,
-    ) -> Result<ModuleLoadoutChainSnapshot, Box<dyn Error>> {
+    pub async fn get_module_loadout(&self) -> Result<ModuleLoadoutChainSnapshot, Box<dyn Error>> {
         let collection = self
             .modules_address
             .ok_or("MODULES_CONTRACT_ADDRESS not configured")?;
@@ -1664,11 +2182,31 @@ impl BlockchainBridge {
                 continue;
             }
 
-            let current_owner = contract.ownerOf(token_id).block(snapshot_block).call().await?;
-            let equipped_by = contract.equippedBy(token_id).block(snapshot_block).call().await?;
-            let data = contract.assetData(token_id).block(snapshot_block).call().await?;
-            let soulbound = contract.locked(token_id).block(snapshot_block).call().await?;
-            let revoked = contract.revoked(token_id).block(snapshot_block).call().await?;
+            let current_owner = contract
+                .ownerOf(token_id)
+                .block(snapshot_block)
+                .call()
+                .await?;
+            let equipped_by = contract
+                .equippedBy(token_id)
+                .block(snapshot_block)
+                .call()
+                .await?;
+            let data = contract
+                .assetData(token_id)
+                .block(snapshot_block)
+                .call()
+                .await?;
+            let soulbound = contract
+                .locked(token_id)
+                .block(snapshot_block)
+                .call()
+                .await?;
+            let revoked = contract
+                .revoked(token_id)
+                .block(snapshot_block)
+                .call()
+                .await?;
 
             // A canonical V1 collection clears these mappings on ownership
             // loss, escrow transfer, burn, and revocation. Fail closed if the
@@ -1733,8 +2271,7 @@ impl BlockchainBridge {
         let operator = self.primary_signer().ok()?.address();
         let bytes = fs::read(&self.module_loadout_cache_path).ok()?;
         let snapshot: ModuleLoadoutChainSnapshot = serde_json::from_slice(&bytes).ok()?;
-        (snapshot.collection == collection.to_string()
-            && snapshot.operator == operator.to_string())
+        (snapshot.collection == collection.to_string() && snapshot.operator == operator.to_string())
             .then_some(snapshot)
     }
 
@@ -1780,7 +2317,12 @@ impl BlockchainBridge {
         }
         if let Some(market) = canonical_market {
             if market.activeListingOf(collection, token_id).call().await? != U256::ZERO {
-                let rollback = contract.unequip(token_id).send().await?.get_receipt().await?;
+                let rollback = contract
+                    .unequip(token_id)
+                    .send()
+                    .await?
+                    .get_receipt()
+                    .await?;
                 if !rollback.status() {
                     return Err("listed module equip rollback was not confirmed".into());
                 }
@@ -1816,7 +2358,12 @@ impl BlockchainBridge {
             .wallet(signer)
             .connect_http(self.rpc_url.parse()?);
         let contract = IModules::new(collection, provider);
-        let receipt = contract.unequip(token_id).send().await?.get_receipt().await?;
+        let receipt = contract
+            .unequip(token_id)
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
         if !receipt.status() {
             return Err("module unequip reverted".into());
         }
@@ -1841,7 +2388,9 @@ impl BlockchainBridge {
     /// this listing" signal: `active` means a buyer has locked funds against
     /// a seller's voucher and it's awaiting release/refund.
     pub async fn get_my_deals(&self, address: &str) -> Result<Vec<DealView>, Box<dyn Error>> {
-        let marketplace_address = self.marketplace_address.ok_or("MARKETPLACE_CONTRACT_ADDRESS not configured")?;
+        let marketplace_address = self
+            .marketplace_address
+            .ok_or("MARKETPLACE_CONTRACT_ADDRESS not configured")?;
         let my_addr = Address::from_str(address)?;
         let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
         let contract = IMarketplace::new(marketplace_address, provider);
@@ -1869,7 +2418,11 @@ impl BlockchainBridge {
                 token_id: deal.tokenId.to::<u64>(),
                 amount_avax: alloy::primitives::utils::format_ether(deal.amount),
                 status: status.to_string(),
-                role: if deal.seller == my_addr { "seller".to_string() } else { "buyer".to_string() },
+                role: if deal.seller == my_addr {
+                    "seller".to_string()
+                } else {
+                    "buyer".to_string()
+                },
                 collection: deal.collection.to_string(),
                 auto_release_at: deal.autoReleaseAt,
                 refund_requested: deal.refundRequested,
@@ -1888,7 +2441,10 @@ impl BlockchainBridge {
             .unwrap_or_default()
     }
 
-    fn save_content_store(&self, store: &std::collections::HashMap<u64, ContentRecord>) -> Result<(), Box<dyn Error>> {
+    fn save_content_store(
+        &self,
+        store: &std::collections::HashMap<u64, ContentRecord>,
+    ) -> Result<(), Box<dyn Error>> {
         JsonStore::new(&self.content_store_path).save(store)?;
         Ok(())
     }
@@ -1900,7 +2456,10 @@ impl BlockchainBridge {
             .unwrap_or_default()
     }
 
-    fn save_received_content(&self, store: &std::collections::HashMap<u64, ContentRecord>) -> Result<(), Box<dyn Error>> {
+    fn save_received_content(
+        &self,
+        store: &std::collections::HashMap<u64, ContentRecord>,
+    ) -> Result<(), Box<dyn Error>> {
         JsonStore::new(&self.received_content_path).save(store)?;
         Ok(())
     }
@@ -1933,7 +2492,11 @@ impl BlockchainBridge {
 
     /// Persists a signed content record for a listing this node sold, so it
     /// can respond when the buyer's node requests delivery over the mesh.
-    pub fn store_content(&self, token_id: u64, mut record: ContentRecord) -> Result<(), Box<dyn Error>> {
+    pub fn store_content(
+        &self,
+        token_id: u64,
+        mut record: ContentRecord,
+    ) -> Result<(), Box<dyn Error>> {
         record.token_id = token_id;
         let mut store = self.load_content_store();
         store.insert(token_id, record);
@@ -1947,25 +2510,38 @@ impl BlockchainBridge {
     /// Verifies a delivered piece of content really was signed by the
     /// expected seller before accepting it — never trusts the mesh payload
     /// on its own.
-    pub fn receive_content(&self, token_id: u64, text: &str, signature: &str, expected_seller: &str) -> Result<bool, Box<dyn Error>> {
+    pub fn receive_content(
+        &self,
+        token_id: u64,
+        text: &str,
+        signature: &str,
+        expected_seller: &str,
+    ) -> Result<bool, Box<dyn Error>> {
         let sig = Signature::from_str(signature)?;
         let recovered = sig.recover_address_from_msg(text.as_bytes())?;
         let expected = Address::from_str(expected_seller)?;
 
         if recovered != expected {
-            tracing::warn!("⚠️  Content delivery rejected: signature recovered {} but expected seller {}", recovered, expected);
+            tracing::warn!(
+                "⚠️  Content delivery rejected: signature recovered {} but expected seller {}",
+                recovered,
+                expected
+            );
             return Ok(false);
         }
 
         let fingerprint = format!("0x{}", hex::encode(&keccak256(text.as_bytes())[..8]));
         let mut store = self.load_received_content();
-        store.insert(token_id, ContentRecord {
+        store.insert(
             token_id,
-            text: text.to_string(),
-            fingerprint,
-            signature: signature.to_string(),
-            signer_address: recovered.to_string(),
-        });
+            ContentRecord {
+                token_id,
+                text: text.to_string(),
+                fingerprint,
+                signature: signature.to_string(),
+                signer_address: recovered.to_string(),
+            },
+        );
         self.save_received_content(&store)?;
         Ok(true)
     }
@@ -2094,12 +2670,7 @@ impl ModuleMarketReader {
             .await;
             result.insert(
                 *seller,
-                verify_public_standing(
-                    Some(&verifier_config),
-                    seller_evm,
-                    &observations,
-                    now_ms,
-                ),
+                verify_public_standing(Some(&verifier_config), seller_evm, &observations, now_ms),
             );
         }
 
@@ -2266,6 +2837,644 @@ impl ModuleMarketReader {
     }
 }
 
+impl RelaySettlementWriter {
+    const TRANSACTION_TIMEOUT: Duration = Duration::from_secs(90);
+
+    #[must_use]
+    pub const fn contract(&self) -> Address {
+        self.contract
+    }
+
+    #[must_use]
+    pub fn operator(&self) -> Address {
+        self.signer.address()
+    }
+
+    /// Reads a current funding balance and estimates wallet gas for the exact
+    /// route that will later be frozen in the confirmation dialog. Reward
+    /// arithmetic itself is local and deterministic; RPC state contributes
+    /// only balance, gas, chain identity, and accepted time.
+    pub async fn funding_quote(
+        &self,
+        payload: &[u8],
+        relayer: Address,
+        recipient: Address,
+    ) -> Result<RelayFundingQuoteChain, Box<dyn Error>> {
+        self.validate_three_distinct(relayer, recipient)?;
+        let provider = ProviderBuilder::new()
+            .wallet(self.signer.clone())
+            .connect_http(self.rpc_url.parse()?);
+        self.ensure_chain(&provider).await?;
+        let issued_at = accepted_timestamp(&provider).await?;
+        let (authorization, signature, quote) =
+            self.signed_authorization(payload, relayer, recipient, issued_at)?;
+        let contract = IRelaySettlement::new(self.contract, provider.clone());
+        let value = U256::from(quote.maximum_charge().raw())
+            .checked_mul(U256::from(1_000_000_000_u64))
+            .ok_or("relay escrow conversion overflowed")?;
+        let gas = contract
+            .fundRoute(
+                relay_authorization_contract(&authorization),
+                vec![relayer],
+                signature_bytes(&signature)?,
+            )
+            .from(self.signer.address())
+            .value(value)
+            .estimate_gas()
+            .await?;
+        let gas_price = provider.get_gas_price().await?;
+        let estimated_wallet_gas_wei = U256::from(gas)
+            .checked_mul(U256::from(gas_price))
+            .ok_or("relay funding gas estimate overflowed")?;
+        let balance = provider.get_balance(self.signer.address()).await?;
+
+        Ok(RelayFundingQuoteChain {
+            chain_id: self.chain_id,
+            contract: self.contract.to_string(),
+            sender: self.signer.address().to_string(),
+            relayer: relayer.to_string(),
+            recipient: recipient.to_string(),
+            authorized_bytes: u64::try_from(payload.len())?,
+            billed_bytes: quote.billed_bytes(),
+            base_reward_navax: quote.base_route_reward().raw(),
+            maximum_work_navax: quote.maximum_work().raw(),
+            settlement_gas_reserve_navax: quote.settlement_gas_cap().raw(),
+            maximum_charge_navax: quote.maximum_charge().raw(),
+            balance_wei: balance.to_string(),
+            estimated_wallet_gas_wei: estimated_wallet_gas_wei.to_string(),
+        })
+    }
+
+    /// Funds one exact route and waits for its accepted `RouteFunded` event.
+    /// The returned request is the only object the selected relayer may carry.
+    pub async fn fund_route(
+        &self,
+        intent_id: String,
+        payload: String,
+        relayer: Address,
+        recipient: Address,
+        authorized_maximum_navax: u64,
+    ) -> Result<PaidRelayRequestWire, Box<dyn Error>> {
+        self.validate_three_distinct(relayer, recipient)?;
+        let provider = ProviderBuilder::new()
+            .wallet(self.signer.clone())
+            .connect_http(self.rpc_url.parse()?);
+        self.ensure_chain(&provider).await?;
+        let issued_at = accepted_timestamp(&provider).await?;
+        let (authorization, signature, quote) =
+            self.signed_authorization(payload.as_bytes(), relayer, recipient, issued_at)?;
+        if quote.maximum_charge().raw() != authorized_maximum_navax {
+            return Err("relay maximum differs from the reviewed authorization".into());
+        }
+
+        let escrow_wei = U256::from(authorized_maximum_navax)
+            .checked_mul(U256::from(1_000_000_000_u64))
+            .ok_or("relay escrow conversion overflowed")?;
+        let contract = IRelaySettlement::new(self.contract, provider.clone());
+        let call = contract
+            .fundRoute(
+                relay_authorization_contract(&authorization),
+                vec![relayer],
+                signature_bytes(&signature)?,
+            )
+            .from(self.signer.address())
+            .value(escrow_wei);
+        let gas = call.estimate_gas().await?;
+        let gas_price = provider.get_gas_price().await?;
+        let required = escrow_wei
+            .checked_add(
+                U256::from(gas)
+                    .checked_mul(U256::from(gas_price))
+                    .ok_or("relay gas requirement overflowed")?,
+            )
+            .ok_or("relay funding requirement overflowed")?;
+        if provider.get_balance(self.signer.address()).await? < required {
+            return Err("wallet balance does not cover relay escrow and wallet gas".into());
+        }
+
+        let receipt = timeout(Self::TRANSACTION_TIMEOUT, async {
+            let pending = call.send().await.map_err(|error| error.to_string())?;
+            pending
+                .get_receipt()
+                .await
+                .map_err(|error| error.to_string())
+        })
+        .await
+        .map_err(|_| "relay funding transaction timed out")??;
+        if !receipt.status() {
+            return Err("relay funding transaction reverted".into());
+        }
+        let domain = cabal_relay_proof::proof_domain(self.chain_id, self.contract);
+        let route_id = cabal_relay_proof::authorization_hash(&authorization, &domain);
+        let event_matches = receipt
+            .logs()
+            .iter()
+            .filter_map(|log| log.log_decode::<IRelaySettlement::RouteFunded>().ok())
+            .any(|event| {
+                event.inner.data.routeId == route_id
+                    && event.inner.data.sender == self.signer.address()
+                    && event.inner.data.recipient == recipient
+                    && event.inner.data.maximumChargeNavax == authorized_maximum_navax
+            });
+        if !event_matches {
+            return Err("accepted relay funding receipt did not match the authorization".into());
+        }
+
+        Ok(PaidRelayRequestWire {
+            intent_id,
+            authorization: relay_authorization_wire(&authorization),
+            relayers: vec![relayer.to_string()],
+            sender_signature: signature.to_string(),
+            route_id: format!("{route_id:#x}"),
+            funding_tx_hash: format!("{:?}", receipt.transaction_hash),
+            payload,
+        })
+    }
+
+    /// Accepts a request only on the named relayer wallet and only after the
+    /// funding route is visible as active on-chain, then signs one contribution.
+    pub async fn sign_relay_delivery(
+        &self,
+        request: PaidRelayRequestWire,
+    ) -> Result<PaidRelayDeliveryWire, Box<dyn Error>> {
+        let authorization = relay_authorization_protocol(&request.authorization)?;
+        let relayers = parse_addresses(&request.relayers)?;
+        if relayers.as_slice() != [self.signer.address()] {
+            return Err("this wallet is not the authorized relay".into());
+        }
+        self.validate_request(&request, &authorization, &relayers)
+            .await?;
+        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        let forwarded_at = accepted_timestamp(&provider).await?;
+        if forwarded_at > authorization.expiresAt {
+            return Err("relay authorization expired before forwarding".into());
+        }
+        let route_id = B256::from_str(&request.route_id)?;
+        let contribution = cabal_relay_proof::RelayContribution {
+            authorizationHash: route_id,
+            hopIndex: 0,
+            relayer: self.signer.address(),
+            ingress: authorization.sender,
+            egress: authorization.recipient,
+            payloadCommitment: authorization.payloadCommitment,
+            deliveredBytes: authorization.authorizedBytes,
+            forwardedAt: forwarded_at,
+        };
+        let domain = cabal_relay_proof::proof_domain(self.chain_id, self.contract);
+        let contribution_id = cabal_relay_proof::contribution_hash(&contribution, &domain);
+        let signature = self.signer.sign_hash_sync(&contribution_id)?;
+
+        Ok(PaidRelayDeliveryWire {
+            request,
+            contribution: relay_contribution_wire(&contribution),
+            contribution_signature: signature.to_string(),
+            contribution_id: format!("{contribution_id:#x}"),
+        })
+    }
+
+    /// Recipient-side verification, acknowledgement, and accepted settlement.
+    /// The transaction hash is returned only after the contract confirms the
+    /// exact route and proof bundle.
+    pub async fn acknowledge_and_settle(
+        &self,
+        delivery: PaidRelayDeliveryWire,
+    ) -> Result<(PaidRelaySettlementWire, String), Box<dyn Error>> {
+        let authorization = relay_authorization_protocol(&delivery.request.authorization)?;
+        if authorization.recipient != self.signer.address() {
+            return Err("this wallet is not the authorized recipient".into());
+        }
+        let relayers = parse_addresses(&delivery.request.relayers)?;
+        let relayer = *relayers
+            .first()
+            .ok_or("paid relay request has no authorized relay")?;
+        self.validate_request(&delivery.request, &authorization, &relayers)
+            .await?;
+        let contribution = relay_contribution_protocol(&delivery.contribution)?;
+        let contribution_signature = Signature::from_str(&delivery.contribution_signature)?;
+        let provider = ProviderBuilder::new()
+            .wallet(self.signer.clone())
+            .connect_http(self.rpc_url.parse()?);
+        let received_at = accepted_timestamp(&provider).await?;
+        if received_at < contribution.forwardedAt || received_at > authorization.expiresAt {
+            return Err("recipient acknowledgement time is invalid".into());
+        }
+        let contribution_id = B256::from_str(&delivery.contribution_id)?;
+        let contributions_hash = cabal_relay_proof::ordered_contributions_hash(&[contribution_id])?;
+        let acknowledgement = cabal_relay_proof::RecipientAcknowledgement {
+            authorizationHash: B256::from_str(&delivery.request.route_id)?,
+            contributionsHash: contributions_hash,
+            recipient: self.signer.address(),
+            payloadCommitment: authorization.payloadCommitment,
+            deliveredBytes: contribution.deliveredBytes,
+            receivedAt: received_at,
+        };
+        let domain = cabal_relay_proof::proof_domain(self.chain_id, self.contract);
+        let acknowledgement_id = cabal_relay_proof::acknowledgement_hash(&acknowledgement, &domain);
+        let acknowledgement_signature = self.signer.sign_hash_sync(&acknowledgement_id)?;
+
+        let sender_signature = Signature::from_str(&delivery.request.sender_signature)?;
+        let proof = cabal_relay_proof::RelayProof::new(
+            cabal_relay_proof::SignedAuthorization::new(
+                authorization.clone(),
+                relayers.clone().into_boxed_slice(),
+                sender_signature,
+            ),
+            vec![cabal_relay_proof::SignedContribution::new(
+                contribution.clone(),
+                contribution_signature,
+            )]
+            .into_boxed_slice(),
+            Some(cabal_relay_proof::SignedAcknowledgement::new(
+                acknowledgement.clone(),
+                acknowledgement_signature,
+            )),
+        );
+        let consumed_routes = std::collections::HashSet::new();
+        let consumed_contributions = std::collections::HashSet::new();
+        let verified = cabal_relay_proof::verify(
+            &proof,
+            &cabal_relay_proof::VerificationContext {
+                chain_id: self.chain_id,
+                settlement_contract: self.contract,
+                now: received_at,
+                expected_payload_commitment: cabal_relay_proof::payload_commitment(
+                    delivery.request.payload.as_bytes(),
+                ),
+                consumed_routes: &consumed_routes,
+                consumed_contributions: &consumed_contributions,
+            },
+        )?;
+
+        let contract = IRelaySettlement::new(self.contract, provider);
+        let contract_proof = IRelaySettlement::RelayProof {
+            authorization: relay_authorization_contract(&authorization),
+            relayers,
+            senderSignature: signature_bytes(proof.authorization().signature())?,
+            contributions: vec![relay_contribution_contract(&contribution)],
+            contributionSignatures: vec![signature_bytes(&contribution_signature)?],
+            acknowledgement: relay_acknowledgement_contract(&acknowledgement),
+            acknowledgementSignature: signature_bytes(&acknowledgement_signature)?,
+        };
+        let receipt = timeout(Self::TRANSACTION_TIMEOUT, async {
+            let pending = contract
+                .settle(contract_proof)
+                .send()
+                .await
+                .map_err(|error| error.to_string())?;
+            pending
+                .get_receipt()
+                .await
+                .map_err(|error| error.to_string())
+        })
+        .await
+        .map_err(|_| "relay settlement transaction timed out")??;
+        if !receipt.status() {
+            return Err("relay settlement transaction reverted".into());
+        }
+        let event = receipt
+            .logs()
+            .iter()
+            .filter_map(|log| log.log_decode::<IRelaySettlement::RouteSettled>().ok())
+            .find(|event| event.inner.data.routeId == verified.route_id())
+            .ok_or("accepted receipt did not contain the expected relay settlement")?;
+        let settlement_tx_hash = format!("{:?}", receipt.transaction_hash);
+        let relayer_reward_navax = verified.reward_quote().base_route_reward().raw();
+        let notice = PaidRelaySettlementWire {
+            intent_id: delivery.request.intent_id,
+            route_id: delivery.request.route_id,
+            settlement_tx_hash: settlement_tx_hash.clone(),
+            funding_tx_hash: delivery.request.funding_tx_hash,
+            sender: authorization.sender.to_string(),
+            relayer: relayer.to_string(),
+            recipient: authorization.recipient.to_string(),
+            settled_reward_navax: relayer_reward_navax,
+        };
+        Ok((notice, event.inner.data.senderRefundNavax.to_string()))
+    }
+
+    /// Authoritative accepted relay earnings. Pending route values and the old
+    /// byte-rate estimate are not inputs to this read.
+    pub async fn settled_earnings(&self) -> Result<(U256, U256, u64), Box<dyn Error>> {
+        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        self.ensure_chain(&provider).await?;
+        let block = provider.get_block_number().await?;
+        let contract = IRelaySettlement::new(self.contract, provider);
+        let earnings = contract
+            .settledRelayEarningsNavax(self.signer.address())
+            .block(BlockId::number(block))
+            .call()
+            .await?;
+        let credit = contract
+            .withdrawableWei(self.signer.address())
+            .block(BlockId::number(block))
+            .call()
+            .await?;
+        Ok((earnings, credit, block))
+    }
+
+    /// Accepts a mesh settlement notice only when its transaction receipt and
+    /// current contract state independently prove the exact route and relayer
+    /// credit. A peer-supplied amount or hash is never enough to update UI.
+    pub async fn verify_settlement_notice(
+        &self,
+        notice: &PaidRelaySettlementWire,
+    ) -> Result<bool, Box<dyn Error>> {
+        let route_id = B256::from_str(&notice.route_id)?;
+        let tx_hash = B256::from_str(&notice.settlement_tx_hash)?;
+        let sender = Address::from_str(&notice.sender)?;
+        let relayer = Address::from_str(&notice.relayer)?;
+        let recipient = Address::from_str(&notice.recipient)?;
+        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        self.ensure_chain(&provider).await?;
+        let Some(receipt) = provider.get_transaction_receipt(tx_hash).await? else {
+            return Ok(false);
+        };
+        if !receipt.status() {
+            return Ok(false);
+        }
+        let contract = IRelaySettlement::new(self.contract, provider);
+        let route = contract.routes(route_id).call().await?;
+        if route.state != 2
+            || route.sender != sender
+            || route.recipient != recipient
+            || !contract.consumedRoutes(route_id).call().await?
+        {
+            return Ok(false);
+        }
+        let settled = receipt
+            .logs()
+            .iter()
+            .filter_map(|log| log.log_decode::<IRelaySettlement::RouteSettled>().ok())
+            .any(|event| {
+                event.inner.data.routeId == route_id
+                    && event.inner.data.workPaidNavax == notice.settled_reward_navax
+            });
+        let credited = receipt
+            .logs()
+            .iter()
+            .filter_map(|log| {
+                log.log_decode::<IRelaySettlement::RelayRewardCredited>()
+                    .ok()
+            })
+            .any(|event| {
+                event.inner.data.routeId == route_id
+                    && event.inner.data.relayer == relayer
+                    && event.inner.data.amountNavax == notice.settled_reward_navax
+            });
+        Ok(settled && credited)
+    }
+
+    async fn validate_request(
+        &self,
+        request: &PaidRelayRequestWire,
+        authorization: &cabal_relay_proof::RelayAuthorization,
+        relayers: &[Address],
+    ) -> Result<(), Box<dyn Error>> {
+        if relayers.len() != 1 {
+            return Err("ticket 13 supports exactly one paid relay".into());
+        }
+        self.validate_three_distinct(relayers[0], authorization.recipient)?;
+        if request.payload.len() != usize::try_from(authorization.authorizedBytes)?
+            || cabal_relay_proof::payload_commitment(request.payload.as_bytes())
+                != authorization.payloadCommitment
+            || cabal_relay_proof::relay_route_hash(relayers)? != authorization.relayRouteHash
+        {
+            return Err("paid relay request does not match its signed payload or route".into());
+        }
+        let domain = cabal_relay_proof::proof_domain(self.chain_id, self.contract);
+        let route_id = cabal_relay_proof::authorization_hash(authorization, &domain);
+        let signature = Signature::from_str(&request.sender_signature)?;
+        if route_id != B256::from_str(&request.route_id)?
+            || signature.recover_address_from_prehash(&route_id)? != authorization.sender
+        {
+            return Err("paid relay sender authorization is invalid".into());
+        }
+        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        self.ensure_chain(&provider).await?;
+        let route = IRelaySettlement::new(self.contract, provider)
+            .routes(route_id)
+            .call()
+            .await?;
+        if route.state != 1
+            || route.sender != authorization.sender
+            || route.recipient != authorization.recipient
+            || route.payloadCommitment != authorization.payloadCommitment
+            || route.authorizedBytes != authorization.authorizedBytes
+            || route.maximumChargeNavax != authorization.maximumChargeNavax
+            || route.expiresAt != authorization.expiresAt
+        {
+            return Err("paid relay route is not active in accepted contract state".into());
+        }
+        Ok(())
+    }
+
+    fn signed_authorization(
+        &self,
+        payload: &[u8],
+        relayer: Address,
+        recipient: Address,
+        issued_at: u64,
+    ) -> Result<
+        (
+            cabal_relay_proof::RelayAuthorization,
+            Signature,
+            cabal_rewards::RewardQuote,
+        ),
+        Box<dyn Error>,
+    > {
+        let authorized_bytes =
+            cabal_rewards::BillableBytes::try_from(u64::try_from(payload.len())?)?;
+        let relay_count = cabal_rewards::RelayCount::try_from(1)?;
+        let quote = cabal_rewards::quote(authorized_bytes, relay_count)?;
+        let mut nonce = [0_u8; 32];
+        OsRng.fill_bytes(&mut nonce);
+        let authorization = cabal_relay_proof::RelayAuthorization {
+            policyHash: cabal_relay_proof::policy_hash(),
+            routeNonce: B256::from(nonce),
+            payloadCommitment: cabal_relay_proof::payload_commitment(payload),
+            deliveryMode: 0,
+            relayRouteHash: cabal_relay_proof::relay_route_hash(&[relayer])?,
+            sender: self.signer.address(),
+            recipient,
+            authorizedBytes: authorized_bytes.get(),
+            relayCount: 1,
+            maximumChargeNavax: quote.maximum_charge().raw(),
+            issuedAt: issued_at,
+            expiresAt: issued_at
+                .checked_add(cabal_rewards::DEFAULT_AUTHORIZATION_SECONDS)
+                .ok_or("relay authorization expiry overflowed")?,
+        };
+        let domain = cabal_relay_proof::proof_domain(self.chain_id, self.contract);
+        let route_id = cabal_relay_proof::authorization_hash(&authorization, &domain);
+        let signature = self.signer.sign_hash_sync(&route_id)?;
+        Ok((authorization, signature, quote))
+    }
+
+    fn validate_three_distinct(
+        &self,
+        relayer: Address,
+        recipient: Address,
+    ) -> Result<(), Box<dyn Error>> {
+        let sender = self.signer.address();
+        if relayer == Address::ZERO
+            || recipient == Address::ZERO
+            || sender == relayer
+            || sender == recipient
+            || relayer == recipient
+        {
+            return Err("sender, relayer, and recipient wallets must be distinct".into());
+        }
+        Ok(())
+    }
+
+    async fn ensure_chain<P>(&self, provider: &P) -> Result<(), Box<dyn Error>>
+    where
+        P: Provider,
+    {
+        if provider.get_chain_id().await? != self.chain_id {
+            return Err("relay settlement RPC chain does not match the configured release".into());
+        }
+        Ok(())
+    }
+}
+
+async fn accepted_timestamp<P>(provider: &P) -> Result<u64, Box<dyn Error>>
+where
+    P: Provider,
+{
+    provider
+        .get_block_by_number(BlockNumberOrTag::Latest)
+        .await?
+        .map(|block| block.header().timestamp())
+        .ok_or_else(|| "accepted chain head is unavailable".into())
+}
+
+fn signature_bytes(signature: &Signature) -> Result<Bytes, hex::FromHexError> {
+    Ok(Bytes::from(hex::decode(
+        signature.to_string().trim_start_matches("0x"),
+    )?))
+}
+
+fn parse_addresses(values: &[String]) -> Result<Vec<Address>, Box<dyn Error>> {
+    values
+        .iter()
+        .map(|value| Address::from_str(value).map_err(Into::into))
+        .collect()
+}
+
+fn relay_authorization_contract(
+    value: &cabal_relay_proof::RelayAuthorization,
+) -> IRelaySettlement::RelayAuthorization {
+    IRelaySettlement::RelayAuthorization {
+        policyHash: value.policyHash,
+        routeNonce: value.routeNonce,
+        payloadCommitment: value.payloadCommitment,
+        deliveryMode: value.deliveryMode,
+        relayRouteHash: value.relayRouteHash,
+        sender: value.sender,
+        recipient: value.recipient,
+        authorizedBytes: value.authorizedBytes,
+        relayCount: value.relayCount,
+        maximumChargeNavax: value.maximumChargeNavax,
+        issuedAt: value.issuedAt,
+        expiresAt: value.expiresAt,
+    }
+}
+
+fn relay_authorization_wire(
+    value: &cabal_relay_proof::RelayAuthorization,
+) -> RelayAuthorizationWire {
+    RelayAuthorizationWire {
+        policy_hash: format!("{:#x}", value.policyHash),
+        route_nonce: format!("{:#x}", value.routeNonce),
+        payload_commitment: format!("{:#x}", value.payloadCommitment),
+        delivery_mode: value.deliveryMode,
+        relay_route_hash: format!("{:#x}", value.relayRouteHash),
+        sender: value.sender.to_string(),
+        recipient: value.recipient.to_string(),
+        authorized_bytes: value.authorizedBytes,
+        relay_count: value.relayCount,
+        maximum_charge_navax: value.maximumChargeNavax,
+        issued_at: value.issuedAt,
+        expires_at: value.expiresAt,
+    }
+}
+
+fn relay_authorization_protocol(
+    value: &RelayAuthorizationWire,
+) -> Result<cabal_relay_proof::RelayAuthorization, Box<dyn Error>> {
+    Ok(cabal_relay_proof::RelayAuthorization {
+        policyHash: B256::from_str(&value.policy_hash)?,
+        routeNonce: B256::from_str(&value.route_nonce)?,
+        payloadCommitment: B256::from_str(&value.payload_commitment)?,
+        deliveryMode: value.delivery_mode,
+        relayRouteHash: B256::from_str(&value.relay_route_hash)?,
+        sender: Address::from_str(&value.sender)?,
+        recipient: Address::from_str(&value.recipient)?,
+        authorizedBytes: value.authorized_bytes,
+        relayCount: value.relay_count,
+        maximumChargeNavax: value.maximum_charge_navax,
+        issuedAt: value.issued_at,
+        expiresAt: value.expires_at,
+    })
+}
+
+fn relay_contribution_contract(
+    value: &cabal_relay_proof::RelayContribution,
+) -> IRelaySettlement::RelayContribution {
+    IRelaySettlement::RelayContribution {
+        authorizationHash: value.authorizationHash,
+        hopIndex: value.hopIndex,
+        relayer: value.relayer,
+        ingress: value.ingress,
+        egress: value.egress,
+        payloadCommitment: value.payloadCommitment,
+        deliveredBytes: value.deliveredBytes,
+        forwardedAt: value.forwardedAt,
+    }
+}
+
+fn relay_contribution_wire(value: &cabal_relay_proof::RelayContribution) -> RelayContributionWire {
+    RelayContributionWire {
+        authorization_hash: format!("{:#x}", value.authorizationHash),
+        hop_index: value.hopIndex,
+        relayer: value.relayer.to_string(),
+        ingress: value.ingress.to_string(),
+        egress: value.egress.to_string(),
+        payload_commitment: format!("{:#x}", value.payloadCommitment),
+        delivered_bytes: value.deliveredBytes,
+        forwarded_at: value.forwardedAt,
+    }
+}
+
+fn relay_contribution_protocol(
+    value: &RelayContributionWire,
+) -> Result<cabal_relay_proof::RelayContribution, Box<dyn Error>> {
+    Ok(cabal_relay_proof::RelayContribution {
+        authorizationHash: B256::from_str(&value.authorization_hash)?,
+        hopIndex: value.hop_index,
+        relayer: Address::from_str(&value.relayer)?,
+        ingress: Address::from_str(&value.ingress)?,
+        egress: Address::from_str(&value.egress)?,
+        payloadCommitment: B256::from_str(&value.payload_commitment)?,
+        deliveredBytes: value.delivered_bytes,
+        forwardedAt: value.forwarded_at,
+    })
+}
+
+fn relay_acknowledgement_contract(
+    value: &cabal_relay_proof::RecipientAcknowledgement,
+) -> IRelaySettlement::RecipientAcknowledgement {
+    IRelaySettlement::RecipientAcknowledgement {
+        authorizationHash: value.authorizationHash,
+        contributionsHash: value.contributionsHash,
+        recipient: value.recipient,
+        payloadCommitment: value.payloadCommitment,
+        deliveredBytes: value.deliveredBytes,
+        receivedAt: value.receivedAt,
+    }
+}
+
 impl ModuleMarketWriter {
     const MUTATION_TIMEOUT: Duration = Duration::from_secs(60);
     const CANONICAL_DESCRIPTION: &'static str = "Canonical CabalMesh module";
@@ -2294,10 +3503,11 @@ impl ModuleMarketWriter {
         let verified_block = marketplace.provider().get_block_number().await?;
         let block = BlockId::number(verified_block);
         let listing = marketplace.listings(listing_id).block(block).call().await?;
-        let active_listing_id = if listing.collection == self.modules && listing.tokenId != U256::ZERO {
-            marketplace
-                .activeListingOf(self.modules, listing.tokenId)
-                .block(block)
+        let active_listing_id =
+            if listing.collection == self.modules && listing.tokenId != U256::ZERO {
+                marketplace
+                    .activeListingOf(self.modules, listing.tokenId)
+                    .block(block)
                 .call()
                 .await?
         } else {
@@ -2315,16 +3525,26 @@ impl ModuleMarketWriter {
                     current_owner = Some(owner.to_string());
                     match modules.assetData(listing.tokenId).block(block).call().await {
                         Ok(data) => {
-                            let soulbound = modules.locked(listing.tokenId).block(block).call().await?;
-                            let revoked = modules.revoked(listing.tokenId).block(block).call().await?;
+                            let soulbound =
+                                modules.locked(listing.tokenId).block(block).call().await?;
+                            let revoked =
+                                modules.revoked(listing.tokenId).block(block).call().await?;
                             marketplace_eligible = modules
                                 .isMarketplaceEligible(listing.tokenId)
                                 .block(block)
                                 .call()
                                 .await?;
-                            let equipped = modules.equippedBy(listing.tokenId).block(block).call().await?;
+                            let equipped = modules
+                                .equippedBy(listing.tokenId)
+                                .block(block)
+                                .call()
+                                .await?;
                             equipped_by = (equipped != Address::ZERO).then(|| equipped.to_string());
-                            let token_approval = modules.getApproved(listing.tokenId).block(block).call().await?;
+                            let token_approval = modules
+                                .getApproved(listing.tokenId)
+                                .block(block)
+                                .call()
+                                .await?;
                             let blanket_approval = modules
                                 .isApprovedForAll(owner, self.marketplace)
                                 .block(block)
@@ -2430,7 +3650,11 @@ impl ModuleMarketWriter {
         let wallet = self.signer.address();
         let mut matching = Vec::new();
         for deal_id in 1..next_id.to::<u64>() {
-            let deal = marketplace.getDeal(U256::from(deal_id)).block(block).call().await?;
+            let deal = marketplace
+                .getDeal(U256::from(deal_id))
+                .block(block)
+                .call()
+                .await?;
             if deal.collection == self.modules && (deal.buyer == wallet || deal.seller == wallet) {
                 matching.push(U256::from(deal_id));
             }
@@ -2438,7 +3662,10 @@ impl ModuleMarketWriter {
 
         let mut deals = Vec::with_capacity(matching.len());
         for deal_id in matching {
-            deals.push(self.deal_state_at(deal_id, verified_block, observed_at).await?);
+            deals.push(
+                self.deal_state_at(deal_id, verified_block, observed_at)
+                    .await?,
+            );
         }
         deals.sort_by(|left, right| {
             right
@@ -2455,10 +3682,7 @@ impl ModuleMarketWriter {
         })
     }
 
-    pub async fn deal_state(
-        &self,
-        deal_id: U256,
-    ) -> Result<ModuleDealChainRecord, Box<dyn Error>> {
+    pub async fn deal_state(&self, deal_id: U256) -> Result<ModuleDealChainRecord, Box<dyn Error>> {
         let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
         let verified_block = provider.get_block_number().await?;
         let observed_at = provider
@@ -2467,7 +3691,8 @@ impl ModuleMarketWriter {
             .ok_or("accepted deal block is unavailable")?
             .header()
             .timestamp();
-        self.deal_state_at(deal_id, verified_block, observed_at).await
+        self.deal_state_at(deal_id, verified_block, observed_at)
+            .await
     }
 
     /// Reads listing eligibility, custody, loadout, approval, and the duplicate
@@ -2610,7 +3835,10 @@ impl ModuleMarketWriter {
                 .send()
                 .await
                 .map_err(|error| error.to_string())?;
-            pending.get_receipt().await.map_err(|error| error.to_string())
+            pending
+                .get_receipt()
+                .await
+                .map_err(|error| error.to_string())
         })
         .await;
 
@@ -2685,7 +3913,10 @@ impl ModuleMarketWriter {
                 .send()
                 .await
                 .map_err(|error| error.to_string())?;
-            pending.get_receipt().await.map_err(|error| error.to_string())
+            pending
+                .get_receipt()
+                .await
+                .map_err(|error| error.to_string())
         })
         .await;
 
@@ -2780,7 +4011,10 @@ impl ModuleMarketWriter {
                 .send()
                 .await
                 .map_err(|error| error.to_string())?;
-            pending.get_receipt().await.map_err(|error| error.to_string())
+            pending
+                .get_receipt()
+                .await
+                .map_err(|error| error.to_string())
         })
         .await;
 
@@ -2849,7 +4083,9 @@ impl ModuleMarketWriter {
             .checked_add(estimated_fee)
             .ok_or("purchase requirement overflowed")?;
         if balance < required {
-            return Err("buyer balance does not cover the listing and estimated network fee".into());
+            return Err(
+                "buyer balance does not cover the listing and estimated network fee".into(),
+            );
         }
 
         let provider = ProviderBuilder::new()
@@ -2864,7 +4100,10 @@ impl ModuleMarketWriter {
                 .send()
                 .await
                 .map_err(|error| error.to_string())?;
-            pending.get_receipt().await.map_err(|error| error.to_string())
+            pending
+                .get_receipt()
+                .await
+                .map_err(|error| error.to_string())
         })
         .await;
 
@@ -2949,7 +4188,10 @@ impl ModuleMarketWriter {
                 .send()
                 .await
                 .map_err(|error| error.to_string())?;
-            pending.get_receipt().await.map_err(|error| error.to_string())
+            pending
+                .get_receipt()
+                .await
+                .map_err(|error| error.to_string())
         })
         .await;
         let tx_hash = match receipt {
@@ -2995,7 +4237,10 @@ impl ModuleMarketWriter {
                 .send()
                 .await
                 .map_err(|error| error.to_string())?;
-            pending.get_receipt().await.map_err(|error| error.to_string())
+            pending
+                .get_receipt()
+                .await
+                .map_err(|error| error.to_string())
         })
         .await;
         let tx_hash = match receipt {
@@ -3042,7 +4287,10 @@ impl ModuleMarketWriter {
                 .send()
                 .await
                 .map_err(|error| error.to_string())?;
-            pending.get_receipt().await.map_err(|error| error.to_string())
+            pending
+                .get_receipt()
+                .await
+                .map_err(|error| error.to_string())
         })
         .await;
         let tx_hash = match receipt {
@@ -3163,7 +4411,9 @@ impl ModuleMarketWriter {
             {
                 return Ok(Some(deal));
             }
-            id = id.checked_add(U256::from(1_u8)).ok_or("deal id overflowed")?;
+            id = id
+                .checked_add(U256::from(1_u8))
+                .ok_or("deal id overflowed")?;
         }
         Ok(None)
     }
@@ -3191,9 +4441,21 @@ impl ModuleMarketWriter {
             || quote.listing_id == U256::ZERO.to_string()
             || quote.active_listing_id != quote.listing_id
             || quote.collection.parse::<Address>().ok() != Some(self.modules)
-            || quote.seller.parse::<Address>().ok().is_none_or(|seller| seller == Address::ZERO)
-            || quote.price_wei.parse::<U256>().ok().is_none_or(|price| price == U256::ZERO)
-            || quote.token_id.parse::<U256>().ok().is_none_or(|token| token == U256::ZERO)
+            || quote
+                .seller
+                .parse::<Address>()
+                .ok()
+                .is_none_or(|seller| seller == Address::ZERO)
+            || quote
+                .price_wei
+                .parse::<U256>()
+                .ok()
+                .is_none_or(|price| price == U256::ZERO)
+            || quote
+                .token_id
+                .parse::<U256>()
+                .ok()
+                .is_none_or(|token| token == U256::ZERO)
             || quote.current_owner.as_deref() != Some(quote.seller.as_str())
             || !quote.marketplace_eligible
             || quote.equipped_by.is_some()
@@ -3201,7 +4463,10 @@ impl ModuleMarketWriter {
         {
             return Err("module listing is not currently buyable".into());
         }
-        let module = quote.module.as_ref().ok_or("canonical module metadata is unavailable")?;
+        let module = quote
+            .module
+            .as_ref()
+            .ok_or("canonical module metadata is unavailable")?;
         self.ensure_canonical_module(module)
     }
 
@@ -3213,9 +4478,7 @@ impl ModuleMarketWriter {
                 module.primary_effect_value,
                 module.secondary_effect_value,
             ),
-            (1, 1, 1..=10_000, 0)
-                | (2, 2, 1..=3, 0)
-                | (3, 3, 1..=32, 1..=1_048_576)
+            (1, 1, 1..=10_000, 0) | (2, 2, 1..=3, 0) | (3, 3, 1..=32, 1..=1_048_576)
         );
         if module.collection.parse::<Address>().ok() != Some(self.modules)
             || module.asset_class != 0
@@ -3237,7 +4500,10 @@ impl ModuleMarketWriter {
         if owner != self.signer.address() {
             return Err("module is not owned by the current seller".into());
         }
-        let module = state.module.as_ref().ok_or("module metadata is unavailable")?;
+        let module = state
+            .module
+            .as_ref()
+            .ok_or("module metadata is unavailable")?;
         if module.token_id != state.token_id
             || module.collection.parse::<Address>().ok() != Some(self.modules)
             || module.owner.parse::<Address>().ok() != Some(owner)
@@ -3415,23 +4681,29 @@ mod offline_signing_tests {
             relay_boost_path: tmp_dir.join("relay_boost.json"),
             // Deliberately unreachable — proves sign_offline never touches the network.
             rpc_url: "http://127.0.0.1:9".to_string(),
+            chain_id: 43_113,
             escrow_address: None,
             marketplace_address: None,
             module_marketplace_address: None,
             module_market_modules_address: None,
             voucher_address: None,
             modules_address: None,
+            relay_settlement_address: None,
             standing_release: None,
             current_session: None,
         };
-        bridge.generate_new_identity("Test".to_string(), "🧪".to_string()).unwrap();
+        bridge
+            .generate_new_identity("Test".to_string(), "🧪".to_string())
+            .unwrap();
 
         // Simulate having synced once while online.
-        bridge.save_chain_cache(&ChainStateCache {
-            nonce: 0,
-            gas_price_wei: "30000000000".to_string(),
-            cached_at: Utc::now(),
-        }).unwrap();
+        bridge
+            .save_chain_cache(&ChainStateCache {
+                nonce: 0,
+                gas_price_wei: "30000000000".to_string(),
+                cached_at: Utc::now(),
+            })
+            .unwrap();
 
         let to = Address::from_str("0x0000000000000000000000000000000000000001").unwrap();
         let calldata = Bytes::from(vec![0xde, 0xad, 0xbe, 0xef]);
@@ -3442,7 +4714,10 @@ mod offline_signing_tests {
             .expect("sign_offline should succeed with zero network access");
 
         assert!(queued.raw_tx_hex.starts_with("0x"));
-        assert!(queued.raw_tx_hex.len() > 10, "raw tx hex should be non-trivial");
+        assert!(
+            queued.raw_tx_hex.len() > 10,
+            "raw tx hex should be non-trivial"
+        );
         assert_eq!(queued.status, "queued");
 
         let pending = bridge.get_pending_relay_txs();
@@ -3481,12 +4756,14 @@ mod content_commitment_tests {
             received_content_path: tmp_dir.join("received_content.json"),
             relay_boost_path: tmp_dir.join("relay_boost.json"),
             rpc_url: "http://127.0.0.1:9".to_string(),
+            chain_id: 43_113,
             escrow_address: None,
             marketplace_address: None,
             module_marketplace_address: None,
             module_market_modules_address: None,
             voucher_address: None,
             modules_address: None,
+            relay_settlement_address: None,
             standing_release: None,
             current_session: None,
         }
@@ -3497,28 +4774,41 @@ mod content_commitment_tests {
     /// when it doesn't. No network needed for any of this (pure crypto).
     #[test]
     fn signs_and_verifies_content_commitment() {
-        let tmp_dir = std::env::temp_dir().join(format!("cabalmesh_content_test_{}", std::process::id()));
+        let tmp_dir =
+            std::env::temp_dir().join(format!("cabalmesh_content_test_{}", std::process::id()));
         std::fs::create_dir_all(&tmp_dir).unwrap();
 
         let mut seller_bridge = test_bridge(&tmp_dir.join("seller"));
         std::fs::create_dir_all(tmp_dir.join("seller")).unwrap();
-        seller_bridge.generate_new_identity("Seller".to_string(), "📚".to_string()).unwrap();
+        seller_bridge
+            .generate_new_identity("Seller".to_string(), "📚".to_string())
+            .unwrap();
         let seller_address = seller_bridge.get_primary_address();
 
         let text = "Chapter 1: It was the best of times, it was the worst of times.";
-        let record = seller_bridge.sign_content(text).expect("sign_content should succeed offline");
-        assert_eq!(record.signer_address.to_lowercase(), seller_address.to_lowercase());
+        let record = seller_bridge
+            .sign_content(text)
+            .expect("sign_content should succeed offline");
+        assert_eq!(
+            record.signer_address.to_lowercase(),
+            seller_address.to_lowercase()
+        );
         assert!(!record.signature.is_empty());
 
         // Buyer's own bridge instance (different identity) verifies the delivered content.
         let mut buyer_bridge = test_bridge(&tmp_dir.join("buyer"));
         std::fs::create_dir_all(tmp_dir.join("buyer")).unwrap();
-        buyer_bridge.generate_new_identity("Buyer".to_string(), "🛒".to_string()).unwrap();
+        buyer_bridge
+            .generate_new_identity("Buyer".to_string(), "🛒".to_string())
+            .unwrap();
 
         let accepted = buyer_bridge
             .receive_content(1, text, &record.signature, &seller_address)
             .expect("receive_content should not error");
-        assert!(accepted, "a correctly signed commitment from the real seller must verify");
+        assert!(
+            accepted,
+            "a correctly signed commitment from the real seller must verify"
+        );
         assert!(buyer_bridge.get_received_content(1).is_some());
 
         // A signature that doesn't match the claimed seller must be rejected.
@@ -3526,7 +4816,10 @@ mod content_commitment_tests {
         let rejected = buyer_bridge
             .receive_content(2, text, &record.signature, wrong_seller)
             .expect("receive_content should not error even on mismatch");
-        assert!(!rejected, "a signature from someone else must never be silently accepted");
+        assert!(
+            !rejected,
+            "a signature from someone else must never be silently accepted"
+        );
         assert!(buyer_bridge.get_received_content(2).is_none());
 
         std::fs::remove_dir_all(&tmp_dir).ok();
@@ -3544,10 +4837,7 @@ mod content_commitment_tests {
         bridge
             .generate_new_identity("Operator".to_string(), "📡".to_string())
             .unwrap();
-        let collection = Address::from_str(
-            "0x00000000000000000000000000000000000000a7",
-        )
-        .unwrap();
+        let collection = Address::from_str("0x00000000000000000000000000000000000000a7").unwrap();
         bridge.modules_address = Some(collection);
         let snapshot = ModuleLoadoutChainSnapshot {
             collection: collection.to_string(),
@@ -3566,9 +4856,8 @@ mod content_commitment_tests {
         assert!(bridge.cached_module_loadout().is_none());
 
         bridge.save_module_loadout_cache(&snapshot).unwrap();
-        bridge.modules_address = Some(
-            Address::from_str("0x00000000000000000000000000000000000000b8").unwrap(),
-        );
+        bridge.modules_address =
+            Some(Address::from_str("0x00000000000000000000000000000000000000b8").unwrap());
         assert!(bridge.cached_module_loadout().is_none());
 
         std::fs::remove_dir_all(&tmp_dir).ok();
@@ -3582,14 +4871,9 @@ mod content_commitment_tests {
         ));
         std::fs::create_dir_all(&tmp_dir).unwrap();
         let mut bridge = test_bridge(&tmp_dir);
-        let modules = Address::from_str(
-            "0x00000000000000000000000000000000000000a7",
-        )
-        .unwrap();
-        let legacy_market = Address::from_str(
-            "0x00000000000000000000000000000000000000b8",
-        )
-        .unwrap();
+        let modules = Address::from_str("0x00000000000000000000000000000000000000a7").unwrap();
+        let legacy_market =
+            Address::from_str("0x00000000000000000000000000000000000000b8").unwrap();
         bridge.modules_address = Some(modules);
         bridge.marketplace_address = Some(legacy_market);
         assert!(
@@ -3606,10 +4890,7 @@ mod content_commitment_tests {
         let reader = bridge
             .module_market_reader()
             .expect("an explicit reviewed pair creates a reader");
-        let seller = Address::from_str(
-            "0x00000000000000000000000000000000000000c9",
-        )
-        .unwrap();
+        let seller = Address::from_str("0x00000000000000000000000000000000000000c9").unwrap();
         let standing = reader.seller_standing(&[seller], 10_000_000).await;
         assert_eq!(
             standing.get(&seller),
@@ -3620,5 +4901,109 @@ mod content_commitment_tests {
         );
 
         std::fs::remove_dir_all(&tmp_dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod relay_settlement_tests {
+    use super::*;
+
+    const PAYLOAD: &[u8] = b"cabalmesh encrypted intent payload test vector v1";
+
+    fn writer() -> RelaySettlementWriter {
+        RelaySettlementWriter {
+            rpc_url: "http://127.0.0.1:9".into(),
+            chain_id: 43_113,
+            contract: Address::from_str("0x9999999999999999999999999999999999999999").unwrap(),
+            signer: PrivateKeySigner::from_str(
+                "0x0000000000000000000000000000000000000000000000000000000000000001",
+            )
+            .unwrap(),
+        }
+    }
+
+    fn relay() -> Address {
+        PrivateKeySigner::from_str(
+            "0x0000000000000000000000000000000000000000000000000000000000000002",
+        )
+        .unwrap()
+        .address()
+    }
+
+    fn recipient() -> Address {
+        PrivateKeySigner::from_str(
+            "0x000000000000000000000000000000000000000000000000000000000000000a",
+        )
+        .unwrap()
+        .address()
+    }
+
+    #[test]
+    fn funded_request_uses_the_same_versioned_quote_and_signature_domain() {
+        let writer = writer();
+        let (authorization, signature, quote) = writer
+            .signed_authorization(PAYLOAD, relay(), recipient(), 1_800_000_000)
+            .unwrap();
+        let domain = cabal_relay_proof::proof_domain(writer.chain_id, writer.contract);
+        let route_id = cabal_relay_proof::authorization_hash(&authorization, &domain);
+
+        assert_eq!(authorization.policyHash, cabal_relay_proof::policy_hash());
+        assert_eq!(
+            authorization.payloadCommitment,
+            cabal_relay_proof::payload_commitment(PAYLOAD)
+        );
+        assert_eq!(
+            authorization.authorizedBytes,
+            u64::try_from(PAYLOAD.len()).unwrap()
+        );
+        assert_eq!(authorization.relayCount, 1);
+        assert_eq!(authorization.maximumChargeNavax, 2_200_000);
+        assert_eq!(quote.maximum_charge().raw(), 2_200_000);
+        assert_eq!(authorization.expiresAt - authorization.issuedAt, 600);
+        assert_eq!(
+            signature.recover_address_from_prehash(&route_id).unwrap(),
+            writer.operator()
+        );
+    }
+
+    #[test]
+    fn relay_authorization_wire_round_trips_without_numeric_or_hash_loss() {
+        let writer = writer();
+        let (authorization, _, _) = writer
+            .signed_authorization(PAYLOAD, relay(), recipient(), 1_800_000_000)
+            .unwrap();
+        let wire = relay_authorization_wire(&authorization);
+        let decoded = relay_authorization_protocol(&wire).unwrap();
+        assert_eq!(decoded, authorization);
+        assert_eq!(wire.maximum_charge_navax, 2_200_000);
+        assert_eq!(wire.route_nonce.len(), 66);
+    }
+
+    #[test]
+    fn relay_contribution_wire_round_trips_without_changing_evidence() {
+        let contribution = cabal_relay_proof::RelayContribution {
+            authorizationHash: B256::repeat_byte(0x11),
+            hopIndex: 0,
+            relayer: relay(),
+            ingress: writer().operator(),
+            egress: recipient(),
+            payloadCommitment: cabal_relay_proof::payload_commitment(PAYLOAD),
+            deliveredBytes: u64::try_from(PAYLOAD.len()).unwrap(),
+            forwardedAt: 1_800_000_060,
+        };
+        let wire = relay_contribution_wire(&contribution);
+        assert_eq!(relay_contribution_protocol(&wire).unwrap(), contribution);
+    }
+
+    #[test]
+    fn visible_same_wallet_role_reuse_is_rejected_before_rpc_or_funding() {
+        let writer = writer();
+        assert!(writer
+            .validate_three_distinct(writer.operator(), recipient())
+            .is_err());
+        assert!(writer.validate_three_distinct(relay(), relay()).is_err());
+        assert!(writer
+            .validate_three_distinct(relay(), writer.operator())
+            .is_err());
     }
 }

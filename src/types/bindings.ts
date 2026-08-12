@@ -193,6 +193,11 @@ export type IntentFilter = "ACTIVE" | "PENDING" | "HISTORY";
  */
 export type IntentPreview = { rows: Array<ReviewRow>, 
 /**
+ * Present only when the sender explicitly selected and funded-route
+ * capable three-wallet path. Estimated/pending rewards never appear here.
+ */
+relayCharge: RelayChargePreview | null,
+/**
  * The dialog's closing line, chosen by whether this will broadcast now.
  */
 confirm: string, 
@@ -414,6 +419,12 @@ pulseMs: number, };
 export type OwnedModuleListingView = { listingId: string, tokenId: string, collection: string, seller: string, priceWei: string, priceAvax: string, };
 
 /**
+ * The two remote operator wallets for the narrow paid route. The sender is
+ * always the current vault wallet and cannot be supplied over IPC.
+ */
+export type PaidRelayRouteFields = { relayer: string, recipient: string, };
+
+/**
  * What the profile screen shows.
  */
 export type ProfileView = { nodeId: string, 
@@ -460,6 +471,21 @@ route: Array<string>,
  * no price to have filled at.
  */
 filledAt: string | null, };
+
+/**
+ * Exact sender-facing authorization. `maximum_charge_navax` is sent back on
+ * confirm and recomputed before funding, so a stale dialog cannot authorize a
+ * different debit.
+ */
+export type RelayChargePreview = { rows: Array<ReviewRow>, maximumChargeNavax: string, maximumChargeAvax: string, fundingTransactionGasEstimateAvax: string, chainId: string, contract: string, };
+
+export type RelayRewardStatusView = "available" | "deployment_unavailable" | "chain_unavailable";
+
+/**
+ * Accepted contract accounting for the current wallet. Pending routes and the
+ * legacy byte-rate estimate have no route into either amount.
+ */
+export type RelayRewardSummaryView = { status: RelayRewardStatusView, settledEarningsAvax: string | null, withdrawableCreditAvax: string | null, verifiedBlock: string | null, };
 
 /**
  * One row of the confirm dialog.

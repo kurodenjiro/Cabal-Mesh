@@ -91,7 +91,9 @@ impl Intent {
     /// reached one.
     #[must_use]
     pub fn elapsed_ms(&self, now_ms: u64) -> u64 {
-        self.finished_ms.unwrap_or(now_ms).saturating_sub(self.created_ms)
+        self.finished_ms
+            .unwrap_or(now_ms)
+            .saturating_sub(self.created_ms)
     }
 }
 
@@ -158,7 +160,9 @@ impl Ledger {
     /// into a failed broadcast would be a worse lie than a queue that does not
     /// survive a kill.
     fn persist(&self, intents: &[Intent]) {
-        let snapshot = Persisted { intents: intents.to_vec() };
+        let snapshot = Persisted {
+            intents: intents.to_vec(),
+        };
         if let Err(error) = self.store.save(&snapshot) {
             tracing::error!(target: "cabalmesh::intents", %error, "could not persist the ledger");
         }
@@ -170,7 +174,9 @@ impl Ledger {
     /// step, so a compose that succeeds and a publish that fails are
     /// distinguishable states rather than one ambiguous one.
     pub fn create(&self, draft: IntentDraft, now_ms: u64) -> Intent {
-        let serial = self.serial.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let serial = self
+            .serial
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let intent = Intent {
             id: IntentId::new(format!("{:08X}{:04X}", now_ms as u32, serial as u16)),
             draft,
@@ -212,14 +218,20 @@ impl Ledger {
     /// [`AppError::InvalidIntent`] when the identifier is unknown or the
     /// transition is illegal. Both are caller bugs rather than user errors, and
     /// both are better as a refusal than as a silently overwritten status.
-    pub fn advance(&self, id: &IntentId, next: IntentStatus, now_ms: u64) -> Result<Intent, AppError> {
+    pub fn advance(
+        &self,
+        id: &IntentId,
+        next: IntentStatus,
+        now_ms: u64,
+    ) -> Result<Intent, AppError> {
         use crate::error::InvalidReason;
 
         let mut intents = self.list();
-        let intent = intents
-            .iter_mut()
-            .find(|intent| &intent.id == id)
-            .ok_or(AppError::InvalidIntent {
+        let intent =
+            intents
+                .iter_mut()
+                .find(|intent| &intent.id == id)
+                .ok_or(AppError::InvalidIntent {
                 field: "id",
                 reason: InvalidReason::Missing,
             })?;
@@ -361,6 +373,23 @@ struct Acceptance {
 /// as errors: this topic carries traffic for the whole mesh, and most of it is
 /// legitimately not about any intent this device composed.
 pub fn apply_mesh_event(ledger: &Ledger, event: &crate::mesh::MeshEvent) {
+    if let crate::mesh::MeshEvent::PaidRelaySettled { settlement } = event {
+        let id = IntentId::new(settlement.intent_id.clone());
+        if ledger.get(&id).is_some() {
+            let reward = cabal_rewards::NAvax::from_raw(settlement.settled_reward_navax);
+            ledger.record(
+                &id,
+                line(
+                    format!(
+                        "RELAY SETTLED {reward} AVAX · TX {}",
+                        settlement.settlement_tx_hash
+                    ),
+                    LogTone::Ok,
+                ),
+            );
+        }
+        return;
+    }
     let crate::mesh::MeshEvent::DealAccepted { details } = event else {
         return;
     };
@@ -383,7 +412,10 @@ pub fn apply_mesh_event(ledger: &Ledger, event: &crate::mesh::MeshEvent) {
     ledger.record(
         &id,
         line(
-            format!("NODE {} ACCEPTED.", NodeId::new(acceptance.address).truncated()),
+            format!(
+                "NODE {} ACCEPTED.",
+                NodeId::new(acceptance.address).truncated()
+            ),
             LogTone::Ok,
         ),
     );
@@ -410,7 +442,9 @@ pub fn apply_mesh_event(ledger: &Ledger, event: &crate::mesh::MeshEvent) {
 pub fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| u64::try_from(since.as_millis()).unwrap_or(u64::MAX))
+        .map_or(0, |since| {
+            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+        })
 }
 
 /// Formats a duration the way the board writes it: `2M 14S`, `11.4S`, `1H 3M`.
@@ -442,13 +476,17 @@ pub fn line(text: impl Into<Box<str>>, tone: LogTone) -> LogLine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cabal_core::{Action, Condition, ExecutionMode, PrivacyLevel, ProofHash, TokenAmount, UsdPrice};
+    use cabal_core::{
+        Action, Condition, ExecutionMode, PrivacyLevel, ProofHash, TokenAmount, UsdPrice,
+    };
 
     fn draft() -> IntentDraft {
         IntentDraft {
             action: Action::Buy,
             asset: "AVAX".into(),
-            condition: Condition::Under { price: UsdPrice::from_cents(9500) },
+            condition: Condition::Under {
+                price: UsdPrice::from_cents(9500),
+            },
             amount: TokenAmount::parse("1.5", 18).unwrap(),
             mode: ExecutionMode::Shark,
             privacy: PrivacyLevel::High,
@@ -514,8 +552,12 @@ mod tests {
     fn a_terminal_state_records_when_it_finished() {
         let (ledger, _dir) = ledger();
         let intent = ledger.create(draft(), 1_000);
-        ledger.advance(&intent.id, IntentStatus::Broadcast { route_len: 3 }, 1_100).unwrap();
-        ledger.advance(&intent.id, IntentStatus::Cancelled, 5_000).unwrap();
+        ledger
+            .advance(&intent.id, IntentStatus::Broadcast { route_len: 3 }, 1_100)
+            .unwrap();
+        ledger
+            .advance(&intent.id, IntentStatus::Cancelled, 5_000)
+            .unwrap();
 
         let cancelled = ledger.get(&intent.id).unwrap();
         assert_eq!(cancelled.finished_ms, Some(5_000));
@@ -640,13 +682,45 @@ mod tests {
     }
 
     #[test]
+    fn accepted_paid_relay_notice_records_only_settled_reward_and_transaction() {
+        let (ledger, _dir) = ledger();
+        let intent = ledger.create(draft(), 1_000);
+        apply_mesh_event(
+            &ledger,
+            &crate::mesh::MeshEvent::PaidRelaySettled {
+                settlement: crate::blockchain_bridge::PaidRelaySettlementWire {
+                    intent_id: intent.id.to_string(),
+                    route_id: format!("0x{}", "11".repeat(32)),
+                    settlement_tx_hash: format!("0x{}", "22".repeat(32)),
+                    funding_tx_hash: format!("0x{}", "33".repeat(32)),
+                    sender: "0x0000000000000000000000000000000000000001".into(),
+                    relayer: "0x0000000000000000000000000000000000000002".into(),
+                    recipient: "0x000000000000000000000000000000000000000a".into(),
+                    settled_reward_navax: 100_000,
+                },
+            },
+        );
+
+        let after = ledger.get(&intent.id).unwrap();
+        assert_eq!(after.log.len(), 1);
+        assert!(after.log[0].text.contains("0.0001 AVAX"));
+        assert!(after.log[0].text.contains("0x2222"));
+        assert_eq!(after.status, IntentStatus::Draft);
+    }
+
+    #[test]
     fn an_escrow_reference_keeps_its_two_honest_shapes() {
         // Queued is not a failure. Rendering it as one would misdescribe the
         // offline path the whole architecture is built around.
         let (ledger, _dir) = ledger();
         let intent = ledger.create(draft(), 1_000);
 
-        ledger.set_escrow(&intent.id, EscrowRef::Queued { queue_id: "q-1".into() });
+        ledger.set_escrow(
+            &intent.id,
+            EscrowRef::Queued {
+                queue_id: "q-1".into(),
+            },
+        );
         assert!(matches!(
             ledger.get(&intent.id).unwrap().escrow,
             Some(EscrowRef::Queued { .. })

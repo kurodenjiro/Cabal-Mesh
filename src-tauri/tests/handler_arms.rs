@@ -36,6 +36,7 @@ const SHARED: &[&str] = &[
     "session_status",
     "enter_mesh",
     "mesh_snapshot",
+    "relay_reward_summary",
     "subscribe_mesh_log",
     "list_nearby_nodes",
     "ble_status",
@@ -120,7 +121,9 @@ fn there_is_exactly_one_handler_arm() {
 #[test]
 fn the_handler_registers_every_shared_command() {
     let arms = handler_arms(&source());
-    let arm = arms.first().expect("there_is_exactly_one_handler_arm covers absence");
+    let arm = arms
+        .first()
+        .expect("there_is_exactly_one_handler_arm covers absence");
 
     let missing: Vec<&str> = SHARED
         .iter()
@@ -156,9 +159,11 @@ fn the_shared_list_matches_the_acl_manifest() {
 fn the_mobile_capability_grants_every_shared_command() {
     // The third place the same name has to appear. Granting is separate from
     // registering, and missing either one fails only on a device.
-    let capability =
-        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/capabilities/mobile.json"))
-            .expect("mobile.json is readable");
+    let capability = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/capabilities/mobile.json"
+    ))
+    .expect("mobile.json is readable");
 
     for command in SHARED {
         let permission = format!("allow-{}", command.replace('_', "-"));
@@ -176,9 +181,11 @@ fn the_desktop_capability_grants_every_shared_command() {
     // which hid drift between the two capability files behind a superset.
     // Now the grants are meant to be identical, so check desktop directly
     // rather than relying on "wider than mobile" to happen to still cover it.
-    let capability =
-        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/capabilities/desktop.json"))
-            .expect("desktop.json is readable");
+    let capability = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/capabilities/desktop.json"
+    ))
+    .expect("desktop.json is readable");
 
     for command in SHARED {
         let permission = format!("allow-{}", command.replace('_', "-"));

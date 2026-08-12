@@ -18,6 +18,7 @@ const COMMANDS: &[&str] = &[
     "session_status",
     "enter_mesh",
     "mesh_snapshot",
+    "relay_reward_summary",
     "subscribe_mesh_log",
     "list_nearby_nodes",
     "ble_status",

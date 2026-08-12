@@ -1,8 +1,8 @@
 mod app_initializer;
 mod app_paths;
-mod platform;
 mod ollama_config;
 mod ollama_manager;
+mod platform;
 
 // Public because their types *are* the IPC contract: everything below
 // serializes across the boundary to the webview, so the shapes are already
@@ -25,13 +25,13 @@ pub mod ble;
 /// Bootstrap peer configuration. See src/bootstrap_config.rs.
 pub mod bootstrap_config;
 
+mod lifecycle;
+mod llm_json;
 /// Chain selection and contract addresses. See src/network_config.rs.
 pub mod network_config;
-pub mod zk_handler;
-mod llm_json;
-mod lifecycle;
 mod telemetry;
 mod vault_key;
+pub mod zk_handler;
 
 /// The Android Wi-Fi multicast lock mDNS needs. See src/multicast.rs.
 pub mod multicast;
@@ -64,17 +64,16 @@ pub mod bindings;
 /// The typed error union that crosses the IPC boundary. See src/error.rs.
 pub mod error;
 
-use app_initializer::SystemBootstrap;
 use agent::SharkAgent;
-use matcher::MatchAgent;
-use zk_handler::ZKHandler;
-use ollama_manager::OllamaManager;
+use app_initializer::SystemBootstrap;
 use blockchain_bridge::BlockchainBridge;
+use matcher::MatchAgent;
+use ollama_manager::OllamaManager;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
+use tauri::{Emitter, Manager};
 use tokio::sync::Mutex;
-use tauri::{Manager, Emitter};
-
+use zk_handler::ZKHandler;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -132,7 +131,10 @@ pub fn run() {
                         tracing::info!("✅ Remote Ollama is healthy");
                     } else {
                         tracing::warn!("⚠️  No Ollama at {}", url);
-                        tracing::warn!("📝 Set one with the set_ollama_url command or ${}", ollama_config::ENV_VAR);
+                        tracing::warn!(
+                            "📝 Set one with the set_ollama_url command or ${}",
+                            ollama_config::ENV_VAR
+                        );
                     }
                     return;
                 }
@@ -241,10 +243,54 @@ pub fn run() {
                         // arriving five seconds after the peer sent it.
                         let handle_clone = app_handle.clone();
                         let ledger = state.intents().clone();
+                        let paid_relay_bridge = bridge.clone();
+                        let paid_relay_mesh = mesh_handle.clone();
                         tokio::spawn(async move {
                             while let Some(event) = event_rx.recv().await {
+                                if matches!(event, mesh::MeshEvent::PaidRelaySettled { .. }) {
+                                    let bridge = paid_relay_bridge.clone();
+                                    let ledger = ledger.clone();
+                                    let forward = handle_clone.clone();
+                                    tokio::spawn(async move {
+                                        match verify_paid_relay_notice(&event, bridge).await {
+                                            Ok(true) => {
+                                                intents::apply_mesh_event(&ledger, &event);
+                                                let _ = forward.emit("mesh-event", event);
+                                            }
+                                            Ok(false) => tracing::warn!(
+                                                target: "cabalmesh::paid_relay",
+                                                "unverified paid relay settlement notice ignored"
+                                            ),
+                                            Err(error) => tracing::warn!(
+                                                target: "cabalmesh::paid_relay",
+                                                %error,
+                                                "paid relay settlement verification failed"
+                                            ),
+                                        }
+                                    });
+                                    continue;
+                                }
                                 intents::apply_mesh_event(&ledger, &event);
-                                let _ = handle_clone.emit("mesh-event", event);
+                                let _ = handle_clone.emit("mesh-event", event.clone());
+                                if matches!(
+                                    event,
+                                    mesh::MeshEvent::PaidRelayRequested { .. }
+                                        | mesh::MeshEvent::PaidRelayDelivered { .. }
+                                ) {
+                                    let bridge = paid_relay_bridge.clone();
+                                    let mesh = paid_relay_mesh.clone();
+                                    tokio::spawn(async move {
+                                        if let Err(error) =
+                                            handle_paid_relay_event(event, bridge, mesh).await
+                                        {
+                                            tracing::warn!(
+                                                target: "cabalmesh::paid_relay",
+                                                %error,
+                                                "paid relay event rejected"
+                                            );
+                                        }
+                                    });
+                                }
                             }
                         });
 
@@ -299,6 +345,7 @@ pub fn run() {
             commands::session_status,
             commands::enter_mesh,
             commands::mesh_snapshot,
+            commands::relay_reward_summary,
             commands::subscribe_mesh_log,
             commands::list_nearby_nodes,
             commands::ble_status,
@@ -350,4 +397,99 @@ pub fn run() {
             }
             let _ = (app, event);
         });
+}
+
+async fn verify_paid_relay_notice(
+    event: &mesh::MeshEvent,
+    bridge: Arc<Mutex<BlockchainBridge>>,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let mesh::MeshEvent::PaidRelaySettled { settlement } = event else {
+        return Ok(false);
+    };
+    let writer = {
+        let bridge = bridge.lock().await;
+        bridge.relay_settlement_writer()?
+    };
+    let Some(writer) = writer else {
+        return Ok(false);
+    };
+    writer.verify_settlement_notice(settlement).await
+}
+
+/// Runs the one-relay protocol without holding the wallet mutex over RPC I/O.
+/// Every topic subscriber sees each envelope, but only the wallet named for
+/// that role can sign or submit the next step.
+async fn handle_paid_relay_event(
+    event: mesh::MeshEvent,
+    bridge: Arc<Mutex<BlockchainBridge>>,
+    mesh: mesh_handle::MeshHandle,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let writer = {
+        let bridge = bridge.lock().await;
+        bridge.relay_settlement_writer()?
+    };
+    let Some(writer) = writer else {
+        return Ok(());
+    };
+
+    match event {
+        mesh::MeshEvent::PaidRelayRequested { request } => {
+            let named_relayer = request
+                .relayers
+                .first()
+                .and_then(|address| address.parse::<alloy::primitives::Address>().ok());
+            if named_relayer != Some(writer.operator()) {
+                return Ok(());
+            }
+            let maximum = request.authorization.maximum_charge_navax;
+            let route = vec![
+                request.authorization.sender.clone(),
+                request.relayers[0].clone(),
+                request.authorization.recipient.clone(),
+            ];
+            let delivery = writer.sign_relay_delivery(request).await?;
+            mesh.publish(mesh::PrivacyIntent {
+                intent_type: "paid_relay_delivery".into(),
+                payload: serde_json::to_string(&delivery)?,
+                encrypted: false,
+                relay_path: route,
+                relay_fee: Some(format!("{maximum} nAVAX MAX")),
+            })
+            .await?;
+        }
+        mesh::MeshEvent::PaidRelayDelivered { delivery } => {
+            let recipient = delivery
+                .request
+                .authorization
+                .recipient
+                .parse::<alloy::primitives::Address>()
+                .ok();
+            if recipient != Some(writer.operator()) {
+                return Ok(());
+            }
+            let relayer = delivery
+                .request
+                .relayers
+                .first()
+                .cloned()
+                .ok_or("paid relay delivery has no relay")?;
+            let route = vec![
+                delivery.request.authorization.sender.clone(),
+                relayer,
+                delivery.request.authorization.recipient.clone(),
+            ];
+            let maximum = delivery.request.authorization.maximum_charge_navax;
+            let (settlement, _) = writer.acknowledge_and_settle(delivery).await?;
+            mesh.publish(mesh::PrivacyIntent {
+                intent_type: "paid_relay_settled".into(),
+                payload: serde_json::to_string(&settlement)?,
+                encrypted: false,
+                relay_path: route,
+                relay_fee: Some(format!("{maximum} nAVAX MAX")),
+            })
+            .await?;
+        }
+        _ => {}
+    }
+    Ok(())
 }

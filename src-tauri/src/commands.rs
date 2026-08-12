@@ -67,7 +67,11 @@ mod tests {
 
 /// What the splash screen needs to decide what it is offering.
 #[derive(Debug, Clone, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionStatus {
     /// Whether bootstrap has finished and the mesh is usable.
@@ -167,7 +171,11 @@ pub async fn enter_mesh(
 
 /// What the home screen renders.
 #[derive(Debug, Clone, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "camelCase")]
 pub struct MeshSnapshotView {
     /// Truncated for display, e.g. `7F3A..8C2E`.
@@ -199,12 +207,14 @@ pub async fn mesh_snapshot(state: State<'_, AppState>) -> Result<MeshSnapshotVie
         Some(ble) => ble.status().await.ok(),
         None => None,
     };
-    let peer_count = mesh_snapshot
-        .as_ref()
-        .map_or_else(
-            || ble_snapshot.as_ref().map_or(0, |snapshot| snapshot.reachable_peers),
-            |snapshot| snapshot.peer_count,
-        );
+    let peer_count = mesh_snapshot.as_ref().map_or_else(
+        || {
+            ble_snapshot
+                .as_ref()
+                .map_or(0, |snapshot| snapshot.reachable_peers)
+        },
+        |snapshot| snapshot.peer_count,
+    );
     let connected = mesh_snapshot
         .as_ref()
         .is_some_and(|snapshot| snapshot.peer_count > 0)
@@ -214,7 +224,11 @@ pub async fn mesh_snapshot(state: State<'_, AppState>) -> Result<MeshSnapshotVie
     let node_id = mesh_snapshot
         .as_ref()
         .map(|snapshot| snapshot.peer_id.to_string())
-        .or_else(|| ble_snapshot.as_ref().map(|snapshot| snapshot.peer_id.to_string()))
+        .or_else(|| {
+            ble_snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.peer_id.to_string())
+        })
         .map(|id| cabal_core::NodeId::new(id).truncated())
         .unwrap_or_else(|| "UNAVAILABLE".to_string());
     let relayed_bytes = mesh_snapshot.as_ref().map_or_else(
@@ -255,6 +269,80 @@ pub async fn mesh_snapshot(state: State<'_, AppState>) -> Result<MeshSnapshotVie
         uptime: format_uptime(state.uptime_seconds()),
         connected,
         stats,
+    })
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
+#[serde(rename_all = "snake_case")]
+pub enum RelayRewardStatusView {
+    Available,
+    DeploymentUnavailable,
+    ChainUnavailable,
+}
+
+/// Accepted contract accounting for the current wallet. Pending routes and the
+/// legacy byte-rate estimate have no route into either amount.
+#[derive(Debug, Clone, serde::Serialize)]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
+#[serde(rename_all = "camelCase")]
+pub struct RelayRewardSummaryView {
+    pub status: RelayRewardStatusView,
+    pub settled_earnings_avax: Option<String>,
+    pub withdrawable_credit_avax: Option<String>,
+    pub verified_block: Option<String>,
+}
+
+/// Reads settled earnings independently of the fast mesh snapshot so a slow
+/// RPC cannot stall or overlap the five-second connectivity refresh.
+#[tauri::command]
+pub async fn relay_reward_summary(
+    state: State<'_, AppState>,
+) -> Result<RelayRewardSummaryView, AppError> {
+    let services = state.services()?;
+    let writer = {
+        let bridge = services.bridge.lock().await;
+        bridge.relay_settlement_writer().ok().flatten()
+    };
+    let Some(writer) = writer else {
+        return Ok(RelayRewardSummaryView {
+            status: RelayRewardStatusView::DeploymentUnavailable,
+            settled_earnings_avax: None,
+            withdrawable_credit_avax: None,
+            verified_block: None,
+        });
+    };
+    let Ok((earnings_navax, credit_wei, block)) = writer.settled_earnings().await else {
+        return Ok(RelayRewardSummaryView {
+            status: RelayRewardStatusView::ChainUnavailable,
+            settled_earnings_avax: None,
+            withdrawable_credit_avax: None,
+            verified_block: None,
+        });
+    };
+    let Some(earnings_wei) =
+        earnings_navax.checked_mul(alloy::primitives::U256::from(1_000_000_000_u64))
+    else {
+        return Ok(RelayRewardSummaryView {
+            status: RelayRewardStatusView::ChainUnavailable,
+            settled_earnings_avax: None,
+            withdrawable_credit_avax: None,
+            verified_block: None,
+        });
+    };
+    Ok(RelayRewardSummaryView {
+        status: RelayRewardStatusView::Available,
+        settled_earnings_avax: Some(alloy::primitives::utils::format_ether(earnings_wei)),
+        withdrawable_credit_avax: Some(alloy::primitives::utils::format_ether(credit_wei)),
+        verified_block: Some(block.to_string()),
     })
 }
 
@@ -302,15 +390,28 @@ pub async fn subscribe_mesh_log(
                 () = tokio::time::sleep(std::time::Duration::from_millis(1_800)) => {}
             }
 
-            let Some(services) = services.as_ref() else { break };
-            let Some(mesh) = services.mesh.as_ref() else { break };
-            let Ok(snapshot) = mesh.snapshot().await else { break };
+            let Some(services) = services.as_ref() else {
+                break;
+            };
+            let Some(mesh) = services.mesh.as_ref() else {
+                break;
+            };
+            let Ok(snapshot) = mesh.snapshot().await else {
+                break;
+            };
 
             // Real mesh state, not a canned array. Lowercase and terse, as the
             // board specifies for log lines.
             let line = LogLine::new(
-                format!("peers {} · relayed {} bytes", snapshot.peer_count, snapshot.relay_bytes),
-                if snapshot.peer_count > 0 { LogTone::Ok } else { LogTone::Dim },
+                format!(
+                    "peers {} · relayed {} bytes",
+                    snapshot.peer_count, snapshot.relay_bytes
+                ),
+                if snapshot.peer_count > 0 {
+                    LogTone::Ok
+                } else {
+                    LogTone::Dim
+                },
             );
             if on_line.send(line).is_err() {
                 break;
@@ -328,7 +429,11 @@ pub async fn subscribe_mesh_log(
 
 /// How a peer is reached.
 #[derive(Debug, Clone, Copy, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "lowercase")]
 pub enum Transport {
     /// Found on this network.
@@ -352,7 +457,11 @@ pub enum Transport {
 /// would contradict the entire premise. The prototype's `1.2 km` is canned;
 /// rendering it would be a fabricated measurement.
 #[derive(Debug, Clone, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "camelCase")]
 pub struct NodeSummary {
     /// Truncated peer id, e.g. `8A3F..1209`.
@@ -442,7 +551,11 @@ pub async fn list_nearby_nodes(state: State<'_, AppState>) -> Result<Vec<NodeSum
 /// "distance": the radio reports neither, and the app requests no location
 /// permission — asking for one would contradict the premise.
 #[derive(Debug, Clone, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "camelCase")]
 pub struct BleStatusView {
     /// Whether the plane is running at all.
@@ -542,7 +655,11 @@ fn seeded_position(seed: &str) -> (f32, f32, u16) {
 
 /// An intent as a list row renders it.
 #[derive(Debug, Clone, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "camelCase")]
 pub struct IntentView {
     pub id: String,
@@ -562,7 +679,11 @@ pub struct IntentView {
 
 /// Which slice of the list to return.
 #[derive(Debug, Clone, Copy, serde::Deserialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum IntentFilter {
     Active,
@@ -633,7 +754,11 @@ pub async fn list_intents(
 
 /// The options the compose screen offers.
 #[derive(Debug, Clone, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "camelCase")]
 pub struct FormOptions {
     pub actions: Vec<String>,
@@ -644,7 +769,11 @@ pub struct FormOptions {
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "camelCase")]
 pub struct AssetOption {
     pub name: String,
@@ -662,7 +791,11 @@ pub struct AssetOption {
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "camelCase")]
 pub struct ModeOption {
     pub label: String,
@@ -729,7 +862,10 @@ pub async fn intent_form_options(state: State<'_, AppState>) -> Result<FormOptio
     let balances = current_balances(&state).await;
 
     Ok(FormOptions {
-        actions: Action::ALL.iter().map(|a| format!("{a:?}").to_uppercase()).collect(),
+        actions: Action::ALL
+            .iter()
+            .map(|a| format!("{a:?}").to_uppercase())
+            .collect(),
         assets: ASSETS
             .iter()
             .map(|(name, tag, decimals)| AssetOption {
@@ -742,7 +878,11 @@ pub async fn intent_form_options(state: State<'_, AppState>) -> Result<FormOptio
                     .map(|(_, amount)| amount.clone()),
             })
             .collect(),
-        conditions: vec!["Price under".into(), "Price above".into(), "Any price".into()],
+        conditions: vec![
+            "Price under".into(),
+            "Price above".into(),
+            "Any price".into(),
+        ],
         modes: ExecutionMode::ALL
             .iter()
             .map(|mode| ModeOption {
@@ -759,7 +899,11 @@ pub async fn intent_form_options(state: State<'_, AppState>) -> Result<FormOptio
 
 /// Whether the selected amount fits inside the latest known balance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "snake_case")]
 pub enum IntentAffordabilityStatus {
     /// No chain snapshot exists for this asset. This is deliberately distinct
@@ -775,7 +919,11 @@ pub enum IntentAffordabilityStatus {
 
 /// Exact fixed-point affordability feedback for the compose screen.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "camelCase")]
 pub struct IntentAffordability {
     pub status: IntentAffordabilityStatus,
@@ -785,11 +933,7 @@ pub struct IntentAffordability {
     pub shortfall: Option<String>,
 }
 
-fn affordability_for(
-    asset: &str,
-    amount: &str,
-    available: Option<&str>,
-) -> IntentAffordability {
+fn affordability_for(asset: &str, amount: &str, available: Option<&str>) -> IntentAffordability {
     use cabal_core::TokenAmount;
 
     let Some(decimals) = decimals_for(asset) else {
@@ -866,7 +1010,11 @@ pub async fn intent_affordability(
 
 /// One row of the confirm dialog.
 #[derive(Debug, Clone, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewRow {
     pub key: String,
@@ -875,16 +1023,57 @@ pub struct ReviewRow {
 
 /// What the confirm dialog renders.
 #[derive(Debug, Clone, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "camelCase")]
 pub struct IntentPreview {
     pub rows: Vec<ReviewRow>,
+    /// Present only when the sender explicitly selected and funded-route
+    /// capable three-wallet path. Estimated/pending rewards never appear here.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relay_charge: Option<RelayChargePreview>,
     /// The dialog's closing line, chosen by whether this will broadcast now.
     pub confirm: String,
     /// Whether confirming broadcasts immediately or queues locally. Drives the
     /// button's own verb, so the dialog does not promise one thing in prose and
     /// another on the control.
     pub will_broadcast: bool,
+}
+
+/// The two remote operator wallets for the narrow paid route. The sender is
+/// always the current vault wallet and cannot be supplied over IPC.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
+#[serde(rename_all = "camelCase")]
+pub struct PaidRelayRouteFields {
+    pub relayer: String,
+    pub recipient: String,
+}
+
+/// Exact sender-facing authorization. `maximum_charge_navax` is sent back on
+/// confirm and recomputed before funding, so a stale dialog cannot authorize a
+/// different debit.
+#[derive(Debug, Clone, serde::Serialize)]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
+#[serde(rename_all = "camelCase")]
+pub struct RelayChargePreview {
+    pub rows: Vec<ReviewRow>,
+    pub maximum_charge_navax: String,
+    pub maximum_charge_avax: String,
+    pub funding_transaction_gas_estimate_avax: String,
+    pub chain_id: String,
+    pub contract: String,
 }
 
 /// The confirm dialog's closing line when the intent goes out now.
@@ -902,13 +1091,20 @@ const CONFIRM_ONLINE: &str =
 const CONFIRM_QUEUED: &str =
     "Queued locally. Broadcast and settlement follow reconnection. No identity is attached.";
 
+const CONFIRM_PAID_RELAY: &str =
+    "Confirm funds the exact relay maximum first, then broadcasts the signed route request. Only the selected relay and recipient wallets can produce eligible evidence. Unused escrow becomes a withdrawal credit.";
+
 /// The compose form's fields, exactly as the screen holds them.
 ///
 /// One type rather than seven parameters on two commands. That is what makes
 /// "preview and broadcast see the same input" a property of the signature
 /// instead of something a caller has to get right twice.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "camelCase")]
 pub struct IntentFields {
     pub action: String,
@@ -923,7 +1119,11 @@ pub struct IntentFields {
 
 /// Stable names for the six conversational intent chips.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "snake_case")]
 pub enum IntentFieldView {
     Action,
@@ -936,7 +1136,11 @@ pub enum IntentFieldView {
 
 /// One model proposal rendered without carrying the original intent text.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "camelCase")]
 pub struct IntentChip {
     pub field: IntentFieldView,
@@ -946,7 +1150,11 @@ pub struct IntentChip {
 
 /// Outcome of one bounded local-model invocation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "snake_case")]
 pub enum IntentCompositionStatus {
     /// All six candidate fields survived the authoritative domain parser.
@@ -969,7 +1177,11 @@ pub enum IntentCompositionStatus {
 /// candidate fields, and neither this value nor its errors can leak financial
 /// text into logs.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "camelCase")]
 pub struct IntentComposition {
     pub status: IntentCompositionStatus,
@@ -984,7 +1196,9 @@ pub struct IntentComposition {
 const INFERENCE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 
 enum InferenceExecution {
-    Complete(Result<cabal_intent_inference::IntentProposal, cabal_intent_inference::InferenceError>),
+    Complete(
+        Result<cabal_intent_inference::IntentProposal, cabal_intent_inference::InferenceError>,
+    ),
     Unavailable,
     TimedOut,
 }
@@ -1114,10 +1328,17 @@ fn fields_from_proposal(proposal: &cabal_intent_inference::IntentProposal) -> In
             .action
             .map(|action| format!("{action:?}").to_uppercase())
             .unwrap_or_default(),
-        asset: proposal.asset.map(|asset| asset.symbol().to_string()).unwrap_or_default(),
+        asset: proposal
+            .asset
+            .map(|asset| asset.symbol().to_string())
+            .unwrap_or_default(),
         condition,
         price,
-        amount: proposal.amount.as_ref().map(ToString::to_string).unwrap_or_default(),
+        amount: proposal
+            .amount
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_default(),
         mode: proposal
             .mode
             .map(|mode| mode.label().to_string())
@@ -1154,9 +1375,7 @@ fn price_input(price: cabal_core::UsdPrice) -> String {
     format!("{}.{:02}", cents / 100, cents % 100)
 }
 
-fn chips_from_proposal(
-    proposal: &cabal_intent_inference::IntentProposal,
-) -> Vec<IntentChip> {
+fn chips_from_proposal(proposal: &cabal_intent_inference::IntentProposal) -> Vec<IntentChip> {
     use cabal_intent_inference::ProposedCondition;
 
     let condition = proposal.condition.map(|condition| match condition {
@@ -1172,14 +1391,22 @@ fn chips_from_proposal(
     vec![
         IntentChip {
             field: IntentFieldView::Action,
-            value: proposal.action.map(|action| format!("{action:?}").to_uppercase()),
+            value: proposal
+                .action
+                .map(|action| format!("{action:?}").to_uppercase()),
         },
         IntentChip {
             field: IntentFieldView::Asset,
             value: proposal.asset.map(|asset| asset.symbol().to_string()),
         },
-        IntentChip { field: IntentFieldView::Condition, value: condition },
-        IntentChip { field: IntentFieldView::Amount, value: amount },
+        IntentChip {
+            field: IntentFieldView::Condition,
+            value: condition,
+        },
+        IntentChip {
+            field: IntentFieldView::Amount,
+            value: amount,
+        },
         IntentChip {
             field: IntentFieldView::Mode,
             value: proposal.mode.map(|mode| mode.label().to_string()),
@@ -1206,8 +1433,14 @@ fn chips_from_draft(draft: &cabal_core::IntentDraft) -> Vec<IntentChip> {
             field: IntentFieldView::Action,
             value: Some(format!("{:?}", draft.action).to_uppercase()),
         },
-        IntentChip { field: IntentFieldView::Asset, value: Some(draft.asset.to_string()) },
-        IntentChip { field: IntentFieldView::Condition, value: Some(condition) },
+        IntentChip {
+            field: IntentFieldView::Asset,
+            value: Some(draft.asset.to_string()),
+        },
+        IntentChip {
+            field: IntentFieldView::Condition,
+            value: Some(condition),
+        },
         IntentChip {
             field: IntentFieldView::Amount,
             value: Some(format!("{} {}", draft.amount, draft.asset)),
@@ -1230,9 +1463,19 @@ fn chips_from_draft(draft: &cabal_core::IntentDraft) -> Vec<IntentChip> {
 /// describe one thing while the broadcast sends another.
 fn parse_draft(fields: &IntentFields) -> Result<cabal_core::IntentDraft, AppError> {
     use crate::error::InvalidReason;
-    use cabal_core::{Action, Condition, ExecutionMode, IntentDraft, PrivacyLevel, TokenAmount, UsdPrice};
+    use cabal_core::{
+        Action, Condition, ExecutionMode, IntentDraft, PrivacyLevel, TokenAmount, UsdPrice,
+    };
 
-    let IntentFields { action, asset, condition, price, amount, mode, privacy } = fields;
+    let IntentFields {
+        action,
+        asset,
+        condition,
+        price,
+        amount,
+        mode,
+        privacy,
+    } = fields;
 
     // Parsed, not trusted. Everything arriving from the webview is hostile
     // until it becomes a domain type.
@@ -1270,9 +1513,13 @@ fn parse_draft(fields: &IntentFields) -> Result<cabal_core::IntentDraft, AppErro
             reason: InvalidReason::Malformed,
         })?;
         if condition.to_ascii_lowercase().contains("above") {
-            Condition::Above { price: parsed_price }
+            Condition::Above {
+                price: parsed_price,
+            }
         } else {
-            Condition::Under { price: parsed_price }
+            Condition::Under {
+                price: parsed_price,
+            }
         }
     };
 
@@ -1317,12 +1564,18 @@ fn review_rows(draft: &cabal_core::IntentDraft) -> Vec<ReviewRow> {
             key: "ACTION".into(),
             value: format!("{:?} {}", draft.action, draft.asset).to_uppercase(),
         },
-        ReviewRow { key: "CONDITION".into(), value: condition },
+        ReviewRow {
+            key: "CONDITION".into(),
+            value: condition,
+        },
         ReviewRow {
             key: "AMOUNT".into(),
             value: format!("{} {}", draft.amount, draft.asset),
         },
-        ReviewRow { key: "MODE".into(), value: draft.mode.label().to_string() },
+        ReviewRow {
+            key: "MODE".into(),
+            value: draft.mode.label().to_string(),
+        },
         ReviewRow {
             key: "PRIVACY".into(),
             value: format!("{:?}", draft.privacy).to_uppercase(),
@@ -1347,6 +1600,115 @@ async fn will_broadcast(state: &AppState) -> bool {
         .is_ok_and(|snapshot| !snapshot.offline && snapshot.peer_count > 0)
 }
 
+async fn paid_route_reachable(state: &AppState) -> bool {
+    let Ok(services) = state.services() else {
+        return false;
+    };
+    let Some(mesh) = services.mesh.as_ref() else {
+        return false;
+    };
+    mesh.snapshot()
+        .await
+        .is_ok_and(|snapshot| !snapshot.offline && snapshot.peer_count >= 2)
+}
+
+async fn paid_relay_preview(
+    state: &AppState,
+    payload: &[u8],
+    route: &PaidRelayRouteFields,
+) -> Result<RelayChargePreview, AppError> {
+    use alloy::primitives::{Address, U256};
+    use std::str::FromStr;
+
+    let relayer = Address::from_str(route.relayer.trim()).map_err(|_| AppError::InvalidIntent {
+        field: "relayer",
+        reason: crate::error::InvalidReason::Malformed,
+    })?;
+    let recipient =
+        Address::from_str(route.recipient.trim()).map_err(|_| AppError::InvalidIntent {
+            field: "recipient",
+            reason: crate::error::InvalidReason::Malformed,
+        })?;
+    let services = state.services()?;
+    let writer = {
+        let bridge = services.bridge.lock().await;
+        bridge
+            .relay_settlement_writer()
+            .map_err(AppError::internal_msg)?
+    }
+    .ok_or(AppError::Unsupported {
+        feature: "paid_relay",
+    })?;
+    if writer.operator() == relayer || writer.operator() == recipient || relayer == recipient {
+        return Err(AppError::InvalidIntent {
+            field: "relay_route",
+            reason: crate::error::InvalidReason::OutOfRange,
+        });
+    }
+    let quote = writer
+        .funding_quote(payload, relayer, recipient)
+        .await
+        .map_err(|error| {
+            tracing::warn!(target: "cabalmesh::paid_relay", %error, "relay quote failed");
+            AppError::Chain { retryable: true }
+        })?;
+    let maximum_wei = U256::from(quote.maximum_charge_navax)
+        .checked_mul(U256::from(1_000_000_000_u64))
+        .ok_or(AppError::Internal)?;
+    let gas_wei = quote
+        .estimated_wallet_gas_wei
+        .parse::<U256>()
+        .map_err(AppError::internal)?;
+    let required = maximum_wei.checked_add(gas_wei).ok_or(AppError::Internal)?;
+    let balance = quote
+        .balance_wei
+        .parse::<U256>()
+        .map_err(AppError::internal)?;
+    if balance < required {
+        return Err(AppError::InvalidIntent {
+            field: "relay_charge",
+            reason: crate::error::InvalidReason::InsufficientFunds,
+        });
+    }
+
+    let maximum_charge_avax =
+        cabal_rewards::NAvax::from_raw(quote.maximum_charge_navax).to_avax_string();
+    let maximum_work_avax =
+        cabal_rewards::NAvax::from_raw(quote.maximum_work_navax).to_avax_string();
+    let reserve_avax =
+        cabal_rewards::NAvax::from_raw(quote.settlement_gas_reserve_navax).to_avax_string();
+    let funding_transaction_gas_estimate_avax = alloy::primitives::utils::format_ether(gas_wei);
+    Ok(RelayChargePreview {
+        rows: vec![
+            ReviewRow {
+                key: "UP TO RELAY CHARGE".into(),
+                value: format!("{maximum_charge_avax} AVAX · EXACT ESCROW MAX"),
+            },
+            ReviewRow {
+                key: "WORK MAX".into(),
+                value: format!("{maximum_work_avax} AVAX"),
+            },
+            ReviewRow {
+                key: "SETTLEMENT GAS RESERVE".into(),
+                value: format!("{reserve_avax} AVAX"),
+            },
+            ReviewRow {
+                key: "WALLET GAS SEPARATE".into(),
+                value: format!("~{funding_transaction_gas_estimate_avax} AVAX CURRENT ESTIMATE"),
+            },
+            ReviewRow {
+                key: "SIGNED ROUTE".into(),
+                value: format!("{} → {} → {}", quote.sender, quote.relayer, quote.recipient),
+            },
+        ],
+        maximum_charge_navax: quote.maximum_charge_navax.to_string(),
+        maximum_charge_avax,
+        funding_transaction_gas_estimate_avax,
+        chain_id: quote.chain_id.to_string(),
+        contract: quote.contract,
+    })
+}
+
 /// Validates a draft and returns what the confirm dialog shows.
 ///
 /// Computed here rather than on the frontend so what the user confirms is
@@ -1360,14 +1722,33 @@ async fn will_broadcast(state: &AppState) -> bool {
 #[tauri::command]
 pub async fn preview_intent(
     fields: IntentFields,
+    paid_route: Option<PaidRelayRouteFields>,
     state: State<'_, AppState>,
 ) -> Result<IntentPreview, AppError> {
     let draft = parse_draft(&fields)?;
     let live = will_broadcast(&state).await;
+    if paid_route.is_some() && !paid_route_reachable(&state).await {
+        return Err(AppError::NotReady {
+            subsystem: "paid_relay_route",
+        });
+    }
+    let payload = serde_json::to_string(&draft).map_err(AppError::internal)?;
+    let relay_charge = match paid_route.as_ref() {
+        Some(route) => Some(paid_relay_preview(&state, payload.as_bytes(), route).await?),
+        None => None,
+    };
 
     Ok(IntentPreview {
         rows: review_rows(&draft),
-        confirm: if live { CONFIRM_ONLINE } else { CONFIRM_QUEUED }.to_string(),
+        relay_charge,
+        confirm: if paid_route.is_some() {
+            CONFIRM_PAID_RELAY
+        } else if live {
+            CONFIRM_ONLINE
+        } else {
+            CONFIRM_QUEUED
+        }
+        .to_string(),
         will_broadcast: live,
     })
 }
@@ -1386,12 +1767,30 @@ pub async fn preview_intent(
 #[tauri::command]
 pub async fn broadcast_intent(
     fields: IntentFields,
+    paid_route: Option<PaidRelayRouteFields>,
+    authorized_maximum_navax: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<String, AppError> {
     use crate::bindings::LogTone;
     use crate::intents::line;
 
     let draft = parse_draft(&fields)?;
+    let authorized_maximum_navax = match (&paid_route, authorized_maximum_navax) {
+        (Some(_), Some(maximum)) => Some(maximum),
+        (Some(_), None) => {
+            return Err(AppError::InvalidIntent {
+                field: "relay_charge",
+                reason: crate::error::InvalidReason::Missing,
+            })
+        }
+        (None, Some(_)) => {
+            return Err(AppError::InvalidIntent {
+                field: "relay_charge",
+                reason: crate::error::InvalidReason::Malformed,
+            })
+        }
+        (None, None) => None,
+    };
     let ledger = state.intents();
     let intent = ledger.create(draft, crate::intents::now_ms());
 
@@ -1399,10 +1798,27 @@ pub async fn broadcast_intent(
 
     // Composing always succeeds; publishing is what can fail. Keeping them as
     // separate steps is what lets the queue exist at all.
-    let published = publish(&state, &intent).await;
+    let published = if let Some(route) = paid_route {
+        let maximum = authorized_maximum_navax.ok_or(AppError::InvalidIntent {
+            field: "relay_charge",
+            reason: crate::error::InvalidReason::Missing,
+        })?;
+        publish_paid(&state, &intent, route, maximum).await
+    } else {
+        publish(&state, &intent).await.map(|peers| (peers, None))
+    };
 
     match published {
-        Ok(peers) => {
+        Ok((peers, funding)) => {
+            if let Some((route_id, tx_hash)) = funding {
+                ledger.record(
+                    &intent.id,
+                    line(
+                        format!("RELAY PENDING {route_id} · FUNDING TX {tx_hash}"),
+                        LogTone::Ok,
+                    ),
+                );
+            }
             ledger.record(&intent.id, line("BROADCAST TO MESH.", LogTone::Ok));
             let route_len = u8::try_from(peers).unwrap_or(u8::MAX);
             let _ = ledger.advance(
@@ -1421,15 +1837,79 @@ pub async fn broadcast_intent(
     Ok(intent.id.to_string())
 }
 
+async fn publish_paid(
+    state: &AppState,
+    intent: &crate::intents::Intent,
+    route: PaidRelayRouteFields,
+    authorized_maximum_navax: String,
+) -> Result<(usize, Option<(String, String)>), &'static str> {
+    use alloy::primitives::Address;
+    use std::str::FromStr;
+
+    let services = state
+        .services()
+        .map_err(|_| "MESH NOT READY. PAID ROUTE NOT FUNDED.")?;
+    let mesh = services
+        .mesh
+        .as_ref()
+        .ok_or("NO MESH. PAID ROUTE NOT FUNDED.")?;
+    let snapshot = mesh
+        .snapshot()
+        .await
+        .map_err(|_| "MESH UNREACHABLE. PAID ROUTE NOT FUNDED.")?;
+    if snapshot.offline || snapshot.peer_count < 2 {
+        return Err("THREE-NODE ROUTE UNAVAILABLE. PAID ROUTE NOT FUNDED.");
+    }
+    let relayer = Address::from_str(route.relayer.trim())
+        .map_err(|_| "RELAYER ADDRESS INVALID. PAID ROUTE NOT FUNDED.")?;
+    let recipient = Address::from_str(route.recipient.trim())
+        .map_err(|_| "RECIPIENT ADDRESS INVALID. PAID ROUTE NOT FUNDED.")?;
+    let maximum = authorized_maximum_navax
+        .parse::<u64>()
+        .map_err(|_| "RELAY AUTHORIZATION INVALID. PAID ROUTE NOT FUNDED.")?;
+    let payload = serde_json::to_string(&intent.draft)
+        .map_err(|_| "COULD NOT ENCODE. PAID ROUTE NOT FUNDED.")?;
+    let writer = {
+        let bridge = services.bridge.lock().await;
+        bridge
+            .relay_settlement_writer()
+            .map_err(|_| "RELAY SIGNER UNAVAILABLE. PAID ROUTE NOT FUNDED.")?
+    }
+    .ok_or("RELAY SETTLEMENT NOT CONFIGURED. PAID ROUTE NOT FUNDED.")?;
+    let request = writer
+        .fund_route(intent.id.to_string(), payload, relayer, recipient, maximum)
+        .await
+        .map_err(|_| "RELAY FUNDING NOT ACCEPTED. NOTHING BROADCAST.")?;
+    let route_id = request.route_id.clone();
+    let funding_tx_hash = request.funding_tx_hash.clone();
+    mesh.publish(crate::mesh::PrivacyIntent {
+        intent_type: "paid_relay_request".into(),
+        payload: serde_json::to_string(&request)
+            .map_err(|_| "FUNDED ROUTE COULD NOT BE ENCODED. WAIT FOR REFUND CREDIT.")?,
+        encrypted: false,
+        relay_path: vec![request.authorization.sender, route.relayer, route.recipient],
+        relay_fee: Some(format!("{maximum} nAVAX MAX")),
+    })
+    .await
+    .map_err(|_| "FUNDED ROUTE COULD NOT BROADCAST. WAIT FOR REFUND CREDIT.")?;
+
+    Ok((3, Some((route_id, funding_tx_hash))))
+}
+
 /// Publishes an intent to the mesh, reporting the peer count it reached.
 ///
 /// The error is the on-voice line to record, not a message to show raw —
 /// every path through here ends up in the terminal the user is reading.
 async fn publish(state: &AppState, intent: &crate::intents::Intent) -> Result<usize, &'static str> {
-    let services = state.services().map_err(|_| "MESH NOT READY. QUEUED LOCALLY.")?;
+    let services = state
+        .services()
+        .map_err(|_| "MESH NOT READY. QUEUED LOCALLY.")?;
     let mesh = services.mesh.as_ref().ok_or("NO MESH. QUEUED LOCALLY.")?;
 
-    let snapshot = mesh.snapshot().await.map_err(|_| "MESH UNREACHABLE. QUEUED LOCALLY.")?;
+    let snapshot = mesh
+        .snapshot()
+        .await
+        .map_err(|_| "MESH UNREACHABLE. QUEUED LOCALLY.")?;
     if snapshot.offline {
         return Err("OFFLINE MODE. QUEUED LOCALLY.");
     }
@@ -1440,7 +1920,8 @@ async fn publish(state: &AppState, intent: &crate::intents::Intent) -> Result<us
     // The payload is the draft, serialized. Encryption is the transport's job:
     // Noise already covers every hop, and a second layer here would be
     // ceremony rather than protection.
-    let payload = serde_json::to_string(&intent.draft).map_err(|_| "COULD NOT ENCODE. QUEUED LOCALLY.")?;
+    let payload =
+        serde_json::to_string(&intent.draft).map_err(|_| "COULD NOT ENCODE. QUEUED LOCALLY.")?;
     mesh.publish(crate::mesh::PrivacyIntent {
         intent_type: "intent".into(),
         payload,
@@ -1456,7 +1937,11 @@ async fn publish(state: &AppState, intent: &crate::intents::Intent) -> Result<us
 
 /// Everything the detail screen renders.
 #[derive(Debug, Clone, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "camelCase")]
 pub struct IntentDetailView {
     pub id: String,
@@ -1499,10 +1984,10 @@ fn detail_rows(intent: &crate::intents::Intent) -> Vec<ReviewRow> {
 
     rows.push(ReviewRow {
         key: "COUNTERPARTY".into(),
-        value: intent
-            .counterparty
-            .as_deref()
-            .map_or_else(|| "NONE YET".into(), |address| cabal_core::NodeId::new(address).truncated()),
+        value: intent.counterparty.as_deref().map_or_else(
+            || "NONE YET".into(),
+            |address| cabal_core::NodeId::new(address).truncated(),
+        ),
     });
 
     rows
@@ -1521,10 +2006,11 @@ pub async fn intent_detail(
 ) -> Result<IntentDetailView, AppError> {
     use crate::error::InvalidReason;
 
-    let intent = state
-        .intents()
-        .get(&cabal_core::IntentId::new(id))
-        .ok_or(AppError::InvalidIntent {
+    let intent =
+        state
+            .intents()
+            .get(&cabal_core::IntentId::new(id))
+            .ok_or(AppError::InvalidIntent {
             field: "id",
             reason: InvalidReason::Missing,
         })?;
@@ -1653,7 +2139,14 @@ pub async fn settle_intent(id: String, state: State<'_, AppState>) -> Result<(),
     let ledger = state.intents().clone();
 
     tauri::async_runtime::spawn(async move {
-        run_settlement(ledger, services, intent_id, counterparty, intent.draft.clone()).await;
+        run_settlement(
+            ledger,
+            services,
+            intent_id,
+            counterparty,
+            intent.draft.clone(),
+        )
+        .await;
     });
 
     Ok(())
@@ -1683,7 +2176,10 @@ async fn run_settlement(
     // broadcast would mean settling through a route that was never found.
     let _ = ledger.advance(&id, IntentStatus::FindingRoute, crate::intents::now_ms());
 
-    ledger.record(&id, line(format!("COUNTERPARTY {counterparty}."), LogTone::Dim));
+    ledger.record(
+        &id,
+        line(format!("COUNTERPARTY {counterparty}."), LogTone::Dim),
+    );
     ledger.record(&id, line("LOCKING ESCROW.", LogTone::Out));
 
     // An hour is the window the counterparty has to deliver before the escrow
@@ -1694,7 +2190,9 @@ async fn run_settlement(
 
     let outcome = {
         let bridge = services.bridge.lock().await;
-        bridge.create_escrow_detailed(&counterparty, amount, expiry).await
+        bridge
+            .create_escrow_detailed(&counterparty, amount, expiry)
+            .await
     };
 
     let elapsed_ms = u32::try_from(started.elapsed().as_millis()).unwrap_or(u32::MAX);
@@ -1705,7 +2203,10 @@ async fn run_settlement(
             ledger.record(&id, line(format!("PROOF {tx_hash}"), LogTone::Loud));
             ledger.set_escrow(
                 &id,
-                crate::intents::EscrowRef::Confirmed { id: escrow_id, tx: tx_hash.clone() },
+                crate::intents::EscrowRef::Confirmed {
+                    id: escrow_id,
+                    tx: tx_hash.clone(),
+                },
             );
 
             // The filled price is the condition's own price where one exists.
@@ -1729,8 +2230,14 @@ async fn run_settlement(
         Ok(EscrowOutcome::Queued { queue_id }) => {
             // Not a failure. The transaction is signed and waiting for a peer
             // with a route to the chain, which is the offline path working.
-            ledger.record(&id, line("NO ROUTE TO CHAIN. SIGNED OFFLINE.", LogTone::Dim));
-            ledger.record(&id, line(format!("QUEUED FOR RELAY: {queue_id}."), LogTone::Dim));
+            ledger.record(
+                &id,
+                line("NO ROUTE TO CHAIN. SIGNED OFFLINE.", LogTone::Dim),
+            );
+            ledger.record(
+                &id,
+                line(format!("QUEUED FOR RELAY: {queue_id}."), LogTone::Dim),
+            );
             ledger.set_escrow(&id, crate::intents::EscrowRef::Queued { queue_id });
             let _ = ledger.advance(&id, IntentStatus::Waiting, crate::intents::now_ms());
         }
@@ -1741,7 +2248,9 @@ async fn run_settlement(
             ledger.record(&id, line("SETTLEMENT REJECTED ON-CHAIN.", LogTone::Err));
             let _ = ledger.advance(
                 &id,
-                IntentStatus::Failed { reason: FailureReason::SettlementRejected },
+                IntentStatus::Failed {
+                    reason: FailureReason::SettlementRejected,
+                },
                 crate::intents::now_ms(),
             );
         }
@@ -1779,26 +2288,47 @@ pub async fn cancel_intent(id: String, state: State<'_, AppState>) -> Result<(),
             Ok(services) => {
                 let bridge = services.bridge.lock().await;
                 match bridge.release_escrow(escrow_id).await {
-                    Ok(tx) => ledger.record(&intent_id, line(format!("ESCROW RELEASED. {tx}"), LogTone::Ok)),
+                    Ok(tx) => ledger.record(
+                        &intent_id,
+                        line(format!("ESCROW RELEASED. {tx}"), LogTone::Ok),
+                    ),
                     Err(error) => {
                         tracing::error!(target: "cabalmesh::intents", %error, "escrow release failed");
-                        ledger.record(&intent_id, line("ESCROW STILL LOCKED. RETRY FROM VAULT.", LogTone::Err));
+                        ledger.record(
+                            &intent_id,
+                            line("ESCROW STILL LOCKED. RETRY FROM VAULT.", LogTone::Err),
+                        );
                         return Err(AppError::Chain { retryable: true });
                     }
                 }
             }
-            Err(_) => return Err(AppError::NotReady { subsystem: "bootstrap" }),
+            Err(_) => {
+                return Err(AppError::NotReady {
+                    subsystem: "bootstrap",
+                })
+            }
         }
     }
 
-    ledger.advance(&intent_id, cabal_core::IntentStatus::Cancelled, crate::intents::now_ms())?;
-    ledger.record(&intent_id, line("INTENT CANCELLED. NOTHING WRITTEN.", LogTone::Dim));
+    ledger.advance(
+        &intent_id,
+        cabal_core::IntentStatus::Cancelled,
+        crate::intents::now_ms(),
+    )?;
+    ledger.record(
+        &intent_id,
+        line("INTENT CANCELLED. NOTHING WRITTEN.", LogTone::Dim),
+    );
     Ok(())
 }
 
 /// What the proof screen renders.
 #[derive(Debug, Clone, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "camelCase")]
 pub struct ProofView {
     pub id: String,
@@ -1824,15 +2354,21 @@ pub struct ProofView {
 pub async fn intent_proof(id: String, state: State<'_, AppState>) -> Result<ProofView, AppError> {
     use crate::error::InvalidReason;
 
-    let intent = state
-        .intents()
-        .get(&cabal_core::IntentId::new(id))
-        .ok_or(AppError::InvalidIntent {
+    let intent =
+        state
+            .intents()
+            .get(&cabal_core::IntentId::new(id))
+            .ok_or(AppError::InvalidIntent {
             field: "id",
-            reason: InvalidReason::Missing,
-        })?;
+                reason: InvalidReason::Missing,
+            })?;
 
-    let cabal_core::IntentStatus::Settled { proof, filled_at, elapsed_ms } = &intent.status else {
+    let cabal_core::IntentStatus::Settled {
+        proof,
+        filled_at,
+        elapsed_ms,
+    } = &intent.status
+    else {
         return Err(AppError::InvalidIntent {
             field: "status",
             reason: InvalidReason::OutOfRange,
@@ -1843,7 +2379,11 @@ pub async fn intent_proof(id: String, state: State<'_, AppState>) -> Result<Proo
         id: intent.id.to_string(),
         hash: proof.to_string(),
         timing: crate::intents::format_elapsed(u64::from(*elapsed_ms)),
-        route: intent.route.iter().map(cabal_core::NodeId::truncated).collect(),
+        route: intent
+            .route
+            .iter()
+            .map(cabal_core::NodeId::truncated)
+            .collect(),
         // Zero cents means the intent carried no condition, so there is no
         // price it filled at. Rendering `$0.00` would be a figure, and a wrong
         // one.
@@ -1864,7 +2404,15 @@ mod intent_tests {
         (Ledger::open(store), dir)
     }
 
-    fn fields(action: &str, asset: &str, condition: &str, price: &str, amount: &str, mode: &str, privacy: &str) -> IntentFields {
+    fn fields(
+        action: &str,
+        asset: &str,
+        condition: &str,
+        price: &str,
+        amount: &str,
+        mode: &str,
+        privacy: &str,
+    ) -> IntentFields {
         IntentFields {
             action: action.into(),
             asset: asset.into(),
@@ -1877,7 +2425,16 @@ mod intent_tests {
     }
 
     fn draft() -> cabal_core::IntentDraft {
-        parse_draft(&fields("BUY", "AVAX", "Price under", "95", "1.5", "SHARK MODE", "HIGH")).unwrap()
+        parse_draft(&fields(
+            "BUY",
+            "AVAX",
+            "Price under",
+            "95",
+            "1.5",
+            "SHARK MODE",
+            "HIGH",
+        ))
+        .unwrap()
     }
 
     fn conversational(input: &str) -> IntentComposition {
@@ -1890,11 +2447,13 @@ mod intent_tests {
 
     #[test]
     fn a_complete_phrase_becomes_six_readable_domain_validated_chips() {
-        let composition =
-            conversational("buy 10 avax under $95, shark mode, privacy high");
+        let composition = conversational("buy 10 avax under $95, shark mode, privacy high");
 
         assert_eq!(composition.status, IntentCompositionStatus::Validated);
-        assert_eq!(composition.model_version, cabal_intent_inference::MODEL_VERSION);
+        assert_eq!(
+            composition.model_version,
+            cabal_intent_inference::MODEL_VERSION
+        );
         assert!(composition.missing.is_empty());
         assert_eq!(composition.chips.len(), 6);
         assert_eq!(
@@ -1913,7 +2472,9 @@ mod intent_tests {
             ]
         );
 
-        let fields = composition.fields.expect("validated composition carries fields");
+        let fields = composition
+            .fields
+            .expect("validated composition carries fields");
         let draft = parse_draft(&fields).expect("returned fields use the authoritative parser");
         assert_eq!(draft.asset.as_ref(), "AVAX");
         assert_eq!(draft.amount.to_string(), "10");
@@ -1923,7 +2484,10 @@ mod intent_tests {
     fn incomplete_input_lists_every_missing_field_without_defaults() {
         let composition = conversational("buy avax");
 
-        assert_eq!(composition.status, IntentCompositionStatus::NeedsClarification);
+        assert_eq!(
+            composition.status,
+            IntentCompositionStatus::NeedsClarification
+        );
         assert_eq!(
             composition.missing,
             vec![
@@ -1933,14 +2497,19 @@ mod intent_tests {
                 IntentFieldView::Privacy,
             ]
         );
-        let fields = composition.fields.expect("safe partial fields are retained");
+        let fields = composition
+            .fields
+            .expect("safe partial fields are retained");
         assert_eq!(fields.action, "BUY");
         assert_eq!(fields.asset, "AVAX");
         assert!(fields.condition.is_empty());
         assert!(fields.amount.is_empty());
         assert!(fields.mode.is_empty());
         assert!(fields.privacy.is_empty());
-        assert!(matches!(parse_draft(&fields), Err(AppError::InvalidIntent { .. })));
+        assert!(matches!(
+            parse_draft(&fields),
+            Err(AppError::InvalidIntent { .. })
+        ));
     }
 
     #[test]
@@ -1972,19 +2541,26 @@ mod intent_tests {
             ),
         ] {
             let unsupported = conversational(phrase);
-            assert_eq!(unsupported.status, IntentCompositionStatus::NeedsClarification);
+            assert_eq!(
+                unsupported.status,
+                IntentCompositionStatus::NeedsClarification
+            );
             assert!(
                 unsupported.missing.contains(&refused_field),
                 "{phrase:?} did not leave {refused_field:?} unresolved"
             );
         }
 
-        let ambiguous = conversational(
-            "buy or sell 10 avax under 95 shark mode high privacy",
+        let ambiguous = conversational("buy or sell 10 avax under 95 shark mode high privacy");
+        assert_eq!(
+            ambiguous.status,
+            IntentCompositionStatus::NeedsClarification
         );
-        assert_eq!(ambiguous.status, IntentCompositionStatus::NeedsClarification);
         assert_eq!(ambiguous.missing, vec![IntentFieldView::Action]);
-        assert!(ambiguous.fields.is_none(), "an ambiguous candidate is not reviewable");
+        assert!(
+            ambiguous.fields.is_none(),
+            "an ambiguous candidate is not reviewable"
+        );
     }
 
     #[test]
@@ -2002,8 +2578,7 @@ mod intent_tests {
 
     #[test]
     fn complete_model_values_outside_domain_ranges_are_not_reviewable() {
-        let composition =
-            conversational("buy 0 avax at market price shark mode high privacy");
+        let composition = conversational("buy 0 avax at market price shark mode high privacy");
         assert_eq!(composition.status, IntentCompositionStatus::MalformedOutput);
         assert!(composition.fields.is_none());
         assert!(composition.chips.is_empty());
@@ -2012,8 +2587,14 @@ mod intent_tests {
     #[test]
     fn unavailable_and_timed_out_models_return_recoverable_empty_states() {
         for (execution, expected) in [
-            (InferenceExecution::Unavailable, IntentCompositionStatus::Unavailable),
-            (InferenceExecution::TimedOut, IntentCompositionStatus::TimedOut),
+            (
+                InferenceExecution::Unavailable,
+                IntentCompositionStatus::Unavailable,
+            ),
+            (
+                InferenceExecution::TimedOut,
+                IntentCompositionStatus::TimedOut,
+            ),
         ] {
             let composition = finish_inference(execution);
             assert_eq!(composition.status, expected);
@@ -2090,7 +2671,16 @@ mod intent_tests {
         // `Condition::Any` carries no price by construction, so there is none
         // to render — and rendering `$0.00` would be a claim about a limit the
         // user never set.
-        let draft = parse_draft(&fields("SELL", "USDC", "Any price", "", "10", "GHOST MODE", "LOW")).unwrap();
+        let draft = parse_draft(&fields(
+            "SELL",
+            "USDC",
+            "Any price",
+            "",
+            "10",
+            "GHOST MODE",
+            "LOW",
+        ))
+        .unwrap();
         let rows = review_rows(&draft);
         assert_eq!(rows[1].value, "ANY PRICE");
     }
@@ -2098,16 +2688,35 @@ mod intent_tests {
     #[test]
     fn precision_beyond_the_asset_is_refused_rather_than_truncated() {
         // USDC has six decimals. Silently dropping the seventh would lose money.
-        let refused = parse_draft(&fields("BUY", "USDC", "Any price", "", "1.1234567", "SHARK MODE", "HIGH"));
+        let refused = parse_draft(&fields(
+            "BUY",
+            "USDC",
+            "Any price",
+            "",
+            "1.1234567",
+            "SHARK MODE",
+            "HIGH",
+        ));
         assert!(matches!(
             refused,
-            Err(AppError::InvalidIntent { field: "amount", .. })
+            Err(AppError::InvalidIntent {
+                field: "amount",
+                ..
+            })
         ));
     }
 
     #[test]
     fn a_zero_amount_is_refused() {
-        let refused = parse_draft(&fields("BUY", "AVAX", "Any price", "", "0", "SHARK MODE", "HIGH"));
+        let refused = parse_draft(&fields(
+            "BUY",
+            "AVAX",
+            "Any price",
+            "",
+            "0",
+            "SHARK MODE",
+            "HIGH",
+        ));
         assert!(matches!(
             refused,
             Err(AppError::InvalidIntent {
@@ -2121,7 +2730,15 @@ mod intent_tests {
     fn an_unknown_asset_is_refused_rather_than_defaulted() {
         // Defaulting to eighteen decimals for an unrecognised asset would parse
         // a USDC amount as if it were AVAX — off by a factor of a trillion.
-        let refused = parse_draft(&fields("BUY", "DOGE", "Any price", "", "1", "SHARK MODE", "HIGH"));
+        let refused = parse_draft(&fields(
+            "BUY",
+            "DOGE",
+            "Any price",
+            "",
+            "1",
+            "SHARK MODE",
+            "HIGH",
+        ));
         assert!(matches!(
             refused,
             Err(AppError::InvalidIntent { field: "asset", .. })
@@ -2134,7 +2751,16 @@ mod intent_tests {
         // trip. A mismatch here is a form that offers something Rust rejects.
         for (name, _, _) in ASSETS {
             assert!(
-                parse_draft(&fields("BUY", name, "Any price", "", "1", "SHARK MODE", "HIGH")).is_ok(),
+                parse_draft(&fields(
+                    "BUY",
+                    name,
+                    "Any price",
+                    "",
+                    "1",
+                    "SHARK MODE",
+                    "HIGH"
+                ))
+                .is_ok(),
                 "{name} did not parse"
             );
         }
@@ -2169,7 +2795,10 @@ mod intent_tests {
         let statuses = [
             IntentStatus::Draft,
             IntentStatus::Broadcast { route_len: 2 },
-            IntentStatus::Negotiating { bids: 1, best: None },
+            IntentStatus::Negotiating {
+                bids: 1,
+                best: None,
+            },
             IntentStatus::FindingRoute,
             IntentStatus::Waiting,
             IntentStatus::Settled {
@@ -2177,15 +2806,21 @@ mod intent_tests {
                 filled_at: UsdPrice::from_cents(9421),
                 elapsed_ms: 11_400,
             },
-            IntentStatus::Failed { reason: cabal_core::FailureReason::NoRoute },
+            IntentStatus::Failed {
+                reason: cabal_core::FailureReason::NoRoute,
+            },
             IntentStatus::Cancelled,
         ];
 
         for status in statuses {
-            let matches = [IntentFilter::Active, IntentFilter::Pending, IntentFilter::History]
-                .into_iter()
-                .filter(|filter| filter.admits(&status))
-                .count();
+            let matches = [
+                IntentFilter::Active,
+                IntentFilter::Pending,
+                IntentFilter::History,
+            ]
+            .into_iter()
+            .filter(|filter| filter.admits(&status))
+            .count();
             assert_eq!(matches, 1, "{status:?} landed in {matches} slices");
         }
     }
@@ -2208,7 +2843,16 @@ mod intent_tests {
     #[test]
     fn a_non_default_mode_is_badged() {
         let (ledger, _dir) = ledger();
-        let ghost = parse_draft(&fields("BUY", "AVAX", "Any price", "", "1", "GHOST MODE", "HIGH")).unwrap();
+        let ghost = parse_draft(&fields(
+            "BUY",
+            "AVAX",
+            "Any price",
+            "",
+            "1",
+            "GHOST MODE",
+            "HIGH",
+        ))
+        .unwrap();
         let intent = ledger.create(ghost, 1_000);
         assert_eq!(row_for(&intent, 1_000).badge.as_deref(), Some("GHOST MODE"));
     }
@@ -2309,7 +2953,10 @@ mod intent_tests {
             .advance(&intent.id, IntentStatus::Cancelled, 2_000)
             .unwrap();
 
-        assert_eq!(ledger.get(&intent.id).unwrap().status, IntentStatus::Cancelled);
+        assert_eq!(
+            ledger.get(&intent.id).unwrap().status,
+            IntentStatus::Cancelled
+        );
     }
 
     // -- the proof ----------------------------------------------------------
@@ -2324,7 +2971,10 @@ mod intent_tests {
         ledger
             .advance(&intent.id, IntentStatus::FindingRoute, 1_200)
             .unwrap();
-        ledger.set_route(&intent.id, vec![cabal_core::NodeId::new("7F3A00000000008C2E")]);
+        ledger.set_route(
+            &intent.id,
+            vec![cabal_core::NodeId::new("7F3A00000000008C2E")],
+        );
         ledger
             .advance(
                 &intent.id,
@@ -2338,13 +2988,21 @@ mod intent_tests {
             .unwrap();
 
         let settled = ledger.get(&intent.id).unwrap();
-        let IntentStatus::Settled { proof, filled_at, elapsed_ms } = &settled.status else {
+        let IntentStatus::Settled {
+            proof,
+            filled_at,
+            elapsed_ms,
+        } = &settled.status
+        else {
             panic!("expected settled");
         };
 
         assert_eq!(proof.as_str(), "0xa4f2c9e1b70d5533");
         assert_eq!(filled_at.to_string(), "$94.21");
-        assert_eq!(crate::intents::format_elapsed(u64::from(*elapsed_ms)), "11.4S");
+        assert_eq!(
+            crate::intents::format_elapsed(u64::from(*elapsed_ms)),
+            "11.4S"
+        );
         assert_eq!(settled.route[0].truncated(), "7F3A..8C2E");
     }
 }
@@ -2355,7 +3013,11 @@ mod intent_tests {
 
 /// A row in the vault list.
 #[derive(Debug, Clone, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "camelCase")]
 pub struct VaultRow {
     /// Three-letter tag, e.g. `AVX`, `ID`, `KEY`.
@@ -2386,7 +3048,12 @@ pub async fn vault_assets(state: State<'_, AppState>) -> Result<Vec<VaultRow>, A
                 .assets
                 .into_iter()
                 .map(|asset| VaultRow {
-                    tag: asset.symbol.chars().take(3).collect::<String>().to_uppercase(),
+                    tag: asset
+                        .symbol
+                        .chars()
+                        .take(3)
+                        .collect::<String>()
+                        .to_uppercase(),
                     name: asset.symbol,
                     amount: asset.amount,
                     detail: None,
@@ -2400,7 +3067,11 @@ pub async fn vault_assets(state: State<'_, AppState>) -> Result<Vec<VaultRow>, A
 
 /// Whether the canonical module collection can be queried by this build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ModuleInventoryStatus {
     Available,
@@ -2408,7 +3079,11 @@ pub enum ModuleInventoryStatus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ModuleAssetClass {
     Module,
@@ -2416,7 +3091,11 @@ pub enum ModuleAssetClass {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ModuleSlot {
     None,
@@ -2426,7 +3105,11 @@ pub enum ModuleSlot {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ModuleRarity {
     Common,
@@ -2436,7 +3119,11 @@ pub enum ModuleRarity {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ModuleEffectType {
     None,
@@ -2447,7 +3134,11 @@ pub enum ModuleEffectType {
 
 /// One authentic token, rendered only from canonical on-chain structured data.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "camelCase")]
 pub struct ModuleView {
     pub token_id: String,
@@ -2472,7 +3163,11 @@ pub struct ModuleView {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "camelCase")]
 pub struct ModuleInventory {
     pub status: ModuleInventoryStatus,
@@ -2481,7 +3176,11 @@ pub struct ModuleInventory {
 
 /// Buyer-visible state of the canonical module catalog.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ModuleMarketStatus {
     Available,
@@ -2493,7 +3192,11 @@ pub enum ModuleMarketStatus {
 
 /// Exact reason a public standing value cannot be claimed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "snake_case")]
 pub enum SellerStandingUnknownReason {
     Unconfigured,
@@ -2507,7 +3210,11 @@ pub enum SellerStandingUnknownReason {
 
 /// Independently verified public seller standing or an explicit absence.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(
     tag = "status",
     rename_all = "snake_case",
@@ -2528,7 +3235,11 @@ pub enum SellerStandingView {
 
 /// One currently buyable canonical module listing.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "camelCase")]
 pub struct ModuleMarketListing {
     pub listing_id: String,
@@ -2541,7 +3252,11 @@ pub struct ModuleMarketListing {
 
 /// Accepted-head module catalog and the entries deliberately omitted from it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "camelCase")]
 pub struct ModuleMarketCatalog {
     pub status: ModuleMarketStatus,
@@ -2553,7 +3268,11 @@ pub struct ModuleMarketCatalog {
 
 /// Approval already accepted by the canonical module collection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ModuleListingApprovalView {
     Token,
@@ -2562,7 +3281,11 @@ pub enum ModuleListingApprovalView {
 
 /// Why an owned token cannot enter the canonical module market.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ModuleListingIneligibleReason {
     Soulbound,
@@ -2573,7 +3296,11 @@ pub enum ModuleListingIneligibleReason {
 
 /// One seller-owned listing, preserving identifiers and price as decimal text.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "camelCase")]
 pub struct OwnedModuleListingView {
     pub listing_id: String,
@@ -2586,7 +3313,11 @@ pub struct OwnedModuleListingView {
 
 /// Accepted state that controls every listing affordance in module detail.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(
     tag = "status",
     rename_all = "snake_case",
@@ -2636,7 +3367,11 @@ pub enum ModuleListingStateView {
 
 /// Mutation claim whose effect was observed again at an accepted chain head.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ModuleListingOperationView {
     None,
@@ -2647,7 +3382,11 @@ pub enum ModuleListingOperationView {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "camelCase")]
 pub struct ModuleListingActionView {
     pub state: ModuleListingStateView,
@@ -2659,7 +3398,11 @@ pub struct ModuleListingActionView {
 /// the quoted block; listing value, balance, and required total remain integer
 /// wei text across IPC.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "camelCase")]
 pub struct ModulePurchaseQuoteView {
     pub verified_block: String,
@@ -2677,7 +3420,11 @@ pub struct ModulePurchaseQuoteView {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(
     tag = "status",
     rename_all = "snake_case",
@@ -2686,19 +3433,31 @@ pub struct ModulePurchaseQuoteView {
 pub enum ModulePurchaseStateView {
     DeploymentUnavailable,
     ChainUnavailable,
-    Inactive { verified_block: String },
-    SelfPurchase { verified_block: String },
-    StaleListing { verified_block: String },
+    Inactive {
+        verified_block: String,
+    },
+    SelfPurchase {
+        verified_block: String,
+    },
+    StaleListing {
+        verified_block: String,
+    },
     InsufficientFunds {
         quote: ModulePurchaseQuoteView,
         shortfall_wei: String,
         shortfall_avax: String,
     },
-    Ready { quote: ModulePurchaseQuoteView },
+    Ready {
+        quote: ModulePurchaseQuoteView,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ModuleDealCatalogStatus {
     Available,
@@ -2707,7 +3466,11 @@ pub enum ModuleDealCatalogStatus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ModuleDealStatusView {
     Active,
@@ -2716,7 +3479,11 @@ pub enum ModuleDealStatusView {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ModuleDealRoleView {
     Buyer,
@@ -2724,7 +3491,11 @@ pub enum ModuleDealRoleView {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ModuleDealReleaseAuthorityView {
     BuyerNow,
@@ -2734,7 +3505,11 @@ pub enum ModuleDealReleaseAuthorityView {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "camelCase")]
 pub struct ModuleDealView {
     pub verified_block: String,
@@ -2757,7 +3532,11 @@ pub struct ModuleDealView {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "camelCase")]
 pub struct ModuleDealCatalog {
     pub status: ModuleDealCatalogStatus,
@@ -2767,7 +3546,11 @@ pub struct ModuleDealCatalog {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ModuleDealOperationView {
     PurchaseConfirmed,
@@ -2777,7 +3560,11 @@ pub enum ModuleDealOperationView {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "camelCase")]
 pub struct ModuleDealActionView {
     pub operation: ModuleDealOperationView,
@@ -2787,7 +3574,11 @@ pub struct ModuleDealActionView {
 
 /// Whether a node loadout is live chain evidence or display-only history.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "snake_case")]
 pub enum LoadoutVerificationStatus {
     Verified,
@@ -2797,7 +3588,11 @@ pub enum LoadoutVerificationStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "camelCase")]
 pub struct LoadoutSlotView {
     pub slot: ModuleSlot,
@@ -2809,7 +3604,11 @@ pub struct LoadoutSlotView {
 
 /// On-chain node loadout plus an explicit freshness classification.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "camelCase")]
 pub struct NodeLoadout {
     pub status: LoadoutVerificationStatus,
@@ -2849,9 +3648,9 @@ fn is_nonzero_bytes32(value: &str) -> bool {
 fn is_safe_metadata_text(value: &str, max_bytes: usize) -> bool {
     !value.is_empty()
         && value.len() <= max_bytes
-        && value.bytes().all(|byte| {
-            (0x20..=0x7e).contains(&byte) && byte != b'"' && byte != b'\\'
-        })
+        && value
+            .bytes()
+            .all(|byte| (0x20..=0x7e).contains(&byte) && byte != b'"' && byte != b'\\')
 }
 
 fn module_view(record: crate::blockchain_bridge::ModuleChainRecord) -> Result<ModuleView, ()> {
@@ -3041,7 +3840,10 @@ fn module_market_catalog_view(
             continue;
         }
 
-        let identity = (record.module.collection.clone(), record.module.token_id.clone());
+        let identity = (
+            record.module.collection.clone(),
+            record.module.token_id.clone(),
+        );
         if !listing_ids.insert(listing_id) || !identities.insert(identity) {
             malformed_metadata = malformed_metadata.saturating_add(1);
             continue;
@@ -3055,10 +3857,11 @@ fn module_market_catalog_view(
             continue;
         }
 
-        let seller_standing = standing
-            .get(&seller)
-            .copied()
-            .unwrap_or(cabal_standing::PublicStanding::Unknown(
+        let seller_standing =
+            standing
+                .get(&seller)
+                .copied()
+                .unwrap_or(cabal_standing::PublicStanding::Unknown(
                 cabal_standing::UnknownStandingReason::Unavailable,
             ));
         listings.push(ModuleMarketListing {
@@ -3089,7 +3892,9 @@ fn parse_avax_price_to_wei(value: &str) -> Result<alloy::primitives::U256, AppEr
     };
     if value.is_empty()
         || value.len() > 97
-        || !value.bytes().all(|byte| byte.is_ascii_digit() || byte == b'.')
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || byte == b'.')
     {
         return Err(malformed());
     }
@@ -3109,10 +3914,12 @@ fn parse_avax_price_to_wei(value: &str) -> Result<alloy::primitives::U256, AppEr
     wei_text.push_str(whole);
     wei_text.push_str(fractional);
     wei_text.extend(std::iter::repeat_n('0', 18 - fractional.len()));
-    let wei = wei_text.parse::<U256>().map_err(|_| AppError::InvalidIntent {
-        field: "price_avax",
-        reason: crate::error::InvalidReason::OutOfRange,
-    })?;
+    let wei = wei_text
+        .parse::<U256>()
+        .map_err(|_| AppError::InvalidIntent {
+            field: "price_avax",
+            reason: crate::error::InvalidReason::OutOfRange,
+        })?;
     if wei == U256::ZERO {
         return Err(AppError::InvalidIntent {
             field: "price_avax",
@@ -3222,8 +4029,9 @@ fn module_listing_state_view(
     let record_token = record.token_id.parse::<U256>().map_err(|_| ())?;
     let compatible = record_owner == owner
         && record_token == expected_token
-        && module_view(record.clone())
-            .is_ok_and(|module| module.asset_class == ModuleAssetClass::Module && module.slot != ModuleSlot::None);
+        && module_view(record.clone()).is_ok_and(|module| {
+            module.asset_class == ModuleAssetClass::Module && module.slot != ModuleSlot::None
+        });
     let ineligible = if record.soulbound {
         Some(ModuleListingIneligibleReason::Soulbound)
     } else if record.revoked {
@@ -3309,15 +4117,9 @@ fn listing_action_view(
         ModuleListingMutationKind::ApprovalConfirmed => {
             ModuleListingOperationView::ApprovalConfirmed
         }
-        ModuleListingMutationKind::ListingConfirmed => {
-            ModuleListingOperationView::ListingConfirmed
-        }
-        ModuleListingMutationKind::ListingCancelled => {
-            ModuleListingOperationView::ListingCancelled
-        }
-        ModuleListingMutationKind::DealRulesActive => {
-            ModuleListingOperationView::DealRulesActive
-        }
+        ModuleListingMutationKind::ListingConfirmed => ModuleListingOperationView::ListingConfirmed,
+        ModuleListingMutationKind::ListingCancelled => ModuleListingOperationView::ListingCancelled,
+        ModuleListingMutationKind::DealRulesActive => ModuleListingOperationView::DealRulesActive,
     };
     Ok(ModuleListingActionView {
         state,
@@ -3367,7 +4169,8 @@ fn module_purchase_state_view(
                 && !record.soulbound
                 && !record.revoked
                 && module_view(record.clone()).is_ok_and(|module| {
-                    module.asset_class == ModuleAssetClass::Module && module.slot != ModuleSlot::None
+                    module.asset_class == ModuleAssetClass::Module
+                        && module.slot != ModuleSlot::None
                 })
         });
     if !structurally_valid {
@@ -3462,7 +4265,8 @@ fn module_deal_view(
     } else {
         ModuleDealRoleView::Seller
     };
-    let (status, release_authority, can_release, can_request_refund, can_refund) = match raw.status {
+    let (status, release_authority, can_release, can_request_refund, can_refund) = match raw.status
+    {
         ModuleDealStatusChain::Active if raw.observed_at >= raw.auto_release_at => (
             ModuleDealStatusView::Active,
             ModuleDealReleaseAuthorityView::AnyoneNow,
@@ -3523,7 +4327,10 @@ fn module_deal_view(
 fn module_deal_catalog_view(
     snapshot: crate::blockchain_bridge::ModuleDealChainSnapshot,
 ) -> Result<ModuleDealCatalog, ()> {
-    let wallet = snapshot.wallet.parse::<alloy::primitives::Address>().map_err(|_| ())?;
+    let wallet = snapshot
+        .wallet
+        .parse::<alloy::primitives::Address>()
+        .map_err(|_| ())?;
     let deals = snapshot
         .deals
         .into_iter()
@@ -3673,9 +4480,7 @@ pub async fn vault_modules(state: State<'_, AppState>) -> Result<ModuleInventory
 /// deployment-unavailable, offline/RPC failure, stale, malformed, and empty
 /// states without parsing error prose.
 #[tauri::command]
-pub async fn market_modules(
-    state: State<'_, AppState>,
-) -> Result<ModuleMarketCatalog, AppError> {
+pub async fn market_modules(state: State<'_, AppState>) -> Result<ModuleMarketCatalog, AppError> {
     let services = state.services()?;
     let reader = {
         let bridge = services.bridge.lock().await;
@@ -3788,28 +4593,32 @@ pub async fn module_deals(state: State<'_, AppState>) -> Result<ModuleDealCatalo
     }
     .map_err(|_| AppError::Chain { retryable: false })?;
     let Some(writer) = writer else {
-        return Ok(empty_module_deals(ModuleDealCatalogStatus::DeploymentUnavailable));
+        return Ok(empty_module_deals(
+            ModuleDealCatalogStatus::DeploymentUnavailable,
+        ));
     };
-    let snapshot = match tokio::time::timeout(
-        std::time::Duration::from_secs(20),
-        writer.my_module_deals(),
-    )
-    .await
-    {
-        Ok(Ok(snapshot)) => snapshot,
+    let snapshot =
+        match tokio::time::timeout(std::time::Duration::from_secs(20), writer.my_module_deals())
+            .await
+        {
+            Ok(Ok(snapshot)) => snapshot,
         Ok(Err(error)) => {
             tracing::warn!(
                 target: "cabalmesh::module_deal",
-                error_kind = %std::any::type_name_of_val(error.as_ref()),
-                "module deal refresh failed"
-            );
-            return Ok(empty_module_deals(ModuleDealCatalogStatus::ChainUnavailable));
-        }
-        Err(_) => {
-            tracing::warn!(target: "cabalmesh::module_deal", "module deal refresh timed out");
-            return Ok(empty_module_deals(ModuleDealCatalogStatus::ChainUnavailable));
-        }
-    };
+                    error_kind = %std::any::type_name_of_val(error.as_ref()),
+                    "module deal refresh failed"
+                );
+                return Ok(empty_module_deals(
+                    ModuleDealCatalogStatus::ChainUnavailable,
+                ));
+            }
+            Err(_) => {
+                tracing::warn!(target: "cabalmesh::module_deal", "module deal refresh timed out");
+                return Ok(empty_module_deals(
+                    ModuleDealCatalogStatus::ChainUnavailable,
+                ));
+            }
+        };
     module_deal_catalog_view(snapshot).map_err(|()| AppError::Internal)
 }
 
@@ -3829,10 +4638,12 @@ pub async fn buy_module_listing(
     let listing_id = parse_positive_u256(&listing_id, "listing_id")?;
     let token_id = parse_module_token_id(&token_id)?;
     let price_wei = parse_positive_u256(&price_wei, "price_wei")?;
-    let seller = seller.parse::<Address>().map_err(|_| AppError::InvalidIntent {
-        field: "seller",
-        reason: crate::error::InvalidReason::Malformed,
-    })?;
+    let seller = seller
+        .parse::<Address>()
+        .map_err(|_| AppError::InvalidIntent {
+            field: "seller",
+            reason: crate::error::InvalidReason::Malformed,
+        })?;
     if seller == Address::ZERO {
         return Err(AppError::InvalidIntent {
             field: "seller",
@@ -3900,10 +4711,13 @@ pub async fn request_module_refund(
     .map_err(|_| AppError::Chain { retryable: false })?
     .ok_or(AppError::Chain { retryable: false })?;
     let wallet = writer.seller();
-    let outcome = writer.request_module_refund(deal_id).await.map_err(|error| {
-        tracing::warn!(
-            target: "cabalmesh::module_deal",
-            error_kind = %std::any::type_name_of_val(error.as_ref()),
+    let outcome = writer
+        .request_module_refund(deal_id)
+        .await
+        .map_err(|error| {
+            tracing::warn!(
+                target: "cabalmesh::module_deal",
+                error_kind = %std::any::type_name_of_val(error.as_ref()),
             "module refund request was not accepted"
         );
         AppError::Chain { retryable: true }
@@ -3988,8 +4802,8 @@ pub async fn module_listing_status(
             });
         }
     };
-    let listing_state = module_listing_state_view(&raw, seller, marketplace)
-        .map_err(|()| AppError::Internal)?;
+    let listing_state =
+        module_listing_state_view(&raw, seller, marketplace).map_err(|()| AppError::Internal)?;
     Ok(ModuleListingActionView {
         state: listing_state,
         operation: ModuleListingOperationView::None,
@@ -4112,19 +4926,13 @@ pub async fn module_loadout(state: State<'_, AppState>) -> Result<NodeLoadout, A
             Ok(view)
         }
         Err(_) => match bridge.cached_module_loadout() {
-            Some(snapshot) => match loadout_view(
-                &snapshot,
-                LoadoutVerificationStatus::Cached,
-                None,
-            ) {
-                Ok(view) => Ok(view),
-                Err(()) => Ok(empty_loadout(
-                    LoadoutVerificationStatus::ChainUnavailable,
-                )),
-            },
-            None => Ok(empty_loadout(
-                LoadoutVerificationStatus::ChainUnavailable,
-            )),
+            Some(snapshot) => {
+                match loadout_view(&snapshot, LoadoutVerificationStatus::Cached, None) {
+                    Ok(view) => Ok(view),
+                    Err(()) => Ok(empty_loadout(LoadoutVerificationStatus::ChainUnavailable)),
+                }
+            }
+            None => Ok(empty_loadout(LoadoutVerificationStatus::ChainUnavailable)),
         },
     }
 }
@@ -4208,10 +5016,10 @@ pub async fn unequip_module(
 mod module_tests {
     use super::*;
     use crate::blockchain_bridge::{
-        ModuleChainRecord, ModuleDealChainRecord, ModuleDealChainSnapshot,
-        ModuleDealStatusChain, ModuleListingApprovalChain, ModuleListingChainRecord,
-        ModuleListingChainState, ModuleLoadoutChainSnapshot, ModuleMarketChainSnapshot,
-        ModulePurchaseQuoteChain, OwnedModuleListingChainRecord,
+        ModuleChainRecord, ModuleDealChainRecord, ModuleDealChainSnapshot, ModuleDealStatusChain,
+        ModuleListingApprovalChain, ModuleListingChainRecord, ModuleListingChainState,
+        ModuleLoadoutChainSnapshot, ModuleMarketChainSnapshot, ModulePurchaseQuoteChain,
+        OwnedModuleListingChainRecord,
     };
 
     fn bytes32(byte: &str) -> String {
@@ -4584,7 +5392,10 @@ mod module_tests {
             "1.0000000000000000000",
             "1.2.3",
         ] {
-            assert!(parse_avax_price_to_wei(value).is_err(), "accepted {value:?}");
+            assert!(
+                parse_avax_price_to_wei(value).is_err(),
+                "accepted {value:?}"
+            );
         }
         assert!(parse_avax_price_to_wei(
             "115792089237316195423570985008687907853269984665640564039458"
@@ -4692,7 +5503,8 @@ mod module_tests {
         let mut raw = listing_state(ModuleListingApprovalChain::Token);
         raw.active_listing = Some(owned_listing());
 
-        let view = module_listing_state_view(&raw, seller_address(), marketplace_address()).unwrap();
+        let view =
+            module_listing_state_view(&raw, seller_address(), marketplace_address()).unwrap();
         let ModuleListingStateView::Listed { listing, .. } = view else {
             panic!("expected confirmed listing")
         };
@@ -4824,7 +5636,8 @@ mod module_tests {
     #[test]
     fn final_deal_ownership_and_actions_match_chain_status() {
         let buyer = address("0x00000000000000000000000000000000000000e1");
-        let released = module_deal_view(module_deal(ModuleDealStatusChain::Released), buyer).unwrap();
+        let released =
+            module_deal_view(module_deal(ModuleDealStatusChain::Released), buyer).unwrap();
         assert_eq!(released.status, ModuleDealStatusView::Released);
         assert_eq!(released.current_owner, buyer.to_string());
         assert!(!released.can_release);
@@ -4895,9 +5708,7 @@ mod module_tests {
         unsafe_metadata.display_name = "Seller \"prose\"".into();
         let standing = [(
             seller,
-            cabal_standing::PublicStanding::Unknown(
-                cabal_standing::UnknownStandingReason::Stale,
-            ),
+            cabal_standing::PublicStanding::Unknown(cabal_standing::UnknownStandingReason::Stale),
         )]
         .into_iter()
         .collect();
@@ -4946,7 +5757,9 @@ pub async fn vault_identities(state: State<'_, AppState>) -> Result<Vec<VaultRow
     let services = state.services()?;
     let bridge = services.bridge.lock().await;
 
-    let views = bridge.get_identity_views().map_err(|_| AppError::VaultLocked)?;
+    let views = bridge
+        .get_identity_views()
+        .map_err(|_| AppError::VaultLocked)?;
     Ok(views
         .into_iter()
         .map(|view| VaultRow {
@@ -4996,7 +5809,11 @@ pub async fn vault_keys(state: State<'_, AppState>) -> Result<Vec<VaultRow>, App
 
 /// What the profile screen shows.
 #[derive(Debug, Clone, serde::Serialize)]
-#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfileView {
     pub node_id: String,
@@ -5034,9 +5851,10 @@ pub async fn profile_summary(state: State<'_, AppState>) -> Result<ProfileView, 
         None => None,
     };
 
-    let node_id = snapshot
-        .as_ref()
-        .map_or_else(|| "—".into(), |s| cabal_core::NodeId::new(s.peer_id.clone()).truncated());
+    let node_id = snapshot.as_ref().map_or_else(
+        || "—".into(),
+        |s| cabal_core::NodeId::new(s.peer_id.clone()).truncated(),
+    );
 
     // Absent mesh reads as offline: the screen must not show a connected
     // switch for a mesh that is not there.
@@ -5074,5 +5892,7 @@ pub async fn profile_summary(state: State<'_, AppState>) -> Result<ProfileView, 
 pub async fn set_offline_mode(offline: bool, state: State<'_, AppState>) -> Result<(), AppError> {
     let services = state.services()?;
     let mesh = services.mesh.as_ref().ok_or(AppError::MeshOffline)?;
-    mesh.set_offline(offline).await.map_err(|_| AppError::MeshOffline)
+    mesh.set_offline(offline)
+        .await
+        .map_err(|_| AppError::MeshOffline)
 }

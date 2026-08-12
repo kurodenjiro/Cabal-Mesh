@@ -27,6 +27,7 @@ preview_intent
 profile_summary
 propose_intent
 refund_module_deal
+relay_reward_summary
 release_module_deal
 request_module_refund
 session_status

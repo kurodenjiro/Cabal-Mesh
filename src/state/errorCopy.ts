@@ -17,8 +17,14 @@ export function errorCopy(failure: unknown): string {
 
   switch (error.kind) {
     case "not_ready":
+      if (error.detail.subsystem === "paid_relay_route") {
+        return "Three-node route unreachable. Nothing was funded or broadcast.";
+      }
       return "Still connecting. Nothing has been sent.";
     case "unsupported":
+      if (error.detail.feature === "paid_relay") {
+        return "Paid relay settlement is not deployed in this build.";
+      }
       return "This device cannot do that.";
     case "mesh_offline":
       return "Mesh unreachable. Queued locally.";
@@ -50,6 +56,9 @@ function invalidCopy(field: string, reason: AppErrorReason): string {
     case "too_precise":
       return `${name} carries more decimals than this asset has.`;
     case "insufficient_funds":
+      if (field === "relay_charge") {
+        return "Balance does not cover the relay maximum and wallet gas.";
+      }
       return "Balance does not cover this intent.";
     default:
       return `${name} was refused.`;
