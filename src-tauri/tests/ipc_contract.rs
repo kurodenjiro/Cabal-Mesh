@@ -34,9 +34,12 @@ use cabalmesh_lib::matcher::MatchResult;
 use cabalmesh_lib::mesh::{MeshEvent, PrivacyIntent};
 use cabalmesh_lib::zk_handler::{ProofRequest, ZKProof};
 use cabalmesh_lib::commands::{
-    ModuleAssetClass, ModuleEffectType, ModuleListingActionView,
+    ModuleAssetClass, ModuleDealActionView, ModuleDealOperationView,
+    ModuleDealReleaseAuthorityView, ModuleDealRoleView, ModuleDealStatusView,
+    ModuleDealView, ModuleEffectType, ModuleListingActionView,
     ModuleListingOperationView, ModuleListingStateView, ModuleMarketCatalog,
-    ModuleMarketListing, ModuleMarketStatus, ModuleRarity, ModuleSlot, ModuleView,
+    ModuleMarketListing, ModuleMarketStatus, ModulePurchaseQuoteView,
+    ModulePurchaseStateView, ModuleRarity, ModuleSlot, ModuleView,
     OwnedModuleListingView, SellerStandingView,
 };
 use chrono::{TimeZone, Utc};
@@ -50,6 +53,30 @@ fn fixed_time() -> chrono::DateTime<Utc> {
 /// Serializes to pretty JSON — the shape the webview receives.
 fn shape<T: Serialize>(value: &T) -> String {
     serde_json::to_string_pretty(value).expect("boundary type must serialize")
+}
+
+fn module_fixture(owner: &str) -> ModuleView {
+    ModuleView {
+        token_id: "900719925474099312345".into(),
+        contract: "0x00000000000000000000000000000000000000a7".into(),
+        owner: owner.into(),
+        module_id: format!("0x{}", "11".repeat(32)),
+        provenance_hash: format!("0x{}", "22".repeat(32)),
+        display_name: "Relay Amplifier MK-II".into(),
+        asset_class: ModuleAssetClass::Module,
+        slot: ModuleSlot::Radio,
+        rarity: ModuleRarity::Rare,
+        effect_type: ModuleEffectType::RelayRewardBps,
+        primary_effect_value: 1_850,
+        secondary_effect_value: 0,
+        effect: "+18.50% RELAY REWARD".into(),
+        artwork_uri: "ipfs://bafybeiradioamplifiermk2".into(),
+        artwork_digest: format!("0x{}", "33".repeat(32)),
+        schema_version: 1,
+        minted_by: "0x00000000000000000000000000000000000000c9".into(),
+        soulbound: false,
+        revoked: false,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -228,6 +255,62 @@ fn module_listing_action_shape() {
             tx_hash: None,
         },
     ]));
+}
+
+#[test]
+fn module_purchase_state_shape() {
+    let quote = ModulePurchaseQuoteView {
+        verified_block: "42113010".into(),
+        buyer: "0x00000000000000000000000000000000000000e1".into(),
+        listing_id: "900719925474099312346".into(),
+        seller: "0x00000000000000000000000000000000000000b8".into(),
+        price_wei: "2400000000000000000".into(),
+        price_avax: "2.40".into(),
+        estimated_network_fee_wei: Some("1250000000000000".into()),
+        estimated_network_fee_avax: Some("0.00125".into()),
+        estimated_total_wei: Some("2401250000000000000".into()),
+        estimated_total_avax: Some("2.40125".into()),
+        balance_wei: "5000000000000000000".into(),
+        module: module_fixture("0x00000000000000000000000000000000000000b8"),
+    };
+    insta::assert_snapshot!(shape(&vec![
+        ModulePurchaseStateView::Ready { quote: quote.clone() },
+        ModulePurchaseStateView::InsufficientFunds {
+            quote,
+            shortfall_wei: "1401250000000000000".into(),
+            shortfall_avax: "1.40125".into(),
+        },
+        ModulePurchaseStateView::StaleListing {
+            verified_block: "42113011".into(),
+        },
+    ]));
+}
+
+#[test]
+fn module_deal_action_shape() {
+    insta::assert_snapshot!(shape(&ModuleDealActionView {
+        operation: ModuleDealOperationView::RefundRequested,
+        tx_hash: Some(format!("0x{}", "ab".repeat(32))),
+        deal: ModuleDealView {
+            verified_block: "42113011".into(),
+            observed_at: "1786500000".into(),
+            deal_id: "900719925474099312347".into(),
+            buyer: "0x00000000000000000000000000000000000000e1".into(),
+            seller: "0x00000000000000000000000000000000000000b8".into(),
+            role: ModuleDealRoleView::Buyer,
+            amount_wei: "2400000000000000000".into(),
+            amount_avax: "2.40".into(),
+            status: ModuleDealStatusView::Active,
+            auto_release_at: "1786759200".into(),
+            refund_requested: true,
+            current_owner: "0x00000000000000000000000000000000000000d0".into(),
+            release_authority: ModuleDealReleaseAuthorityView::BuyerNow,
+            can_release: true,
+            can_request_refund: false,
+            can_refund: false,
+            module: module_fixture("0x00000000000000000000000000000000000000d0"),
+        },
+    }));
 }
 
 // ---------------------------------------------------------------------------
@@ -467,6 +550,7 @@ fn command_inventory() {
         "ble_status",
         "approve_module_listing",
         "broadcast_intent",
+        "buy_module_listing",
         "cancel_module_listing",
         "cancel_intent",
         "create_module_listing",
@@ -478,11 +562,16 @@ fn command_inventory() {
         "list_nearby_nodes",
         "market_modules",
         "mesh_snapshot",
+        "module_deals",
         "module_listing_status",
         "module_loadout",
+        "module_purchase_quote",
         "preview_intent",
         "profile_summary",
         "propose_intent",
+        "refund_module_deal",
+        "release_module_deal",
+        "request_module_refund",
         "session_status",
         "set_offline_mode",
         "settle_intent",
@@ -498,6 +587,6 @@ fn command_inventory() {
         "unequip_module",
     ];
     commands.sort_unstable();
-    assert_eq!(commands.len(), 32, "command count changed");
+    assert_eq!(commands.len(), 38, "command count changed");
     insta::assert_snapshot!(commands.join("\n"));
 }

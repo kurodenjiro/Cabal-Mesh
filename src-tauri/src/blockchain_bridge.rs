@@ -278,6 +278,80 @@ pub struct ModuleListingMutationOutcome {
     pub state: ModuleListingChainState,
 }
 
+/// Accepted-chain purchase preflight for one exact canonical module listing.
+///
+/// The command layer classifies this as ready, stale, self-purchase, inactive,
+/// or unaffordable. Keeping every numeric value as a decimal string prevents
+/// JavaScript from rounding token ids, listing ids, prices, balances, or fees.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModulePurchaseQuoteChain {
+    pub verified_block: u64,
+    pub buyer: String,
+    pub listing_id: String,
+    pub seller: String,
+    pub price_wei: String,
+    pub token_id: String,
+    pub collection: String,
+    pub active: bool,
+    pub active_listing_id: String,
+    pub current_owner: Option<String>,
+    pub module: Option<ModuleChainRecord>,
+    pub marketplace_eligible: bool,
+    pub equipped_by: Option<String>,
+    pub approved: bool,
+    pub balance_wei: String,
+    pub estimated_network_fee_wei: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModuleDealStatusChain {
+    Active,
+    Released,
+    Refunded,
+}
+
+/// One canonical module deal whose custody agrees with its contract status at
+/// the same accepted block.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModuleDealChainRecord {
+    pub verified_block: u64,
+    pub observed_at: u64,
+    pub deal_id: String,
+    pub buyer: String,
+    pub seller: String,
+    pub token_id: String,
+    pub amount_wei: String,
+    pub status: ModuleDealStatusChain,
+    pub collection: String,
+    pub auto_release_at: u64,
+    pub refund_requested: bool,
+    pub current_owner: String,
+    pub module: ModuleChainRecord,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModuleDealChainSnapshot {
+    pub verified_block: u64,
+    pub observed_at: u64,
+    pub wallet: String,
+    pub deals: Vec<ModuleDealChainRecord>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModuleDealMutationKind {
+    PurchaseConfirmed,
+    ReleaseConfirmed,
+    RefundRequested,
+    RefundConfirmed,
+}
+
+#[derive(Debug, Clone)]
+pub struct ModuleDealMutationOutcome {
+    pub kind: ModuleDealMutationKind,
+    pub tx_hash: Option<String>,
+    pub deal: ModuleDealChainRecord,
+}
+
 /// Signing client detached from [`BlockchainBridge`]'s mutex before any RPC.
 ///
 /// This type deliberately has no `Debug`: its signer must never enter a span
@@ -490,7 +564,15 @@ impl BlockchainBridge {
             .module_market_modules()
             .and_then(|s| Address::from_str(&s).ok());
         let voucher_address = network.voucher().and_then(|s| Address::from_str(&s).ok());
-        let modules_address = network.modules().and_then(|s| Address::from_str(&s).ok());
+        // Once a reviewed release pair exists, VAULT and loadout must use the
+        // same collection as MARKET so a confirmed purchase appears in the
+        // buyer's MODULES view. Development overrides remain useful only
+        // while no reviewed pair has been published.
+        let modules_address = module_market_modules_address.or_else(|| {
+            network
+                .modules()
+                .and_then(|address| Address::from_str(&address).ok())
+        });
         let standing_release = network.standing_release();
 
         let app_dir = crate::app_paths::data_dir();
@@ -2187,6 +2269,8 @@ impl ModuleMarketReader {
 impl ModuleMarketWriter {
     const MUTATION_TIMEOUT: Duration = Duration::from_secs(60);
     const CANONICAL_DESCRIPTION: &'static str = "Canonical CabalMesh module";
+    const MAX_DEAL_HISTORY: u64 = 10_000;
+    const MAX_RECOVERY_SCAN: u64 = 32;
 
     #[must_use]
     pub fn seller(&self) -> Address {
@@ -2196,6 +2280,194 @@ impl ModuleMarketWriter {
     #[must_use]
     pub const fn marketplace(&self) -> Address {
         self.marketplace
+    }
+
+    /// Re-reads one listing, custody, eligibility, buyer balance, and a
+    /// current network-fee estimate at one accepted head.
+    pub async fn purchase_quote(
+        &self,
+        listing_id: U256,
+    ) -> Result<ModulePurchaseQuoteChain, Box<dyn Error>> {
+        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        let marketplace = IMarketplace::new(self.marketplace, provider.clone());
+        let modules = IModules::new(self.modules, provider.clone());
+        let verified_block = marketplace.provider().get_block_number().await?;
+        let block = BlockId::number(verified_block);
+        let listing = marketplace.listings(listing_id).block(block).call().await?;
+        let active_listing_id = if listing.collection == self.modules && listing.tokenId != U256::ZERO {
+            marketplace
+                .activeListingOf(self.modules, listing.tokenId)
+                .block(block)
+                .call()
+                .await?
+        } else {
+            U256::ZERO
+        };
+
+        let mut current_owner = None;
+        let mut module = None;
+        let mut marketplace_eligible = false;
+        let mut equipped_by = None;
+        let mut approved = false;
+        if listing.collection == self.modules && listing.tokenId != U256::ZERO {
+            match modules.ownerOf(listing.tokenId).block(block).call().await {
+                Ok(owner) => {
+                    current_owner = Some(owner.to_string());
+                    match modules.assetData(listing.tokenId).block(block).call().await {
+                        Ok(data) => {
+                            let soulbound = modules.locked(listing.tokenId).block(block).call().await?;
+                            let revoked = modules.revoked(listing.tokenId).block(block).call().await?;
+                            marketplace_eligible = modules
+                                .isMarketplaceEligible(listing.tokenId)
+                                .block(block)
+                                .call()
+                                .await?;
+                            let equipped = modules.equippedBy(listing.tokenId).block(block).call().await?;
+                            equipped_by = (equipped != Address::ZERO).then(|| equipped.to_string());
+                            let token_approval = modules.getApproved(listing.tokenId).block(block).call().await?;
+                            let blanket_approval = modules
+                                .isApprovedForAll(owner, self.marketplace)
+                                .block(block)
+                                .call()
+                                .await?;
+                            approved = token_approval == self.marketplace || blanket_approval;
+                            module = Some(ModuleChainRecord {
+                                token_id: listing.tokenId.to_string(),
+                                collection: self.modules.to_string(),
+                                owner: owner.to_string(),
+                                module_id: format!("{:#x}", data.moduleId),
+                                provenance_hash: format!("{:#x}", data.provenanceHash),
+                                display_name: data.displayName,
+                                asset_class: data.assetClass,
+                                slot: data.slot,
+                                rarity: data.rarity,
+                                effect_type: data.effectType,
+                                primary_effect_value: data.primaryEffectValue,
+                                secondary_effect_value: data.secondaryEffectValue,
+                                artwork_uri: data.artworkUri,
+                                artwork_digest: format!("{:#x}", data.artworkDigest),
+                                schema_version: data.schemaVersion,
+                                minted_by: data.mintedBy.to_string(),
+                                soulbound,
+                                revoked,
+                            });
+                        }
+                        Err(error) if contract_call_reverted(&error) => {}
+                        Err(error) => return Err(Box::new(error)),
+                    }
+                }
+                Err(error) if contract_call_reverted(&error) => {}
+                Err(error) => return Err(Box::new(error)),
+            }
+        }
+
+        let buyer = self.signer.address();
+        let balance = provider.get_balance(buyer).block_id(block).await?;
+        let mut quote = ModulePurchaseQuoteChain {
+            verified_block,
+            buyer: buyer.to_string(),
+            listing_id: listing_id.to_string(),
+            seller: listing.seller.to_string(),
+            price_wei: listing.priceWei.to_string(),
+            token_id: listing.tokenId.to_string(),
+            collection: listing.collection.to_string(),
+            active: listing.active,
+            active_listing_id: active_listing_id.to_string(),
+            current_owner,
+            module,
+            marketplace_eligible,
+            equipped_by,
+            approved,
+            balance_wei: balance.to_string(),
+            estimated_network_fee_wei: None,
+        };
+
+        // An estimate is meaningful only for a transaction that passes the
+        // static checks and has enough value for the listing itself. A wallet
+        // below the price is classified as insufficient without asking the
+        // node to simulate an impossible value transfer.
+        if self.quote_is_buyable(&quote).is_ok()
+            && buyer != listing.seller
+            && balance >= listing.priceWei
+        {
+            let gas = marketplace
+                .buy(listing_id)
+                .from(buyer)
+                .value(listing.priceWei)
+                .block(block)
+                .estimate_gas()
+                .await?;
+            let gas_price = provider.get_gas_price().await?;
+            quote.estimated_network_fee_wei = Some(
+                U256::from(gas)
+                    .checked_mul(U256::from(gas_price))
+                    .ok_or("network fee estimate overflowed")?
+                    .to_string(),
+            );
+        }
+
+        Ok(quote)
+    }
+
+    /// Reads every canonical module deal involving this wallet at one accepted
+    /// head. The current contract has no party index, so the bounded history is
+    /// scanned and an oversized history fails closed instead of hanging a UI.
+    pub async fn my_module_deals(&self) -> Result<ModuleDealChainSnapshot, Box<dyn Error>> {
+        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        let marketplace = IMarketplace::new(self.marketplace, provider.clone());
+        let verified_block = marketplace.provider().get_block_number().await?;
+        let block = BlockId::number(verified_block);
+        let observed_at = provider
+            .get_block_by_number(BlockNumberOrTag::Number(verified_block))
+            .await?
+            .ok_or("accepted deal block is unavailable")?
+            .header()
+            .timestamp();
+        let next_id = marketplace.nextDealId().block(block).call().await?;
+        if next_id > U256::from(Self::MAX_DEAL_HISTORY.saturating_add(1)) {
+            return Err("module deal history exceeds the supported safety bound".into());
+        }
+        let wallet = self.signer.address();
+        let mut matching = Vec::new();
+        for deal_id in 1..next_id.to::<u64>() {
+            let deal = marketplace.getDeal(U256::from(deal_id)).block(block).call().await?;
+            if deal.collection == self.modules && (deal.buyer == wallet || deal.seller == wallet) {
+                matching.push(U256::from(deal_id));
+            }
+        }
+
+        let mut deals = Vec::with_capacity(matching.len());
+        for deal_id in matching {
+            deals.push(self.deal_state_at(deal_id, verified_block, observed_at).await?);
+        }
+        deals.sort_by(|left, right| {
+            right
+                .deal_id
+                .parse::<U256>()
+                .unwrap_or(U256::ZERO)
+                .cmp(&left.deal_id.parse::<U256>().unwrap_or(U256::ZERO))
+        });
+        Ok(ModuleDealChainSnapshot {
+            verified_block,
+            observed_at,
+            wallet: wallet.to_string(),
+            deals,
+        })
+    }
+
+    pub async fn deal_state(
+        &self,
+        deal_id: U256,
+    ) -> Result<ModuleDealChainRecord, Box<dyn Error>> {
+        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        let verified_block = provider.get_block_number().await?;
+        let observed_at = provider
+            .get_block_by_number(BlockNumberOrTag::Number(verified_block))
+            .await?
+            .ok_or("accepted deal block is unavailable")?
+            .header()
+            .timestamp();
+        self.deal_state_at(deal_id, verified_block, observed_at).await
     }
 
     /// Reads listing eligibility, custody, loadout, approval, and the duplicate
@@ -2547,16 +2819,393 @@ impl ModuleMarketWriter {
         })
     }
 
-    fn ensure_listable(&self, state: &ModuleListingChainState) -> Result<(), Box<dyn Error>> {
-        let owner = state
-            .owner
-            .as_deref()
-            .and_then(|owner| owner.parse::<Address>().ok())
-            .ok_or("module token does not exist")?;
-        if owner != self.signer.address() {
-            return Err("module is not owned by the current seller".into());
+    /// Buys one exact listing and reports success only after accepted state
+    /// confirms both escrow custody and the resulting deal.
+    pub async fn buy_module_listing(
+        &self,
+        listing_id: U256,
+        expected_token_id: U256,
+        expected_seller: Address,
+        expected_price_wei: U256,
+    ) -> Result<ModuleDealMutationOutcome, Box<dyn Error>> {
+        let before = self.purchase_quote(listing_id).await?;
+        self.quote_is_buyable(&before)?;
+        if before.token_id != expected_token_id.to_string()
+            || before.seller.parse::<Address>().ok() != Some(expected_seller)
+            || before.price_wei != expected_price_wei.to_string()
+        {
+            return Err("accepted listing no longer matches the purchase confirmation".into());
         }
-        let module = state.module.as_ref().ok_or("module metadata is unavailable")?;
+        if expected_seller == self.signer.address() {
+            return Err("seller cannot buy their own module listing".into());
+        }
+        let balance = before.balance_wei.parse::<U256>()?;
+        let estimated_fee = before
+            .estimated_network_fee_wei
+            .as_deref()
+            .unwrap_or("0")
+            .parse::<U256>()?;
+        let required = expected_price_wei
+            .checked_add(estimated_fee)
+            .ok_or("purchase requirement overflowed")?;
+        if balance < required {
+            return Err("buyer balance does not cover the listing and estimated network fee".into());
+        }
+
+        let provider = ProviderBuilder::new()
+            .wallet(self.signer.clone())
+            .connect_http(self.rpc_url.parse()?);
+        let marketplace = IMarketplace::new(self.marketplace, provider);
+        let recovery_start = marketplace.nextDealId().call().await?;
+        let receipt = timeout(Self::MUTATION_TIMEOUT, async {
+            let pending = marketplace
+                .buy(listing_id)
+                .value(expected_price_wei)
+                .send()
+                .await
+                .map_err(|error| error.to_string())?;
+            pending.get_receipt().await.map_err(|error| error.to_string())
+        })
+        .await;
+
+        let (deal_id, tx_hash) = match receipt {
+            Ok(Ok(receipt)) if receipt.status() => {
+                let deal_id = receipt
+                    .logs()
+                    .iter()
+                    .find_map(|log| log.log_decode::<IMarketplace::DealCreated>().ok())
+                    .filter(|log| {
+                        log.inner.data.listingId == listing_id
+                            && log.inner.data.buyer == self.signer.address()
+                            && log.inner.data.tokenId == expected_token_id
+                            && log.inner.data.amount == expected_price_wei
+                    })
+                    .map(|log| log.inner.data.dealId)
+                    .ok_or("accepted purchase receipt did not contain the expected deal")?;
+                (deal_id, Some(format!("{:?}", receipt.transaction_hash)))
+            }
+            _ => {
+                let deal = self
+                    .find_matching_deal(
+                        recovery_start,
+                        expected_token_id,
+                        expected_seller,
+                        expected_price_wei,
+                    )
+                    .await?
+                    .ok_or("module purchase was not confirmed")?;
+                (deal.deal_id.parse::<U256>()?, None)
+            }
+        };
+
+        let deal = self.deal_state(deal_id).await?;
+        self.ensure_expected_deal(
+            &deal,
+            expected_token_id,
+            expected_seller,
+            expected_price_wei,
+        )?;
+        if deal.status != ModuleDealStatusChain::Active {
+            return Err("accepted purchase did not produce an active deal".into());
+        }
+        let after = self.purchase_quote(listing_id).await?;
+        if after.active || after.active_listing_id != U256::ZERO.to_string() {
+            return Err("accepted purchase did not retire the module listing".into());
+        }
+
+        Ok(ModuleDealMutationOutcome {
+            kind: ModuleDealMutationKind::PurchaseConfirmed,
+            tx_hash,
+            deal,
+        })
+    }
+
+    pub async fn release_module_deal(
+        &self,
+        deal_id: U256,
+    ) -> Result<ModuleDealMutationOutcome, Box<dyn Error>> {
+        let before = self.deal_state(deal_id).await?;
+        if before.status == ModuleDealStatusChain::Released {
+            return Ok(ModuleDealMutationOutcome {
+                kind: ModuleDealMutationKind::ReleaseConfirmed,
+                tx_hash: None,
+                deal: before,
+            });
+        }
+        if before.status != ModuleDealStatusChain::Active
+            || (before.buyer.parse::<Address>().ok() != Some(self.signer.address())
+                && before.observed_at < before.auto_release_at)
+        {
+            return Err("current wallet cannot release this deal yet".into());
+        }
+
+        let provider = ProviderBuilder::new()
+            .wallet(self.signer.clone())
+            .connect_http(self.rpc_url.parse()?);
+        let marketplace = IMarketplace::new(self.marketplace, provider);
+        let receipt = timeout(Self::MUTATION_TIMEOUT, async {
+            let pending = marketplace
+                .releaseDeal(deal_id)
+                .send()
+                .await
+                .map_err(|error| error.to_string())?;
+            pending.get_receipt().await.map_err(|error| error.to_string())
+        })
+        .await;
+        let tx_hash = match receipt {
+            Ok(Ok(receipt)) if receipt.status() => Some(format!("{:?}", receipt.transaction_hash)),
+            _ => None,
+        };
+        let after = self.deal_state(deal_id).await?;
+        if after.status != ModuleDealStatusChain::Released {
+            return Err("module deal release was not confirmed".into());
+        }
+        Ok(ModuleDealMutationOutcome {
+            kind: ModuleDealMutationKind::ReleaseConfirmed,
+            tx_hash,
+            deal: after,
+        })
+    }
+
+    pub async fn request_module_refund(
+        &self,
+        deal_id: U256,
+    ) -> Result<ModuleDealMutationOutcome, Box<dyn Error>> {
+        let before = self.deal_state(deal_id).await?;
+        if before.status != ModuleDealStatusChain::Active
+            || before.buyer.parse::<Address>().ok() != Some(self.signer.address())
+        {
+            return Err("only the active deal buyer can request cancellation".into());
+        }
+        if before.refund_requested {
+            return Ok(ModuleDealMutationOutcome {
+                kind: ModuleDealMutationKind::RefundRequested,
+                tx_hash: None,
+                deal: before,
+            });
+        }
+
+        let provider = ProviderBuilder::new()
+            .wallet(self.signer.clone())
+            .connect_http(self.rpc_url.parse()?);
+        let marketplace = IMarketplace::new(self.marketplace, provider);
+        let receipt = timeout(Self::MUTATION_TIMEOUT, async {
+            let pending = marketplace
+                .requestRefund(deal_id)
+                .send()
+                .await
+                .map_err(|error| error.to_string())?;
+            pending.get_receipt().await.map_err(|error| error.to_string())
+        })
+        .await;
+        let tx_hash = match receipt {
+            Ok(Ok(receipt)) if receipt.status() => Some(format!("{:?}", receipt.transaction_hash)),
+            _ => None,
+        };
+        let after = self.deal_state(deal_id).await?;
+        if after.status != ModuleDealStatusChain::Active || !after.refund_requested {
+            return Err("module deal refund request was not confirmed".into());
+        }
+        Ok(ModuleDealMutationOutcome {
+            kind: ModuleDealMutationKind::RefundRequested,
+            tx_hash,
+            deal: after,
+        })
+    }
+
+    pub async fn refund_module_deal(
+        &self,
+        deal_id: U256,
+    ) -> Result<ModuleDealMutationOutcome, Box<dyn Error>> {
+        let before = self.deal_state(deal_id).await?;
+        if before.status == ModuleDealStatusChain::Refunded {
+            return Ok(ModuleDealMutationOutcome {
+                kind: ModuleDealMutationKind::RefundConfirmed,
+                tx_hash: None,
+                deal: before,
+            });
+        }
+        if before.status != ModuleDealStatusChain::Active
+            || before.seller.parse::<Address>().ok() != Some(self.signer.address())
+            || !before.refund_requested
+        {
+            return Err("seller refund requires an active buyer cancellation request".into());
+        }
+
+        let provider = ProviderBuilder::new()
+            .wallet(self.signer.clone())
+            .connect_http(self.rpc_url.parse()?);
+        let marketplace = IMarketplace::new(self.marketplace, provider);
+        let receipt = timeout(Self::MUTATION_TIMEOUT, async {
+            let pending = marketplace
+                .refundDeal(deal_id)
+                .send()
+                .await
+                .map_err(|error| error.to_string())?;
+            pending.get_receipt().await.map_err(|error| error.to_string())
+        })
+        .await;
+        let tx_hash = match receipt {
+            Ok(Ok(receipt)) if receipt.status() => Some(format!("{:?}", receipt.transaction_hash)),
+            _ => None,
+        };
+        let after = self.deal_state(deal_id).await?;
+        if after.status != ModuleDealStatusChain::Refunded {
+            return Err("module deal refund was not confirmed".into());
+        }
+        Ok(ModuleDealMutationOutcome {
+            kind: ModuleDealMutationKind::RefundConfirmed,
+            tx_hash,
+            deal: after,
+        })
+    }
+
+    async fn deal_state_at(
+        &self,
+        deal_id: U256,
+        verified_block: u64,
+        observed_at: u64,
+    ) -> Result<ModuleDealChainRecord, Box<dyn Error>> {
+        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        let marketplace = IMarketplace::new(self.marketplace, provider.clone());
+        let modules = IModules::new(self.modules, provider);
+        let block = BlockId::number(verified_block);
+        let deal = marketplace.getDeal(deal_id).block(block).call().await?;
+        let status = match deal.status {
+            1 => ModuleDealStatusChain::Active,
+            2 => ModuleDealStatusChain::Released,
+            3 => ModuleDealStatusChain::Refunded,
+            _ => return Err("module deal does not exist".into()),
+        };
+        if deal_id == U256::ZERO
+            || deal.buyer == Address::ZERO
+            || deal.seller == Address::ZERO
+            || deal.tokenId == U256::ZERO
+            || deal.amount == U256::ZERO
+            || deal.collection != self.modules
+            || deal.autoReleaseAt == 0
+        {
+            return Err("module deal identity is malformed".into());
+        }
+        let owner = modules.ownerOf(deal.tokenId).block(block).call().await?;
+        let expected_owner = match status {
+            ModuleDealStatusChain::Active => self.marketplace,
+            ModuleDealStatusChain::Released => deal.buyer,
+            ModuleDealStatusChain::Refunded => deal.seller,
+        };
+        if owner != expected_owner {
+            return Err("module custody does not agree with deal status".into());
+        }
+        let data = modules.assetData(deal.tokenId).block(block).call().await?;
+        let soulbound = modules.locked(deal.tokenId).block(block).call().await?;
+        let revoked = modules.revoked(deal.tokenId).block(block).call().await?;
+        let module = ModuleChainRecord {
+            token_id: deal.tokenId.to_string(),
+            collection: self.modules.to_string(),
+            owner: owner.to_string(),
+            module_id: format!("{:#x}", data.moduleId),
+            provenance_hash: format!("{:#x}", data.provenanceHash),
+            display_name: data.displayName,
+            asset_class: data.assetClass,
+            slot: data.slot,
+            rarity: data.rarity,
+            effect_type: data.effectType,
+            primary_effect_value: data.primaryEffectValue,
+            secondary_effect_value: data.secondaryEffectValue,
+            artwork_uri: data.artworkUri,
+            artwork_digest: format!("{:#x}", data.artworkDigest),
+            schema_version: data.schemaVersion,
+            minted_by: data.mintedBy.to_string(),
+            soulbound,
+            revoked,
+        };
+        self.ensure_canonical_module(&module)?;
+
+        Ok(ModuleDealChainRecord {
+            verified_block,
+            observed_at,
+            deal_id: deal_id.to_string(),
+            buyer: deal.buyer.to_string(),
+            seller: deal.seller.to_string(),
+            token_id: deal.tokenId.to_string(),
+            amount_wei: deal.amount.to_string(),
+            status,
+            collection: deal.collection.to_string(),
+            auto_release_at: deal.autoReleaseAt,
+            refund_requested: deal.refundRequested,
+            current_owner: owner.to_string(),
+            module,
+        })
+    }
+
+    async fn find_matching_deal(
+        &self,
+        recovery_start: U256,
+        token_id: U256,
+        seller: Address,
+        price_wei: U256,
+    ) -> Result<Option<ModuleDealChainRecord>, Box<dyn Error>> {
+        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        let marketplace = IMarketplace::new(self.marketplace, provider);
+        let recovery_end = marketplace.nextDealId().call().await?;
+        if recovery_end < recovery_start
+            || recovery_end.saturating_sub(recovery_start) > U256::from(Self::MAX_RECOVERY_SCAN)
+        {
+            return Err("purchase recovery window is inconsistent".into());
+        }
+        let mut id = recovery_start;
+        while id < recovery_end {
+            let deal = self.deal_state(id).await?;
+            if self
+                .ensure_expected_deal(&deal, token_id, seller, price_wei)
+                .is_ok()
+                && deal.status == ModuleDealStatusChain::Active
+            {
+                return Ok(Some(deal));
+            }
+            id = id.checked_add(U256::from(1_u8)).ok_or("deal id overflowed")?;
+        }
+        Ok(None)
+    }
+
+    fn ensure_expected_deal(
+        &self,
+        deal: &ModuleDealChainRecord,
+        token_id: U256,
+        seller: Address,
+        price_wei: U256,
+    ) -> Result<(), Box<dyn Error>> {
+        if deal.buyer.parse::<Address>().ok() != Some(self.signer.address())
+            || deal.seller.parse::<Address>().ok() != Some(seller)
+            || deal.token_id != token_id.to_string()
+            || deal.amount_wei != price_wei.to_string()
+            || deal.collection.parse::<Address>().ok() != Some(self.modules)
+        {
+            return Err("accepted deal does not match the confirmed purchase".into());
+        }
+        Ok(())
+    }
+
+    fn quote_is_buyable(&self, quote: &ModulePurchaseQuoteChain) -> Result<(), Box<dyn Error>> {
+        if !quote.active
+            || quote.listing_id == U256::ZERO.to_string()
+            || quote.active_listing_id != quote.listing_id
+            || quote.collection.parse::<Address>().ok() != Some(self.modules)
+            || quote.seller.parse::<Address>().ok().is_none_or(|seller| seller == Address::ZERO)
+            || quote.price_wei.parse::<U256>().ok().is_none_or(|price| price == U256::ZERO)
+            || quote.token_id.parse::<U256>().ok().is_none_or(|token| token == U256::ZERO)
+            || quote.current_owner.as_deref() != Some(quote.seller.as_str())
+            || !quote.marketplace_eligible
+            || quote.equipped_by.is_some()
+            || !quote.approved
+        {
+            return Err("module listing is not currently buyable".into());
+        }
+        let module = quote.module.as_ref().ok_or("canonical module metadata is unavailable")?;
+        self.ensure_canonical_module(module)
+    }
+
+    fn ensure_canonical_module(&self, module: &ModuleChainRecord) -> Result<(), Box<dyn Error>> {
         let canonical_effect = matches!(
             (
                 module.slot,
@@ -2568,18 +3217,36 @@ impl ModuleMarketWriter {
                 | (2, 2, 1..=3, 0)
                 | (3, 3, 1..=32, 1..=1_048_576)
         );
-        if module.token_id != state.token_id
-            || module.collection.parse::<Address>().ok() != Some(self.modules)
-            || module.owner.parse::<Address>().ok() != Some(owner)
+        if module.collection.parse::<Address>().ok() != Some(self.modules)
             || module.asset_class != 0
             || module.schema_version != 1
             || !canonical_effect
             || module.soulbound
+        {
+            return Err("module metadata is not canonical".into());
+        }
+        Ok(())
+    }
+
+    fn ensure_listable(&self, state: &ModuleListingChainState) -> Result<(), Box<dyn Error>> {
+        let owner = state
+            .owner
+            .as_deref()
+            .and_then(|owner| owner.parse::<Address>().ok())
+            .ok_or("module token does not exist")?;
+        if owner != self.signer.address() {
+            return Err("module is not owned by the current seller".into());
+        }
+        let module = state.module.as_ref().ok_or("module metadata is unavailable")?;
+        if module.token_id != state.token_id
+            || module.collection.parse::<Address>().ok() != Some(self.modules)
+            || module.owner.parse::<Address>().ok() != Some(owner)
             || module.revoked
             || !state.marketplace_eligible
         {
             return Err("module is not marketplace eligible".into());
         }
+        self.ensure_canonical_module(module)?;
         if state.equipped_by.is_some() {
             return Err("equipped module must be unequipped before listing".into());
         }

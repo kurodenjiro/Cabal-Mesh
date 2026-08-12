@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/mobile-schema.json",
   "identifier": "mobile",
-  "description": "Main webview on iOS and Android. Mobile and desktop now share the same implemented screens and 32 least-privilege app commands; opener remains desktop-only. Never grant commands speculatively. See capabilities/README.md.",
+  "description": "Main webview on iOS and Android. Mobile and desktop now share the same implemented screens and 38 least-privilege app commands; opener remains desktop-only. Never grant commands speculatively. See capabilities/README.md.",
   "platforms": [
     "iOS",
     "android"
@@ -19,6 +19,12 @@
     "allow-list-nearby-nodes",
     "allow-ble-status",
     "allow-market-modules",
+    "allow-module-purchase-quote",
+    "allow-module-deals",
+    "allow-buy-module-listing",
+    "allow-release-module-deal",
+    "allow-request-module-refund",
+    "allow-refund-module-deal",
     "allow-module-listing-status",
     "allow-approve-module-listing",
     "allow-create-module-listing",

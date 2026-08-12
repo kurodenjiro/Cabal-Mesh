@@ -5,6 +5,7 @@ expression: "commands.join(\"\\n\")"
 approve_module_listing
 ble_status
 broadcast_intent
+buy_module_listing
 cancel_intent
 cancel_module_listing
 create_module_listing
@@ -18,11 +19,16 @@ list_intents
 list_nearby_nodes
 market_modules
 mesh_snapshot
+module_deals
 module_listing_status
 module_loadout
+module_purchase_quote
 preview_intent
 profile_summary
 propose_intent
+refund_module_deal
+release_module_deal
+request_module_refund
 session_status
 set_offline_mode
 settle_intent

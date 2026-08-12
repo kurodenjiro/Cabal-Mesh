@@ -186,6 +186,20 @@ or disagreement renders `UNKNOWN`. The current Fuji module/market/registry
 release tuple remains intentionally absent, so production builds fail closed
 rather than treating the deployed legacy voucher marketplace as MARKET.
 
+**Resolved for escrow-backed purchases 2026-08-12:** BUY first re-reads the
+exact canonical listing, seller, token custody, eligibility, wallet balance,
+and an integer-wei network-fee estimate at accepted state. The confirmation
+explains that the module and exact listing value move into escrow atomically,
+that no off-chain delivery remains, and that the three-day period is only a
+mutual-cancellation window. A confirmed buy retires the listing and appears in
+MY MODULE DEALS only after marketplace custody and the deal fields agree. The
+buyer may release at once and still may release after requesting cancellation;
+the seller may refund only after that request, while anyone may release after
+the per-deal deadline. Release and refund claims are shown only after accepted
+custody proves the buyer or seller owns the token respectively. A reviewed
+release pair also becomes VAULT's canonical collection, so final deal state and
+the buyer's MODULES inventory cannot diverge because of a development override.
+
 An earlier version of this paragraph said the contract was already good enough
 to build against. It was not, and the settlement rules changed under it — worth
 reading before designing the deal screens:

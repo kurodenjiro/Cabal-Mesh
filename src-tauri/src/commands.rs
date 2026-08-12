@@ -2655,6 +2655,136 @@ pub struct ModuleListingActionView {
     pub tx_hash: Option<String>,
 }
 
+/// Exact accepted-state purchase confirmation. Network fee is an estimate at
+/// the quoted block; listing value, balance, and required total remain integer
+/// wei text across IPC.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "camelCase")]
+pub struct ModulePurchaseQuoteView {
+    pub verified_block: String,
+    pub buyer: String,
+    pub listing_id: String,
+    pub seller: String,
+    pub price_wei: String,
+    pub price_avax: String,
+    pub estimated_network_fee_wei: Option<String>,
+    pub estimated_network_fee_avax: Option<String>,
+    pub estimated_total_wei: Option<String>,
+    pub estimated_total_avax: Option<String>,
+    pub balance_wei: String,
+    pub module: ModuleView,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(
+    tag = "status",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum ModulePurchaseStateView {
+    DeploymentUnavailable,
+    ChainUnavailable,
+    Inactive { verified_block: String },
+    SelfPurchase { verified_block: String },
+    StaleListing { verified_block: String },
+    InsufficientFunds {
+        quote: ModulePurchaseQuoteView,
+        shortfall_wei: String,
+        shortfall_avax: String,
+    },
+    Ready { quote: ModulePurchaseQuoteView },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "snake_case")]
+pub enum ModuleDealCatalogStatus {
+    Available,
+    DeploymentUnavailable,
+    ChainUnavailable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "snake_case")]
+pub enum ModuleDealStatusView {
+    Active,
+    Released,
+    Refunded,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "snake_case")]
+pub enum ModuleDealRoleView {
+    Buyer,
+    Seller,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "snake_case")]
+pub enum ModuleDealReleaseAuthorityView {
+    BuyerNow,
+    AnyoneAfterDeadline,
+    AnyoneNow,
+    Settled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "camelCase")]
+pub struct ModuleDealView {
+    pub verified_block: String,
+    pub observed_at: String,
+    pub deal_id: String,
+    pub buyer: String,
+    pub seller: String,
+    pub role: ModuleDealRoleView,
+    pub amount_wei: String,
+    pub amount_avax: String,
+    pub status: ModuleDealStatusView,
+    pub auto_release_at: String,
+    pub refund_requested: bool,
+    pub current_owner: String,
+    pub release_authority: ModuleDealReleaseAuthorityView,
+    pub can_release: bool,
+    pub can_request_refund: bool,
+    pub can_refund: bool,
+    pub module: ModuleView,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "camelCase")]
+pub struct ModuleDealCatalog {
+    pub status: ModuleDealCatalogStatus,
+    pub verified_block: Option<String>,
+    pub observed_at: Option<String>,
+    pub deals: Vec<ModuleDealView>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "snake_case")]
+pub enum ModuleDealOperationView {
+    PurchaseConfirmed,
+    ReleaseConfirmed,
+    RefundRequested,
+    RefundConfirmed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "camelCase")]
+pub struct ModuleDealActionView {
+    pub operation: ModuleDealOperationView,
+    pub tx_hash: Option<String>,
+    pub deal: ModuleDealView,
+}
+
 /// Whether a node loadout is live chain evidence or display-only history.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
@@ -3196,6 +3326,236 @@ fn listing_action_view(
     })
 }
 
+fn module_purchase_state_view(
+    raw: crate::blockchain_bridge::ModulePurchaseQuoteChain,
+) -> Result<ModulePurchaseStateView, ()> {
+    use alloy::primitives::{Address, U256};
+
+    let verified_block = raw.verified_block.to_string();
+    let listing_id = raw.listing_id.parse::<U256>().map_err(|_| ())?;
+    let active_listing_id = raw.active_listing_id.parse::<U256>().map_err(|_| ())?;
+    if !raw.active || listing_id == U256::ZERO || active_listing_id != listing_id {
+        return Ok(ModulePurchaseStateView::Inactive { verified_block });
+    }
+
+    let buyer = raw.buyer.parse::<Address>().map_err(|_| ())?;
+    let seller = raw.seller.parse::<Address>().map_err(|_| ())?;
+    let collection = raw.collection.parse::<Address>().map_err(|_| ())?;
+    let token_id = raw.token_id.parse::<U256>().map_err(|_| ())?;
+    let price = raw.price_wei.parse::<U256>().map_err(|_| ())?;
+    let balance = raw.balance_wei.parse::<U256>().map_err(|_| ())?;
+    let owner = raw
+        .current_owner
+        .as_deref()
+        .map(str::parse::<Address>)
+        .transpose()
+        .map_err(|_| ())?;
+    let module_record = raw.module.as_ref();
+    let structurally_valid = buyer != Address::ZERO
+        && seller != Address::ZERO
+        && collection != Address::ZERO
+        && token_id != U256::ZERO
+        && price != U256::ZERO
+        && owner == Some(seller)
+        && raw.marketplace_eligible
+        && raw.equipped_by.is_none()
+        && raw.approved
+        && module_record.is_some_and(|record| {
+            record.collection.parse::<Address>().ok() == Some(collection)
+                && record.token_id.parse::<U256>().ok() == Some(token_id)
+                && record.owner.parse::<Address>().ok() == Some(seller)
+                && !record.soulbound
+                && !record.revoked
+                && module_view(record.clone()).is_ok_and(|module| {
+                    module.asset_class == ModuleAssetClass::Module && module.slot != ModuleSlot::None
+                })
+        });
+    if !structurally_valid {
+        return Ok(ModulePurchaseStateView::StaleListing { verified_block });
+    }
+    if buyer == seller {
+        return Ok(ModulePurchaseStateView::SelfPurchase { verified_block });
+    }
+
+    let module = module_view(module_record.cloned().ok_or(())?).map_err(|_| ())?;
+    let fee = raw
+        .estimated_network_fee_wei
+        .as_deref()
+        .map(str::parse::<U256>)
+        .transpose()
+        .map_err(|_| ())?;
+    let total = fee
+        .map(|fee| price.checked_add(fee).ok_or(()))
+        .transpose()?;
+    let quote = ModulePurchaseQuoteView {
+        verified_block: verified_block.clone(),
+        buyer: buyer.to_string(),
+        listing_id: listing_id.to_string(),
+        seller: seller.to_string(),
+        price_wei: price.to_string(),
+        price_avax: format_avax_for_market(price),
+        estimated_network_fee_wei: fee.map(|value| value.to_string()),
+        estimated_network_fee_avax: fee.map(format_avax_for_market),
+        estimated_total_wei: total.map(|value| value.to_string()),
+        estimated_total_avax: total.map(format_avax_for_market),
+        balance_wei: balance.to_string(),
+        module,
+    };
+    let required = total.unwrap_or(price);
+    if balance < required {
+        let shortfall = required.checked_sub(balance).ok_or(())?;
+        return Ok(ModulePurchaseStateView::InsufficientFunds {
+            quote,
+            shortfall_wei: shortfall.to_string(),
+            shortfall_avax: format_avax_for_market(shortfall),
+        });
+    }
+    if fee.is_none() {
+        return Err(());
+    }
+    Ok(ModulePurchaseStateView::Ready { quote })
+}
+
+fn empty_module_deals(status: ModuleDealCatalogStatus) -> ModuleDealCatalog {
+    ModuleDealCatalog {
+        status,
+        verified_block: None,
+        observed_at: None,
+        deals: Vec::new(),
+    }
+}
+
+fn module_deal_view(
+    raw: crate::blockchain_bridge::ModuleDealChainRecord,
+    wallet: alloy::primitives::Address,
+) -> Result<ModuleDealView, ()> {
+    use crate::blockchain_bridge::ModuleDealStatusChain;
+    use alloy::primitives::{Address, U256};
+
+    let deal_id = raw.deal_id.parse::<U256>().map_err(|_| ())?;
+    let buyer = raw.buyer.parse::<Address>().map_err(|_| ())?;
+    let seller = raw.seller.parse::<Address>().map_err(|_| ())?;
+    let collection = raw.collection.parse::<Address>().map_err(|_| ())?;
+    let token_id = raw.token_id.parse::<U256>().map_err(|_| ())?;
+    let amount = raw.amount_wei.parse::<U256>().map_err(|_| ())?;
+    let owner = raw.current_owner.parse::<Address>().map_err(|_| ())?;
+    if deal_id == U256::ZERO
+        || buyer == Address::ZERO
+        || seller == Address::ZERO
+        || collection == Address::ZERO
+        || token_id == U256::ZERO
+        || amount == U256::ZERO
+        || raw.auto_release_at == 0
+        || (wallet != buyer && wallet != seller)
+        || raw.module.collection.parse::<Address>().ok() != Some(collection)
+        || raw.module.token_id.parse::<U256>().ok() != Some(token_id)
+        || raw.module.owner.parse::<Address>().ok() != Some(owner)
+    {
+        return Err(());
+    }
+    let module = module_view(raw.module).map_err(|_| ())?;
+    if module.asset_class != ModuleAssetClass::Module || module.slot == ModuleSlot::None {
+        return Err(());
+    }
+    let role = if wallet == buyer {
+        ModuleDealRoleView::Buyer
+    } else {
+        ModuleDealRoleView::Seller
+    };
+    let (status, release_authority, can_release, can_request_refund, can_refund) = match raw.status {
+        ModuleDealStatusChain::Active if raw.observed_at >= raw.auto_release_at => (
+            ModuleDealStatusView::Active,
+            ModuleDealReleaseAuthorityView::AnyoneNow,
+            true,
+            role == ModuleDealRoleView::Buyer && !raw.refund_requested,
+            role == ModuleDealRoleView::Seller && raw.refund_requested,
+        ),
+        ModuleDealStatusChain::Active if role == ModuleDealRoleView::Buyer => (
+            ModuleDealStatusView::Active,
+            ModuleDealReleaseAuthorityView::BuyerNow,
+            true,
+            !raw.refund_requested,
+            false,
+        ),
+        ModuleDealStatusChain::Active => (
+            ModuleDealStatusView::Active,
+            ModuleDealReleaseAuthorityView::AnyoneAfterDeadline,
+            false,
+            false,
+            raw.refund_requested,
+        ),
+        ModuleDealStatusChain::Released => (
+            ModuleDealStatusView::Released,
+            ModuleDealReleaseAuthorityView::Settled,
+            false,
+            false,
+            false,
+        ),
+        ModuleDealStatusChain::Refunded => (
+            ModuleDealStatusView::Refunded,
+            ModuleDealReleaseAuthorityView::Settled,
+            false,
+            false,
+            false,
+        ),
+    };
+    Ok(ModuleDealView {
+        verified_block: raw.verified_block.to_string(),
+        observed_at: raw.observed_at.to_string(),
+        deal_id: deal_id.to_string(),
+        buyer: buyer.to_string(),
+        seller: seller.to_string(),
+        role,
+        amount_wei: amount.to_string(),
+        amount_avax: format_avax_for_market(amount),
+        status,
+        auto_release_at: raw.auto_release_at.to_string(),
+        refund_requested: raw.refund_requested,
+        current_owner: owner.to_string(),
+        release_authority,
+        can_release,
+        can_request_refund,
+        can_refund,
+        module,
+    })
+}
+
+fn module_deal_catalog_view(
+    snapshot: crate::blockchain_bridge::ModuleDealChainSnapshot,
+) -> Result<ModuleDealCatalog, ()> {
+    let wallet = snapshot.wallet.parse::<alloy::primitives::Address>().map_err(|_| ())?;
+    let deals = snapshot
+        .deals
+        .into_iter()
+        .map(|deal| module_deal_view(deal, wallet))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(ModuleDealCatalog {
+        status: ModuleDealCatalogStatus::Available,
+        verified_block: Some(snapshot.verified_block.to_string()),
+        observed_at: Some(snapshot.observed_at.to_string()),
+        deals,
+    })
+}
+
+fn module_deal_action_view(
+    outcome: crate::blockchain_bridge::ModuleDealMutationOutcome,
+    wallet: alloy::primitives::Address,
+) -> Result<ModuleDealActionView, AppError> {
+    use crate::blockchain_bridge::ModuleDealMutationKind;
+
+    let operation = match outcome.kind {
+        ModuleDealMutationKind::PurchaseConfirmed => ModuleDealOperationView::PurchaseConfirmed,
+        ModuleDealMutationKind::ReleaseConfirmed => ModuleDealOperationView::ReleaseConfirmed,
+        ModuleDealMutationKind::RefundRequested => ModuleDealOperationView::RefundRequested,
+        ModuleDealMutationKind::RefundConfirmed => ModuleDealOperationView::RefundConfirmed,
+    };
+    Ok(ModuleDealActionView {
+        operation,
+        tx_hash: outcome.tx_hash,
+        deal: module_deal_view(outcome.deal, wallet).map_err(|()| AppError::Internal)?,
+    })
+}
+
 fn empty_loadout(status: LoadoutVerificationStatus) -> NodeLoadout {
     NodeLoadout {
         status,
@@ -3376,6 +3736,204 @@ pub async fn market_modules(
     };
 
     Ok(module_market_catalog_view(snapshot, &standing))
+}
+
+/// Accepted-state purchase preflight for the exact listing the buyer opened.
+#[tauri::command]
+pub async fn module_purchase_quote(
+    listing_id: String,
+    state: State<'_, AppState>,
+) -> Result<ModulePurchaseStateView, AppError> {
+    let listing_id = parse_positive_u256(&listing_id, "listing_id")?;
+    let services = state.services()?;
+    let writer = {
+        let bridge = services.bridge.lock().await;
+        bridge.module_market_writer()
+    }
+    .map_err(|_| AppError::Chain { retryable: false })?;
+    let Some(writer) = writer else {
+        return Ok(ModulePurchaseStateView::DeploymentUnavailable);
+    };
+    let raw = match tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        writer.purchase_quote(listing_id),
+    )
+    .await
+    {
+        Ok(Ok(raw)) => raw,
+        Ok(Err(error)) => {
+            tracing::warn!(
+                target: "cabalmesh::module_purchase",
+                error_kind = %std::any::type_name_of_val(error.as_ref()),
+                "module purchase quote failed"
+            );
+            return Ok(ModulePurchaseStateView::ChainUnavailable);
+        }
+        Err(_) => {
+            tracing::warn!(target: "cabalmesh::module_purchase", "module purchase quote timed out");
+            return Ok(ModulePurchaseStateView::ChainUnavailable);
+        }
+    };
+    module_purchase_state_view(raw).map_err(|()| AppError::Internal)
+}
+
+/// Canonical module deals involving the current signer, with actions derived
+/// from role, accepted timestamp, refund consent, and custody.
+#[tauri::command]
+pub async fn module_deals(state: State<'_, AppState>) -> Result<ModuleDealCatalog, AppError> {
+    let services = state.services()?;
+    let writer = {
+        let bridge = services.bridge.lock().await;
+        bridge.module_market_writer()
+    }
+    .map_err(|_| AppError::Chain { retryable: false })?;
+    let Some(writer) = writer else {
+        return Ok(empty_module_deals(ModuleDealCatalogStatus::DeploymentUnavailable));
+    };
+    let snapshot = match tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        writer.my_module_deals(),
+    )
+    .await
+    {
+        Ok(Ok(snapshot)) => snapshot,
+        Ok(Err(error)) => {
+            tracing::warn!(
+                target: "cabalmesh::module_deal",
+                error_kind = %std::any::type_name_of_val(error.as_ref()),
+                "module deal refresh failed"
+            );
+            return Ok(empty_module_deals(ModuleDealCatalogStatus::ChainUnavailable));
+        }
+        Err(_) => {
+            tracing::warn!(target: "cabalmesh::module_deal", "module deal refresh timed out");
+            return Ok(empty_module_deals(ModuleDealCatalogStatus::ChainUnavailable));
+        }
+    };
+    module_deal_catalog_view(snapshot).map_err(|()| AppError::Internal)
+}
+
+/// Atomically locks the exact listing price and transfers the module into the
+/// marketplace. The confirmation snapshot is repeated as command input so a
+/// changed listing cannot be silently accepted after the modal was shown.
+#[tauri::command]
+pub async fn buy_module_listing(
+    listing_id: String,
+    token_id: String,
+    seller: String,
+    price_wei: String,
+    state: State<'_, AppState>,
+) -> Result<ModuleDealActionView, AppError> {
+    use alloy::primitives::Address;
+
+    let listing_id = parse_positive_u256(&listing_id, "listing_id")?;
+    let token_id = parse_module_token_id(&token_id)?;
+    let price_wei = parse_positive_u256(&price_wei, "price_wei")?;
+    let seller = seller.parse::<Address>().map_err(|_| AppError::InvalidIntent {
+        field: "seller",
+        reason: crate::error::InvalidReason::Malformed,
+    })?;
+    if seller == Address::ZERO {
+        return Err(AppError::InvalidIntent {
+            field: "seller",
+            reason: crate::error::InvalidReason::OutOfRange,
+        });
+    }
+    let services = state.services()?;
+    let writer = {
+        let bridge = services.bridge.lock().await;
+        bridge.module_market_writer()
+    }
+    .map_err(|_| AppError::Chain { retryable: false })?
+    .ok_or(AppError::Chain { retryable: false })?;
+    let wallet = writer.seller();
+    let outcome = writer
+        .buy_module_listing(listing_id, token_id, seller, price_wei)
+        .await
+        .map_err(|error| {
+            tracing::warn!(
+                target: "cabalmesh::module_purchase",
+                error_kind = %std::any::type_name_of_val(error.as_ref()),
+                "module purchase was not accepted"
+            );
+            AppError::Chain { retryable: true }
+        })?;
+    module_deal_action_view(outcome, wallet)
+}
+
+#[tauri::command]
+pub async fn release_module_deal(
+    deal_id: String,
+    state: State<'_, AppState>,
+) -> Result<ModuleDealActionView, AppError> {
+    let deal_id = parse_positive_u256(&deal_id, "deal_id")?;
+    let services = state.services()?;
+    let writer = {
+        let bridge = services.bridge.lock().await;
+        bridge.module_market_writer()
+    }
+    .map_err(|_| AppError::Chain { retryable: false })?
+    .ok_or(AppError::Chain { retryable: false })?;
+    let wallet = writer.seller();
+    let outcome = writer.release_module_deal(deal_id).await.map_err(|error| {
+        tracing::warn!(
+            target: "cabalmesh::module_deal",
+            error_kind = %std::any::type_name_of_val(error.as_ref()),
+            "module deal release was not accepted"
+        );
+        AppError::Chain { retryable: true }
+    })?;
+    module_deal_action_view(outcome, wallet)
+}
+
+#[tauri::command]
+pub async fn request_module_refund(
+    deal_id: String,
+    state: State<'_, AppState>,
+) -> Result<ModuleDealActionView, AppError> {
+    let deal_id = parse_positive_u256(&deal_id, "deal_id")?;
+    let services = state.services()?;
+    let writer = {
+        let bridge = services.bridge.lock().await;
+        bridge.module_market_writer()
+    }
+    .map_err(|_| AppError::Chain { retryable: false })?
+    .ok_or(AppError::Chain { retryable: false })?;
+    let wallet = writer.seller();
+    let outcome = writer.request_module_refund(deal_id).await.map_err(|error| {
+        tracing::warn!(
+            target: "cabalmesh::module_deal",
+            error_kind = %std::any::type_name_of_val(error.as_ref()),
+            "module refund request was not accepted"
+        );
+        AppError::Chain { retryable: true }
+    })?;
+    module_deal_action_view(outcome, wallet)
+}
+
+#[tauri::command]
+pub async fn refund_module_deal(
+    deal_id: String,
+    state: State<'_, AppState>,
+) -> Result<ModuleDealActionView, AppError> {
+    let deal_id = parse_positive_u256(&deal_id, "deal_id")?;
+    let services = state.services()?;
+    let writer = {
+        let bridge = services.bridge.lock().await;
+        bridge.module_market_writer()
+    }
+    .map_err(|_| AppError::Chain { retryable: false })?
+    .ok_or(AppError::Chain { retryable: false })?;
+    let wallet = writer.seller();
+    let outcome = writer.refund_module_deal(deal_id).await.map_err(|error| {
+        tracing::warn!(
+            target: "cabalmesh::module_deal",
+            error_kind = %std::any::type_name_of_val(error.as_ref()),
+            "module deal refund was not accepted"
+        );
+        AppError::Chain { retryable: true }
+    })?;
+    module_deal_action_view(outcome, wallet)
 }
 
 /// Current seller-side state for one canonical module token.
@@ -3650,9 +4208,10 @@ pub async fn unequip_module(
 mod module_tests {
     use super::*;
     use crate::blockchain_bridge::{
-        ModuleChainRecord, ModuleListingApprovalChain, ModuleListingChainRecord,
+        ModuleChainRecord, ModuleDealChainRecord, ModuleDealChainSnapshot,
+        ModuleDealStatusChain, ModuleListingApprovalChain, ModuleListingChainRecord,
         ModuleListingChainState, ModuleLoadoutChainSnapshot, ModuleMarketChainSnapshot,
-        OwnedModuleListingChainRecord,
+        ModulePurchaseQuoteChain, OwnedModuleListingChainRecord,
     };
 
     fn bytes32(byte: &str) -> String {
@@ -3742,6 +4301,57 @@ mod module_tests {
             price_wei: "2400000000000000000".into(),
             token_id: "7".into(),
             collection: "0x00000000000000000000000000000000000000a7".into(),
+        }
+    }
+
+    fn purchase_quote() -> ModulePurchaseQuoteChain {
+        ModulePurchaseQuoteChain {
+            verified_block: 42_113_010,
+            buyer: "0x00000000000000000000000000000000000000e1".into(),
+            listing_id: "900719925474099312346".into(),
+            seller: seller_address().to_string(),
+            price_wei: "2400000000000000000".into(),
+            token_id: "900719925474099312345".into(),
+            collection: "0x00000000000000000000000000000000000000a7".into(),
+            active: true,
+            active_listing_id: "900719925474099312346".into(),
+            current_owner: Some(seller_address().to_string()),
+            module: Some(ModuleChainRecord {
+                token_id: "900719925474099312345".into(),
+                ..radio_record()
+            }),
+            marketplace_eligible: true,
+            equipped_by: None,
+            approved: true,
+            balance_wei: "5000000000000000000".into(),
+            estimated_network_fee_wei: Some("1250000000000000".into()),
+        }
+    }
+
+    fn module_deal(status: ModuleDealStatusChain) -> ModuleDealChainRecord {
+        let buyer = "0x00000000000000000000000000000000000000e1";
+        let owner = match status {
+            ModuleDealStatusChain::Active => marketplace_address().to_string(),
+            ModuleDealStatusChain::Released => buyer.into(),
+            ModuleDealStatusChain::Refunded => seller_address().to_string(),
+        };
+        let mut module = radio_record();
+        module.token_id = "900719925474099312345".into();
+        module.owner = owner.clone();
+        ModuleDealChainRecord {
+            verified_block: 42_113_011,
+            observed_at: 1_786_500_000,
+            deal_id: "900719925474099312347".into(),
+            buyer: buyer.into(),
+            seller: seller_address().to_string(),
+            token_id: module.token_id.clone(),
+            amount_wei: "2400000000000000000".into(),
+            status,
+            collection: module.collection.clone(),
+            auto_release_at: 1_786_759_200,
+            refund_requested: false,
+            current_owner: owner,
+            module,
         }
     }
 
@@ -4110,6 +4720,135 @@ mod module_tests {
             module_listing_state_view(&paid, seller_address(), marketplace_address()).unwrap(),
             ModuleListingStateView::DealRulesActive { .. }
         ));
+    }
+
+    #[test]
+    fn purchase_quote_preserves_exact_price_fee_total_and_large_ids() {
+        let view = module_purchase_state_view(purchase_quote()).unwrap();
+        let ModulePurchaseStateView::Ready { quote } = view else {
+            panic!("expected a buyable quote")
+        };
+        assert_eq!(quote.listing_id, "900719925474099312346");
+        assert_eq!(quote.module.token_id, "900719925474099312345");
+        assert_eq!(quote.price_wei, "2400000000000000000");
+        assert_eq!(quote.price_avax, "2.40");
+        assert_eq!(
+            quote.estimated_network_fee_wei.as_deref(),
+            Some("1250000000000000")
+        );
+        assert_eq!(
+            quote.estimated_total_wei.as_deref(),
+            Some("2401250000000000000")
+        );
+    }
+
+    #[test]
+    fn purchase_quote_refuses_inactive_self_stale_and_insufficient_listings() {
+        let mut inactive = purchase_quote();
+        inactive.active = false;
+        assert!(matches!(
+            module_purchase_state_view(inactive).unwrap(),
+            ModulePurchaseStateView::Inactive { .. }
+        ));
+
+        let mut own = purchase_quote();
+        own.buyer = own.seller.clone();
+        assert!(matches!(
+            module_purchase_state_view(own).unwrap(),
+            ModulePurchaseStateView::SelfPurchase { .. }
+        ));
+
+        let mut stale = purchase_quote();
+        stale.current_owner = Some("0x00000000000000000000000000000000000000ff".into());
+        assert!(matches!(
+            module_purchase_state_view(stale).unwrap(),
+            ModulePurchaseStateView::StaleListing { .. }
+        ));
+
+        let mut poor = purchase_quote();
+        poor.balance_wei = "1000000000000000000".into();
+        let ModulePurchaseStateView::InsufficientFunds {
+            shortfall_wei,
+            shortfall_avax,
+            ..
+        } = module_purchase_state_view(poor).unwrap()
+        else {
+            panic!("expected an exact shortfall")
+        };
+        assert_eq!(shortfall_wei, "1401250000000000000");
+        assert_eq!(shortfall_avax, "1.40125");
+    }
+
+    #[test]
+    fn active_deal_actions_follow_role_deadline_and_refund_consent() {
+        let buyer = address("0x00000000000000000000000000000000000000e1");
+        let seller = seller_address();
+        let active = module_deal(ModuleDealStatusChain::Active);
+
+        let buyer_view = module_deal_view(active.clone(), buyer).unwrap();
+        assert_eq!(buyer_view.role, ModuleDealRoleView::Buyer);
+        assert_eq!(
+            buyer_view.release_authority,
+            ModuleDealReleaseAuthorityView::BuyerNow
+        );
+        assert!(buyer_view.can_release);
+        assert!(buyer_view.can_request_refund);
+        assert!(!buyer_view.can_refund);
+
+        let seller_view = module_deal_view(active.clone(), seller).unwrap();
+        assert_eq!(
+            seller_view.release_authority,
+            ModuleDealReleaseAuthorityView::AnyoneAfterDeadline
+        );
+        assert!(!seller_view.can_release);
+        assert!(!seller_view.can_refund);
+
+        let mut consented = active.clone();
+        consented.refund_requested = true;
+        let buyer_consented = module_deal_view(consented.clone(), buyer).unwrap();
+        assert!(buyer_consented.can_release);
+        assert!(!buyer_consented.can_request_refund);
+        let seller_consented = module_deal_view(consented, seller).unwrap();
+        assert!(seller_consented.can_refund);
+
+        let mut expired = active;
+        expired.observed_at = expired.auto_release_at;
+        let seller_expired = module_deal_view(expired, seller).unwrap();
+        assert_eq!(
+            seller_expired.release_authority,
+            ModuleDealReleaseAuthorityView::AnyoneNow
+        );
+        assert!(seller_expired.can_release);
+    }
+
+    #[test]
+    fn final_deal_ownership_and_actions_match_chain_status() {
+        let buyer = address("0x00000000000000000000000000000000000000e1");
+        let released = module_deal_view(module_deal(ModuleDealStatusChain::Released), buyer).unwrap();
+        assert_eq!(released.status, ModuleDealStatusView::Released);
+        assert_eq!(released.current_owner, buyer.to_string());
+        assert!(!released.can_release);
+        assert!(!released.can_request_refund);
+
+        let refunded = module_deal_view(
+            module_deal(ModuleDealStatusChain::Refunded),
+            seller_address(),
+        )
+        .unwrap();
+        assert_eq!(refunded.status, ModuleDealStatusView::Refunded);
+        assert_eq!(refunded.current_owner, seller_address().to_string());
+        assert!(!refunded.can_refund);
+    }
+
+    #[test]
+    fn deal_catalog_rejects_parties_other_than_the_current_wallet() {
+        let snapshot = ModuleDealChainSnapshot {
+            verified_block: 42_113_011,
+            observed_at: 1_786_500_000,
+            wallet: "0x00000000000000000000000000000000000000ff".into(),
+            deals: vec![module_deal(ModuleDealStatusChain::Active)],
+        };
+        assert!(module_deal_catalog_view(snapshot).is_err());
     }
 
     #[test]

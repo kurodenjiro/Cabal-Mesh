@@ -1,9 +1,14 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Badge, Button, Input, Panel, Select } from "../ds";
+import { ModalDialog } from "../shell/ModalDialog";
 import type {
+  ModuleDealActionView,
+  ModuleDealCatalog,
+  ModuleDealView,
   ModuleMarketCatalog,
   ModuleMarketListing,
+  ModulePurchaseStateView,
   ModuleSlot,
   SellerStandingUnknownReason,
   SellerStandingView,
@@ -43,6 +48,14 @@ export function Market() {
   const [sort, setSort] = useState<MarketSort>("PRICE_ASC");
   const [search, setSearch] = useState("");
   const [browserOnline, setBrowserOnline] = useState(() => navigator.onLine);
+  const [deals, setDeals] = useState<ModuleDealCatalog | null>(null);
+  const [dealsLoading, setDealsLoading] = useState(true);
+  const [purchaseTarget, setPurchaseTarget] = useState<ModuleMarketListing | null>(null);
+  const [purchase, setPurchase] = useState<ModulePurchaseStateView | null>(null);
+  const [purchaseLoading, setPurchaseLoading] = useState(false);
+  const [pending, setPending] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<string | null>(null);
+  const purchaseNonce = useRef(0);
 
   const refresh = useCallback(() => setRequest((value) => value + 1), []);
 
@@ -83,6 +96,91 @@ export function Market() {
       cancelled = true;
     };
   }, [request]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setDealsLoading(true);
+    invoke<ModuleDealCatalog>("module_deals")
+      .then((next) => {
+        if (!cancelled) setDeals(next);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setDeals({ status: "chain_unavailable", verifiedBlock: null, observedAt: null, deals: [] });
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setDealsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [request]);
+
+  const openPurchase = useCallback((listing: ModuleMarketListing) => {
+    const nonce = ++purchaseNonce.current;
+    setPurchaseTarget(listing);
+    setPurchase(null);
+    setFeedback(null);
+    setPurchaseLoading(true);
+    invoke<ModulePurchaseStateView>("module_purchase_quote", { listingId: listing.listingId })
+      .then((next) => {
+        if (purchaseNonce.current === nonce) setPurchase(next);
+      })
+      .catch(() => {
+        if (purchaseNonce.current === nonce) setPurchase({ status: "chain_unavailable" });
+      })
+      .finally(() => {
+        if (purchaseNonce.current === nonce) setPurchaseLoading(false);
+      });
+  }, []);
+
+  const closePurchase = useCallback(() => {
+    if (pending === "buy") return;
+    purchaseNonce.current += 1;
+    setPurchaseTarget(null);
+    setPurchase(null);
+  }, [pending]);
+
+  const confirmPurchase = useCallback(async () => {
+    if (purchase?.status !== "ready") return;
+    const quote = purchase.quote;
+    setPending("buy");
+    setFeedback(null);
+    try {
+      const result = await invoke<ModuleDealActionView>("buy_module_listing", {
+        listingId: quote.listingId,
+        tokenId: quote.module.tokenId,
+        seller: quote.seller,
+        priceWei: quote.priceWei,
+      });
+      setFeedback(`PURCHASE CONFIRMED · DEAL ${result.deal.dealId}`);
+      setPurchaseTarget(null);
+      setPurchase(null);
+      refresh();
+    } catch {
+      setFeedback("PURCHASE NOT CONFIRMED · ACCEPTED STATE REFRESHED");
+      setPurchaseTarget(null);
+      setPurchase(null);
+      refresh();
+    } finally {
+      setPending(null);
+    }
+  }, [purchase, refresh]);
+
+  const mutateDeal = useCallback(async (deal: ModuleDealView, command: string, label: string) => {
+    setPending(`${command}:${deal.dealId}`);
+    setFeedback(null);
+    try {
+      const result = await invoke<ModuleDealActionView>(command, { dealId: deal.dealId });
+      setFeedback(`${label} · DEAL ${result.deal.dealId}`);
+    } catch {
+      setFeedback(`${label} NOT CONFIRMED · ACCEPTED STATE REFRESHED`);
+    } finally {
+      setPending(null);
+      refresh();
+    }
+  }, [refresh]);
 
   const visible = useMemo(
     () => selectListings(catalog?.listings ?? [], filter, search, sort),
@@ -249,7 +347,12 @@ export function Market() {
                 style={{ display: "flex", flexDirection: "column", gap: "var(--space-5)" }}
               >
                 {visible.map((listing) => (
-                  <ListingCard key={`${listing.module.contract}:${listing.module.tokenId}:${listing.listingId}`} listing={listing} />
+                  <ListingCard
+                    key={`${listing.module.contract}:${listing.module.tokenId}:${listing.listingId}`}
+                    listing={listing}
+                    disabled={pending !== null}
+                    onBuy={() => openPurchase(listing)}
+                  />
                 ))}
               </div>
             )}
@@ -257,17 +360,74 @@ export function Market() {
         ) : null}
       </div>
 
+      {feedback ? (
+        <div role="status" style={{ fontSize: "var(--text-sm)", color: "var(--text-primary)" }}>
+          {feedback}
+        </div>
+      ) : null}
+
+      <Panel
+        label="MY MODULE DEALS"
+        action={
+          deals?.verifiedBlock ? (
+            <span style={{ fontFamily: "var(--type-data-family)", fontSize: "var(--text-2xs)", color: "var(--text-muted)" }}>
+              BLOCK {deals.verifiedBlock}
+            </span>
+          ) : undefined
+        }
+      >
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-5)", padding: "var(--space-6)" }}>
+          {dealsLoading ? (
+            <DealNotice>READING ACCEPTED DEAL STATE.</DealNotice>
+          ) : deals?.status === "deployment_unavailable" ? (
+            <DealNotice>NO REVIEWED MODULE MARKET DEPLOYMENT FOR THIS RELEASE.</DealNotice>
+          ) : deals?.status === "chain_unavailable" ? (
+            <DealNotice>DEAL STATE UNAVAILABLE. NO SETTLEMENT ACTIONS ARE OFFERED.</DealNotice>
+          ) : deals?.deals.length === 0 ? (
+            <DealNotice>NO MODULE DEALS INVOLVE THIS WALLET.</DealNotice>
+          ) : (
+            deals?.deals.map((deal) => (
+              <DealCard
+                key={deal.dealId}
+                deal={deal}
+                pending={pending}
+                onRelease={() => void mutateDeal(deal, "release_module_deal", "RELEASE CONFIRMED")}
+                onRequestRefund={() => void mutateDeal(deal, "request_module_refund", "CANCELLATION REQUEST CONFIRMED")}
+                onRefund={() => void mutateDeal(deal, "refund_module_deal", "REFUND CONFIRMED")}
+              />
+            ))
+          )}
+        </div>
+      </Panel>
+
       <Panel label="ESCROW MODEL">
         <p style={{ margin: 0, padding: "var(--space-6)", fontSize: "var(--text-sm)", color: "var(--text-muted)" }}>
           AVAX and the module move into escrow atomically when purchased. The settlement window governs cancellation,
           not delivery of an off-chain item.
         </p>
       </Panel>
+
+      <PurchaseDialog
+        target={purchaseTarget}
+        state={purchase}
+        loading={purchaseLoading}
+        pending={pending === "buy"}
+        onClose={closePurchase}
+        onConfirm={() => void confirmPurchase()}
+      />
     </div>
   );
 }
 
-function ListingCard({ listing }: { listing: ModuleMarketListing }) {
+function ListingCard({
+  listing,
+  disabled,
+  onBuy,
+}: {
+  listing: ModuleMarketListing;
+  disabled: boolean;
+  onBuy: () => void;
+}) {
   const titleId = `market-listing-${listing.listingId}`;
   return (
     <article aria-labelledby={titleId}>
@@ -352,20 +512,203 @@ function ListingCard({ listing }: { listing: ModuleMarketListing }) {
           >
             {listing.priceAvax} AVAX
           </span>
-          <span
-            style={{
-              fontFamily: "var(--type-label-family)",
-              fontSize: "var(--text-2xs)",
-              letterSpacing: "var(--tracking-wider)",
-              color: "var(--text-muted)",
-            }}
-          >
-            LISTING {listing.listingId}
-          </span>
+          <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "var(--space-4)" }}>
+            <span
+              style={{
+                fontFamily: "var(--type-label-family)",
+                fontSize: "var(--text-2xs)",
+                letterSpacing: "var(--tracking-wider)",
+                color: "var(--text-muted)",
+              }}
+            >
+              LISTING {listing.listingId}
+            </span>
+            <Button type="button" tone="primary" size="sm" disabled={disabled} onClick={onBuy}>
+              BUY
+            </Button>
+          </div>
         </div>
       </Panel>
     </article>
   );
+}
+
+function PurchaseDialog({
+  target,
+  state,
+  loading,
+  pending,
+  onClose,
+  onConfirm,
+}: {
+  target: ModuleMarketListing | null;
+  state: ModulePurchaseStateView | null;
+  loading: boolean;
+  pending: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  const quote = state?.status === "ready" || state?.status === "insufficient_funds" ? state.quote : null;
+  return (
+    <ModalDialog
+      open={target !== null}
+      title="CONFIRM MODULE PURCHASE"
+      onClose={onClose}
+      footer={
+        <div style={{ display: "flex", justifyContent: "flex-end", flexWrap: "wrap", gap: "var(--space-4)" }}>
+          <Button type="button" tone="ghost" disabled={pending} onClick={onClose}>CANCEL</Button>
+          {state?.status === "ready" ? (
+            <Button type="button" tone="primary" disabled={pending} onClick={onConfirm}>
+              {pending ? "PURCHASE PENDING" : `PAY ${state.quote.priceAvax} AVAX`}
+            </Button>
+          ) : null}
+        </div>
+      }
+    >
+      <div aria-busy={loading || pending} style={{ display: "flex", flexDirection: "column", gap: "var(--space-5)" }}>
+        {loading ? (
+          <DealNotice>RE-READING LISTING, OWNERSHIP, BALANCE, AND NETWORK FEE.</DealNotice>
+        ) : state?.status === "deployment_unavailable" ? (
+          <DealNotice>THIS RELEASE HAS NO REVIEWED CANONICAL MODULE MARKET.</DealNotice>
+        ) : state?.status === "chain_unavailable" || state === null ? (
+          <DealNotice>PURCHASE STATE COULD NOT BE VERIFIED. NO TRANSACTION IS OFFERED.</DealNotice>
+        ) : state.status === "inactive" ? (
+          <DealNotice>THIS LISTING IS NO LONGER ACTIVE.</DealNotice>
+        ) : state.status === "self_purchase" ? (
+          <DealNotice>THE CURRENT WALLET IS THE SELLER AND CANNOT BUY ITS OWN LISTING.</DealNotice>
+        ) : state.status === "stale_listing" ? (
+          <DealNotice>CURRENT OWNERSHIP OR ELIGIBILITY NO LONGER BACKS THIS LISTING.</DealNotice>
+        ) : (
+          <>
+            {quote ? <PurchaseQuoteFacts quote={quote} /> : null}
+            {state.status === "insufficient_funds" ? (
+              <div role="alert" style={{ fontSize: "var(--text-sm)", color: "var(--accent-blood-red)" }}>
+                INSUFFICIENT FUNDS · SHORT {state.shortfallAvax} AVAX ({state.shortfallWei} wei).
+              </div>
+            ) : null}
+            <Panel label="ESCROW TERMS">
+              <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)", padding: "var(--space-5)" }}>
+                <span style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)" }}>
+                  Buying atomically locks the exact AVAX price and moves this on-chain module into the marketplace.
+                </span>
+                <span style={{ fontSize: "var(--text-sm)", color: "var(--text-muted)" }}>
+                  The three-day window is only for mutually agreed cancellation. There is no off-chain delivery to inspect and the seller owes no later delivery step. Release pays the seller and transfers the module to you; cancellation requires your request and the seller&apos;s refund transaction.
+                </span>
+              </div>
+            </Panel>
+          </>
+        )}
+      </div>
+    </ModalDialog>
+  );
+}
+
+function PurchaseQuoteFacts({ quote }: { quote: Extract<ModulePurchaseStateView, { status: "ready" }> ["quote"] }) {
+  return (
+    <dl style={{ margin: 0, display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: "var(--space-4)" }}>
+      <Fact label="MODULE" value={quote.module.displayName} />
+      <Fact label="TOKEN" value={`#${quote.module.tokenId}`} />
+      <Fact label="COLLECTION" value={quote.module.contract} />
+      <Fact label="SELLER" value={quote.seller} />
+      <Fact label="LISTING PRICE" value={`${quote.priceAvax} AVAX · ${quote.priceWei} wei`} />
+      <Fact
+        label="NETWORK FEE ESTIMATE"
+        value={quote.estimatedNetworkFeeAvax && quote.estimatedNetworkFeeWei
+          ? `${quote.estimatedNetworkFeeAvax} AVAX · ${quote.estimatedNetworkFeeWei} wei`
+          : "UNAVAILABLE WHILE BALANCE IS BELOW PRICE"}
+      />
+      <Fact
+        label="ESTIMATED TOTAL"
+        value={quote.estimatedTotalAvax && quote.estimatedTotalWei
+          ? `${quote.estimatedTotalAvax} AVAX · ${quote.estimatedTotalWei} wei`
+          : `AT LEAST ${quote.priceAvax} AVAX`}
+      />
+      <Fact label="ACCEPTED BLOCK" value={quote.verifiedBlock} />
+    </dl>
+  );
+}
+
+function DealCard({
+  deal,
+  pending,
+  onRelease,
+  onRequestRefund,
+  onRefund,
+}: {
+  deal: ModuleDealView;
+  pending: string | null;
+  onRelease: () => void;
+  onRequestRefund: () => void;
+  onRefund: () => void;
+}) {
+  const busy = pending !== null;
+  const deadline = formatDeadline(deal.autoReleaseAt);
+  const settlement = deal.status === "released"
+    ? `RELEASED · MODULE OWNER ${shortAddress(deal.currentOwner)}`
+    : deal.status === "refunded"
+      ? `REFUNDED · MODULE OWNER ${shortAddress(deal.currentOwner)}`
+      : deal.releaseAuthority === "buyer_now"
+        ? `BUYER MAY RELEASE NOW · ANYONE MAY RELEASE AFTER ${deadline}`
+        : deal.releaseAuthority === "anyone_now"
+          ? `AUTO-RELEASE DEADLINE PASSED · ANYONE MAY RELEASE NOW`
+          : `BUYER MAY RELEASE UNTIL ${deadline} · ANYONE MAY RELEASE AFTER`;
+  return (
+    <article aria-label={`Deal ${deal.dealId}`} style={{ border: "var(--border-hairline-style)", padding: "var(--space-5)" }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: "var(--space-3)" }}>
+          <strong style={{ fontFamily: "var(--type-heading-family)", color: "var(--text-primary)" }}>
+            {deal.module.displayName}
+          </strong>
+          <Badge tone={deal.status === "active" ? "info" : deal.status === "released" ? "success" : "quiet"} size="sm">
+            {deal.status.toUpperCase()} · {deal.role.toUpperCase()}
+          </Badge>
+        </div>
+        <dl style={{ margin: 0, display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: "var(--space-3)" }}>
+          <Fact label="DEAL" value={deal.dealId} />
+          <Fact label="TOKEN" value={`#${deal.module.tokenId}`} />
+          <Fact label="AMOUNT" value={`${deal.amountAvax} AVAX · ${deal.amountWei} wei`} />
+          <Fact label="ACCEPTED BLOCK" value={deal.verifiedBlock} />
+          <Fact label="BUYER" value={shortAddress(deal.buyer)} />
+          <Fact label="SELLER" value={shortAddress(deal.seller)} />
+        </dl>
+        <span style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)" }}>{settlement}</span>
+        {deal.status === "active" && deal.refundRequested ? (
+          <span role="status" style={{ fontSize: "var(--text-sm)", color: "var(--text-primary)" }}>
+            BUYER REQUESTED CANCELLATION · AWAITING SELLER REFUND. THIS IS NOT A COMPLETED REFUND; THE BUYER MAY STILL RELEASE.
+          </span>
+        ) : null}
+        {deal.status === "active" ? (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--space-4)" }}>
+            {deal.canRelease ? (
+              <Button type="button" tone="primary" size="sm" disabled={busy} onClick={onRelease}>
+                {pending === `release_module_deal:${deal.dealId}` ? "RELEASE PENDING" : "RELEASE DEAL"}
+              </Button>
+            ) : null}
+            {deal.canRequestRefund ? (
+              <Button type="button" tone="secondary" size="sm" disabled={busy} onClick={onRequestRefund}>
+                {pending === `request_module_refund:${deal.dealId}` ? "REQUEST PENDING" : "REQUEST CANCELLATION"}
+              </Button>
+            ) : null}
+            {deal.canRefund ? (
+              <Button type="button" tone="secondary" size="sm" disabled={busy} onClick={onRefund}>
+                {pending === `refund_module_deal:${deal.dealId}` ? "REFUND PENDING" : "REFUND BY MUTUAL AGREEMENT"}
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+    </article>
+  );
+}
+
+function DealNotice({ children }: { children: React.ReactNode }) {
+  return <span style={{ fontSize: "var(--text-sm)", color: "var(--text-muted)" }}>{children}</span>;
+}
+
+function formatDeadline(seconds: string): string {
+  const value = Number(seconds);
+  if (!Number.isSafeInteger(value) || value <= 0) return "UNKNOWN DEADLINE";
+  return new Date(value * 1_000).toISOString().replace(".000Z", "Z");
 }
 
 function Fact({ label, value }: { label: string; value: string }) {

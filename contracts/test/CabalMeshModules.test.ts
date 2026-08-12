@@ -527,6 +527,57 @@ describe("CabalMeshModules", function () {
         .withArgs(tokenId, owner.address, Slot.Radio);
     });
 
+    it("keeps exact module custody through purchase, mutual refund, and relisting", async function () {
+      const { modules, minter, owner, buyer } = await deployFixture();
+      const tokenId = await mint(modules, minter, owner.address);
+      const Marketplace = await ethers.getContractFactory("Marketplace");
+      const marketplace = await Marketplace.deploy(await modules.getAddress(), 3 * 24 * 60 * 60);
+      await marketplace.waitForDeployment();
+      const exactPrice = ethers.parseEther("2.40");
+
+      await modules.connect(owner).approve(await marketplace.getAddress(), tokenId);
+      await marketplace.connect(owner).createListingFor(
+        await modules.getAddress(),
+        "Canonical CabalMesh module",
+        exactPrice,
+        tokenId,
+      );
+      await expect(marketplace.connect(buyer).buy(1n, { value: exactPrice }))
+        .to.emit(marketplace, "DealCreated")
+        .withArgs(1n, 1n, buyer.address, tokenId, exactPrice);
+
+      const active = await marketplace.getDeal(1n);
+      expect(active.buyer).to.equal(buyer.address);
+      expect(active.seller).to.equal(owner.address);
+      expect(active.collection).to.equal(await modules.getAddress());
+      expect(active.tokenId).to.equal(tokenId);
+      expect(active.amount).to.equal(exactPrice);
+      expect(active.status).to.equal(1n);
+      expect(active.refundRequested).to.equal(false);
+      expect((await marketplace.listings(1n)).active).to.equal(false);
+      expect(await modules.ownerOf(tokenId)).to.equal(await marketplace.getAddress());
+
+      await marketplace.connect(buyer).requestRefund(1n);
+      expect((await marketplace.getDeal(1n)).status).to.equal(1n);
+      expect((await marketplace.getDeal(1n)).refundRequested).to.equal(true);
+      await expect(marketplace.connect(owner).refundDeal(1n))
+        .to.emit(marketplace, "DealRefunded")
+        .withArgs(1n);
+      expect((await marketplace.getDeal(1n)).status).to.equal(3n);
+      expect(await modules.ownerOf(tokenId)).to.equal(owner.address);
+
+      await modules.connect(owner).approve(await marketplace.getAddress(), tokenId);
+      await expect(marketplace.connect(owner).createListingFor(
+        await modules.getAddress(),
+        "Canonical CabalMesh module",
+        exactPrice,
+        tokenId,
+      )).to.emit(marketplace, "ListingCreated");
+      await marketplace.connect(owner).cancelListing(2n);
+      await modules.connect(owner).equip(tokenId);
+      expect(await modules.equippedBy(tokenId)).to.equal(owner.address);
+    });
+
     it("does not strand an already-funded deal if a module is revoked in escrow", async function () {
       const { modules, admin, minter, owner, buyer } = await deployFixture();
       const tokenId = await mint(modules, minter, owner.address);

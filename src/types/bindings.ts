@@ -285,6 +285,22 @@ export type ModeOption = { label: string, description: string, };
 
 export type ModuleAssetClass = "MODULE" | "STANDING_BADGE";
 
+export type ModuleDealActionView = { operation: ModuleDealOperationView, txHash: string | null, deal: ModuleDealView, };
+
+export type ModuleDealCatalog = { status: ModuleDealCatalogStatus, verifiedBlock: string | null, observedAt: string | null, deals: Array<ModuleDealView>, };
+
+export type ModuleDealCatalogStatus = "available" | "deployment_unavailable" | "chain_unavailable";
+
+export type ModuleDealOperationView = "purchase_confirmed" | "release_confirmed" | "refund_requested" | "refund_confirmed";
+
+export type ModuleDealReleaseAuthorityView = "buyer_now" | "anyone_after_deadline" | "anyone_now" | "settled";
+
+export type ModuleDealRoleView = "buyer" | "seller";
+
+export type ModuleDealStatusView = "active" | "released" | "refunded";
+
+export type ModuleDealView = { verifiedBlock: string, observedAt: string, dealId: string, buyer: string, seller: string, role: ModuleDealRoleView, amountWei: string, amountAvax: string, status: ModuleDealStatusView, autoReleaseAt: string, refundRequested: boolean, currentOwner: string, releaseAuthority: ModuleDealReleaseAuthorityView, canRelease: boolean, canRequestRefund: boolean, canRefund: boolean, module: ModuleView, };
+
 export type ModuleEffectType = "NONE" | "RELAY_REWARD_BPS" | "PRIVACY_HOP_INCREASE" | "GATEWAY_LICENSE";
 
 export type ModuleInventory = { status: ModuleInventoryStatus, modules: Array<ModuleView>, };
@@ -330,6 +346,15 @@ export type ModuleMarketListing = { listingId: string, seller: string, priceWei:
  * Buyer-visible state of the canonical module catalog.
  */
 export type ModuleMarketStatus = "available" | "deployment_unavailable" | "rpc_failure";
+
+/**
+ * Exact accepted-state purchase confirmation. Network fee is an estimate at
+ * the quoted block; listing value, balance, and required total remain integer
+ * wei text across IPC.
+ */
+export type ModulePurchaseQuoteView = { verifiedBlock: string, buyer: string, listingId: string, seller: string, priceWei: string, priceAvax: string, estimatedNetworkFeeWei: string | null, estimatedNetworkFeeAvax: string | null, estimatedTotalWei: string | null, estimatedTotalAvax: string | null, balanceWei: string, module: ModuleView, };
+
+export type ModulePurchaseStateView = { "status": "deployment_unavailable" } | { "status": "chain_unavailable" } | { "status": "inactive", verifiedBlock: string, } | { "status": "self_purchase", verifiedBlock: string, } | { "status": "stale_listing", verifiedBlock: string, } | { "status": "insufficient_funds", quote: ModulePurchaseQuoteView, shortfallWei: string, shortfallAvax: string, } | { "status": "ready", quote: ModulePurchaseQuoteView, };
 
 export type ModuleRarity = "COMMON" | "RARE" | "EPIC" | "LEGENDARY";
 
