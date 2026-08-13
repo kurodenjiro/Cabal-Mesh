@@ -73,13 +73,15 @@ Platform constraints that force layer 1 to exist:
 
 | Platform | Hardware-counted retry limit | Consequence |
 |---|---|---|
-| iOS / Android | yes (Secure Enclave / StrongBox) | a 6-digit PIN is sufficient |
-| macOS / Windows | partial (Secure Enclave / TPM) | PIN acceptable |
-| **Linux** | no | **passphrase required** — a PIN is brute-forceable once the file is copied |
+| iOS / Android | yes (Secure Enclave / StrongBox) — once wired, see decision 1 below | a 6-digit PIN is sufficient |
+| macOS / Windows / Linux | no key store is currently wired | **passphrase required** — a PIN is brute-forceable once the file is copied |
 
 A 6-digit PIN has only 10⁶ combinations. It is safe *only* when a hardware
 counter enforces the retry limit. Counting attempts in software is worthless:
 the attacker copies the vault file to another machine where nothing counts.
+The Secure Enclave and TPM entries for macOS/Windows are capability, not
+plumbing: nothing in this codebase reaches them today (decision 1 below), so
+they get the same answer as Linux until that changes.
 
 ## Mesh unlock
 
@@ -308,13 +310,78 @@ their first real deposit does not:
 > Your wallet now holds real value but is only backed up on this device. Set up
 > three guardians?
 
-## Open decisions
+## Decisions
 
-1. **Layer-1 factor: 6-digit PIN or passphrase?** PIN is far nicer to use but
-   needs a hardware retry counter, which Linux lacks. Passphrase works
-   everywhere. Possible answer: PIN where hardware allows, passphrase elsewhere.
-2. **Default K/N.** Proposal: 3-of-5, so two absent guardians do not block an
-   unlock.
-3. **Delay on recovery?** A 24–48h window with a veto notification defends
-   against guardian collusion, at the cost of a day's wait after genuinely
-   losing a device.
+1. **Layer-1 factor: PIN or passphrase?** **Passphrase (Argon2id) on desktop,
+   PIN on mobile — once the mobile key store is wired.** There is no uniform
+   desktop key store to hold a device-side half of the key today: `keyring`
+   was removed with nothing to replace it (`mobile-architecture-plan.md`,
+   ticket B1), which is exactly why `vault_key.rs::FileKeyProvider` is what
+   every platform, including macOS and Windows, actually uses right now. The
+   "partial" Secure Enclave / TPM row in the table above describes hardware
+   that exists, not a path this code reaches. `argon2 = "0.5"` is already a
+   `cabal-vault` dependency for this reason
+   (`src-tauri/crates/cabal-vault/Cargo.toml:15`) and has zero call sites yet
+   — this is the feature that uses it. iOS and Android get the PIN once the
+   native key-store plugin from ticket 21 lands, because only those two
+   platforms have a hardware-enforced retry counter to make a 6-digit PIN
+   safe; `platform_provider` falls back to the same file-backed key on mobile
+   until then, with a startup warning, and offering a PIN ahead of the plugin
+   would be decorative — the counter it depends on would not exist. Ship the
+   passphrase path first; add the mobile PIN once the plugin backs it with a
+   real counter.
+
+   **Demo path — this is also the cheap thing to build first.** Passphrase
+   unlock needs none of the deferred work: no native plugin (ticket 21), no
+   Secure Enclave / StrongBox binding, no device to test on. It is one screen
+   (enter passphrase → Argon2id → `DataKey`) sitting in front of the
+   `KeyProvider` trait that already exists in `cabal-vault`, so it drops in
+   without touching `vault_key.rs`'s platform-selection logic at all. Build
+   and demo it on desktop first — fastest edit-run loop, and it *is* the
+   real, shipping unlock path there, not a stand-in for something else. On
+   mobile it demos identically today, because `platform_provider` already
+   falls back to the same file-backed key with a warning — just say the
+   sentence out loud when demoing on a phone: "the passphrase check is real;
+   what's not real yet is the device binding under it, that's ticket 21."
+   Do **not** mock up a PIN screen for the demo — a PIN with no hardware
+   counter behind it is worse than no demo, because it teaches the audience
+   the wrong threat model (see the 10⁶-combinations note above).
+
+2. **Default K/N: 3-of-5, not user-configurable in v1.** In plain terms:
+   pick 5 guardians up front; any 3 of them, together, can unlock the
+   wallet; the other 2 can be offline, travelling, or simply asleep and it
+   still works. Concretely — Alice enrolls Bob, Carol, Dan, Eve, and Frank.
+   Bob and Carol are out of Bluetooth range this week. Dan, Eve, and Frank
+   are in range: that's 3, so Alice unlocks normally, and Bob/Carol's shares
+   simply catch up next time they're near her. The reason for 3-of-5 rather
+   than something tighter: shares deliver opportunistically (see
+   Enrollment above), so *some* guardians being unreachable at any given
+   moment is the normal case, not the exception — a scheme that needed all
+   5 present would fail most unlock attempts in practice. The reason it
+   isn't looser (say, 2-of-5): raising K also raises how many guardians
+   would have to collude to reconstruct the key behind the owner's back —
+   2-of-5 means any pair of guardians is a risk, 3-of-5 means it takes three
+   agreeing. K/N stays fixed rather than a setting in v1 because letting
+   users pick it opens a second problem — re-enrollment when a guardian is
+   dropped, partially-delivered share sets, users picking an unsafe K — that
+   the first release doesn't need to solve to prove the mechanism works.
+3. **Delay on recovery: 24 hours, waived when the vault is empty.** Recovery
+   (a brand-new device reconstructing the key from guardians) is different
+   from ordinary unlock (an already-trusted device asking guardians to
+   approve) — recovery is the case a stolen-but-still-alive original device
+   cannot simply refuse from its own unlock screen, so it needs its own
+   safety net. Concretely: a thief with Bob's stolen phone contacts 3 of his
+   5 guardians and asks to "restore." Instead of handing over the
+   reconstructed key immediately, the app holds it for 24 hours and fires a
+   notification to Bob's *original* device, if that device is still alive
+   somewhere with a network connection: "a restore is in progress — cancel
+   it if this isn't you." If Bob still has the phone (or any signed-in
+   device) and did not initiate this, he taps cancel and the thief gets
+   nothing despite having fooled 3 guardians. If Bob genuinely lost every
+   device, nothing can veto, and the wait is simply the cost of the safety
+   net — 24 hours, not 48, because doubling the wait doesn't make a
+   nonexistent veto more likely to arrive; it only makes the honest,
+   device-lost case slower. The wait is skipped entirely when the vault
+   holds nothing worth stealing (below a dust threshold), for the same
+   reason backup prompts are deferred for an empty wallet elsewhere in this
+   doc: a delay defends value, and there's none to defend yet.
