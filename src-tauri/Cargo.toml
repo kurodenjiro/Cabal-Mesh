@@ -61,6 +61,8 @@ cabal-ble = { path = "crates/cabal-ble" }
 cabal-ble-macos = { path = "crates/cabal-ble-macos" }
 # The Android radio, as a Tauri mobile plugin: Kotlin behind a Rust handle.
 tauri-plugin-cabal-ble = { path = "tauri-plugin-cabal-ble" }
+# The Android Keystore, same shape and same reason: the API is Java.
+tauri-plugin-cabal-keystore = { path = "tauri-plugin-cabal-keystore" }
 
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"

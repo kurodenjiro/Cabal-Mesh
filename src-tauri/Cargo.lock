@@ -1737,6 +1737,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-cabal-ble",
+ "tauri-plugin-cabal-keystore",
  "tauri-plugin-opener",
  "tempfile",
  "thiserror 2.0.18",
@@ -8293,6 +8294,18 @@ dependencies = [
 
 [[package]]
 name = "tauri-plugin-cabal-ble"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-plugin",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "tauri-plugin-cabal-keystore"
 version = "0.1.0"
 dependencies = [
  "serde",

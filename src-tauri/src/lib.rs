@@ -95,6 +95,9 @@ pub fn run() {
         // The Android BLE radio. Registers a handle on Android and a no-op
         // elsewhere, so the app builds identically on every platform.
         .plugin(tauri_plugin_cabal_ble::init())
+        // The Android Keystore, which holds the device half of the vault key.
+        // Registered before `setup` installs the source that reads it.
+        .plugin(tauri_plugin_cabal_keystore::init())
         .setup(|app| {
             // Synchronously, before the webview exists. Bootstrap fills the
             // services in afterwards; until then commands get NotReady rather
@@ -109,6 +112,34 @@ pub fn run() {
                     "platform gave no app data directory; falling back"
                 ),
             }
+
+            // Before the bridge is built, because the vault key provider it
+            // constructs asks for the device secret the first time it is
+            // unlocked. Installed here rather than passed down: see
+            // `device_binding::install_android_source`.
+            #[cfg(target_os = "android")]
+            {
+                use tauri_plugin_cabal_keystore::CabalKeystoreExt;
+                let keystore_handle = app.handle().clone();
+                device_binding::install_android_source(Box::new(move || {
+                    keystore_handle
+                        .cabal_keystore()
+                        .device_secret()
+                        .map_err(|error| error.to_string())
+                }));
+            }
+
+            // What is actually protecting the vault on this run, said once at
+            // startup. On a device this is the only way to find out without
+            // navigating to a screen, and "which protection am I running"
+            // should not be a question that requires the UI to answer.
+            tracing::info!(
+                target: "cabalmesh::vault",
+                binding = device_binding::platform_store().as_str(),
+                availability = ?device_binding::availability(),
+                "device binding: {}",
+                device_binding::describe()
+            );
 
             let state = state::AppState::new();
             app.manage(state.clone());

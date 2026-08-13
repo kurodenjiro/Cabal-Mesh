@@ -51,6 +51,17 @@ const COMMANDS: &[&str] = &[
     "unequip_module",
     "vault_identities",
     "vault_keys",
+    // Key custody. `reveal_wallet_key` is the one command in this list that
+    // returns key material, and it is granted because the export screen is
+    // the whole point of it — a wallet nobody can copy is a wallet with an
+    // expiry date. Everything guarding it is in the UI and the bridge, not in
+    // withholding the grant.
+    "vault_status",
+    "unlock_vault",
+    "lock_vault",
+    "wallet_backup_status",
+    "reveal_wallet_key",
+    "restore_wallet_key",
     "profile_summary",
     "set_offline_mode",
 ];

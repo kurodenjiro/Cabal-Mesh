@@ -50,6 +50,12 @@
     "allow-unequip-module",
     "allow-vault-identities",
     "allow-vault-keys",
+    "allow-vault-status",
+    "allow-unlock-vault",
+    "allow-lock-vault",
+    "allow-wallet-backup-status",
+    "allow-reveal-wallet-key",
+    "allow-restore-wallet-key",
     "allow-profile-summary",
     "allow-set-offline-mode"
   ]

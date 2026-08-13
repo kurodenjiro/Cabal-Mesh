@@ -18,7 +18,7 @@
 //! | Platform | Store | Wired | What it buys |
 //! |---|---|---|---|
 //! | macOS, iOS | Keychain | yes | The secret is not in the app's files at all. A keychain ACL binds the item to the signed application, so on a signed build another process must prompt the user; on an unsigned or ad-hoc build it does not, and this module does not claim it does. |
-//! | Android | Keystore / StrongBox | **no** | Hardware exists and is not connected yet. Reported as *not wired*, not as *absent* — the difference matters, because one is a gap in this build and the other is a fact about the platform. |
+//! | Android | Keystore / StrongBox | yes | The secret is encrypted under a non-exportable AES key held in StrongBox where the device has one and in the TEE otherwise. The blob travels with a copied file; the key that opens it cannot leave the device. See `tauri-plugin-cabal-keystore`. |
 //! | Windows | TPM, DPAPI | **no** | DPAPI would add nothing against a same-user process, and a TPM-sealed secret is real work that has not been done. |
 //! | Linux | — | n/a | No store that survives the headless case, which is why `keyring` was removed. Reported as absent. |
 //!
@@ -50,6 +50,7 @@ pub enum Binding {
     /// No device secret. The passphrase is the only factor.
     None,
     AppleKeychain,
+    AndroidKeystore,
 }
 
 impl Binding {
@@ -58,6 +59,7 @@ impl Binding {
         match self {
             Self::None => "none",
             Self::AppleKeychain => "apple-keychain",
+            Self::AndroidKeystore => "android-keystore",
         }
     }
 
@@ -66,6 +68,7 @@ impl Binding {
         match value {
             "none" => Some(Self::None),
             "apple-keychain" => Some(Self::AppleKeychain),
+            "android-keystore" => Some(Self::AndroidKeystore),
             _ => None,
         }
     }
@@ -88,10 +91,16 @@ pub enum Availability {
 }
 
 /// The store this platform actually has, ignoring test configuration.
+///
+/// On Android this is conditional on the plugin having registered. A build
+/// where registration failed must not claim a binding it cannot produce — it
+/// would write `android-keystore` into an envelope it can never open again.
 #[must_use]
-pub const fn platform_store() -> Binding {
+pub fn platform_store() -> Binding {
     if cfg!(any(target_os = "macos", target_os = "ios")) {
         Binding::AppleKeychain
+    } else if cfg!(target_os = "android") && android_source_installed() {
+        Binding::AndroidKeystore
     } else {
         Binding::None
     }
@@ -152,12 +161,20 @@ pub fn platform_binding() -> Binding {
 
 /// Why, in one word the interface can render.
 #[must_use]
-pub const fn availability() -> Availability {
+pub fn availability() -> Availability {
     if cfg!(any(target_os = "macos", target_os = "ios")) {
         Availability::Wired
-    } else if cfg!(target_os = "android") || cfg!(target_os = "windows") {
-        // Both have hardware this build has not connected. Saying "absent"
-        // here would be a lie that ages badly.
+    } else if cfg!(target_os = "android") {
+        if android_source_installed() {
+            Availability::Wired
+        } else {
+            // The plugin exists but did not register on this run. A gap in
+            // this build, not a fact about Android.
+            Availability::NotWired
+        }
+    } else if cfg!(target_os = "windows") {
+        // A TPM this build has not connected. Saying "absent" would be a lie
+        // that ages badly.
         Availability::NotWired
     } else {
         Availability::Absent
@@ -169,11 +186,15 @@ pub const fn availability() -> Availability {
 /// Rendered verbatim by the vault screen, so it must never describe a better
 /// platform than the one it is running on.
 #[must_use]
-pub const fn describe() -> &'static str {
+pub fn describe() -> &'static str {
     if cfg!(any(target_os = "macos", target_os = "ios")) {
         "DEVICE-BOUND VIA KEYCHAIN. A COPIED FILE WILL NOT OPEN ELSEWHERE."
     } else if cfg!(target_os = "android") {
-        "NOT DEVICE-BOUND. ANDROID KEYSTORE IS NOT WIRED IN THIS BUILD."
+        if android_source_installed() {
+            "DEVICE-BOUND VIA ANDROID KEYSTORE. A COPIED FILE WILL NOT OPEN ELSEWHERE."
+        } else {
+            "NOT DEVICE-BOUND. THE KEYSTORE PLUGIN DID NOT REGISTER ON THIS RUN."
+        }
     } else if cfg!(target_os = "windows") {
         "NOT DEVICE-BOUND. TPM BINDING IS NOT WIRED IN THIS BUILD."
     } else {
@@ -204,6 +225,59 @@ pub fn secret(binding: Binding) -> Result<Option<Zeroizing<Vec<u8>>>, VaultError
     match binding {
         Binding::None => Ok(None),
         Binding::AppleKeychain => apple_keychain_secret().map(Some),
+        Binding::AndroidKeystore => android_keystore_secret().map(Some),
+    }
+}
+
+/// How the Android Keystore is reached from code that has no app handle.
+///
+/// The vault key provider is built deep inside `BlockchainBridge`, which is
+/// constructed before — and independently of — anything holding a `Manager`.
+/// Threading a handle down to it would mean changing every constructor on the
+/// way for one platform's benefit. Installing a source once at startup is the
+/// same shape `app_paths` already uses, and for the same reason.
+type AndroidSource = Box<dyn Fn() -> Result<Vec<u8>, String> + Send + Sync>;
+
+static ANDROID_SOURCE: std::sync::OnceLock<AndroidSource> = std::sync::OnceLock::new();
+
+/// Installs the Keystore source. Called once, at startup, after the plugin
+/// registers. A second call is ignored rather than replacing the first.
+pub fn install_android_source(source: AndroidSource) {
+    if ANDROID_SOURCE.set(source).is_err() {
+        tracing::warn!(
+            target: "cabalmesh::vault",
+            "the Android Keystore source was already installed; keeping the first"
+        );
+    }
+}
+
+#[must_use]
+fn android_source_installed() -> bool {
+    ANDROID_SOURCE.get().is_some()
+}
+
+fn android_keystore_secret() -> Result<Zeroizing<Vec<u8>>, VaultError> {
+    let Some(source) = ANDROID_SOURCE.get() else {
+        // Reachable by opening an Android-bound key file on any other
+        // platform — a copied file. Refusing is the demonstration that the
+        // binding works.
+        tracing::error!(
+            target: "cabalmesh::vault",
+            "this key is bound to an Android Keystore, which is not available here"
+        );
+        return Err(VaultError::KeyUnavailable);
+    };
+
+    match source() {
+        Ok(secret) if secret.len() == 32 => Ok(Zeroizing::new(secret)),
+        Ok(_) => {
+            tracing::error!(target: "cabalmesh::vault", "the Android Keystore returned a malformed secret");
+            Err(VaultError::KeyUnavailable)
+        }
+        Err(error) => {
+            tracing::error!(target: "cabalmesh::vault", %error, "the Android Keystore refused");
+            Err(VaultError::KeyUnavailable)
+        }
     }
 }
 
@@ -333,7 +407,7 @@ mod tests {
     fn the_binding_name_round_trips() {
         // The envelope stores this string. A rename that did not round trip
         // would make every existing vault unopenable.
-        for binding in [Binding::None, Binding::AppleKeychain] {
+        for binding in [Binding::None, Binding::AppleKeychain, Binding::AndroidKeystore] {
             assert_eq!(Binding::parse(binding.as_str()), Some(binding));
         }
     }
@@ -342,7 +416,7 @@ mod tests {
     fn an_unknown_binding_is_not_guessed() {
         // A newer build may write a binding this one does not know. Guessing
         // would derive a wrong key and blame the passphrase.
-        assert_eq!(Binding::parse("android-strongbox"), None);
+        assert_eq!(Binding::parse("windows-tpm"), None);
     }
 
     #[test]
@@ -400,8 +474,10 @@ mod tests {
     #[cfg(target_os = "android")]
     #[test]
     fn android_reports_a_gap_rather_than_an_absence() {
-        // StrongBox exists. Saying "absent" would let this stay unbuilt
-        // without anyone noticing it was ever meant to be built.
+        // Registration happens at startup, which a unit test does not run.
+        // What matters is that the two answers agree: an uninstalled source
+        // must never be reported as a wired binding.
+        assert_eq!(android_source_installed(), false);
         assert_eq!(availability(), Availability::NotWired);
         assert_eq!(platform_store(), Binding::None);
     }

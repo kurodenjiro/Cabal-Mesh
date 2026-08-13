@@ -328,11 +328,19 @@ the platform could in principle provide:
 
 | Platform | Hardware retry counter wired today | Layer-1 factor |
 |---|---|---|
-| macOS | no (Secure Enclave present, unused) | passphrase |
-| Windows | no (TPM present, unused) | passphrase |
+| macOS | no | passphrase |
+| Windows | no | passphrase |
 | Linux | none exists | passphrase |
-| iOS | no (Secure Enclave present, unused) | passphrase |
-| Android | no (StrongBox present, unused) | passphrase |
+| iOS | no | passphrase |
+| Android | no | passphrase |
+
+Note what that column does and does not say. A **key store** is now wired on
+Apple platforms and Android — see layer 2 — but a key store is not a retry
+counter. The stored key is released without asking the user for anything,
+which is what makes it exfiltration resistance rather than access control, and
+therefore what leaves the entropy of layer 1 carrying the whole load. A PIN
+becomes defensible on a platform the day that platform's store is asked for
+*user presence*, not the day it is merely used.
 
 A 6-digit PIN becomes available on a platform the day that platform's store is
 connected with a counter, and not before. That is a per-platform unlock of a
