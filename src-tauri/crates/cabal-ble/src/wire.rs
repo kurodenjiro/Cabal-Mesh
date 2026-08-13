@@ -99,6 +99,30 @@ impl fmt::Debug for PeerId {
     }
 }
 
+/// The inverse of [`PeerId`]'s `Display` — parses the hex a screen sent back
+/// after showing it, e.g. a guardian candidate the user picked from a list.
+impl std::str::FromStr for PeerId {
+    type Err = WireError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut id = [0_u8; PEER_ID_LEN];
+        hex_decode(s, &mut id).ok_or(WireError::InvalidPeerId).map(|()| Self(id))
+    }
+}
+
+/// Decodes exactly `out.len()` bytes of lowercase or uppercase hex, or
+/// refuses. No `hex` crate dependency for one call site in a crate that
+/// otherwise has none.
+fn hex_decode(s: &str, out: &mut [u8]) -> Option<()> {
+    if s.len() != out.len() * 2 {
+        return None;
+    }
+    for (i, byte) in out.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).ok()?;
+    }
+    Some(())
+}
+
 /// What a packet is for.
 ///
 /// Encoded as a `u8`. An unknown value is an error rather than a default: a
@@ -121,6 +145,14 @@ pub enum PacketKind {
     GatewayRequest = 0x20,
     /// The outcome of a gateway request, flooded back.
     GatewayResult = 0x21,
+    /// Guardian-recovery traffic: an enrollment share, an unlock request, or
+    /// an unlock reply. All three share one kind because what distinguishes
+    /// them is a tag inside the payload, not anything the router needs to
+    /// know — see `cabal_guardian::protocol`. Directed like `Sealed`
+    /// (full-fanout relay) even for the broadcast unlock request, which
+    /// wants a request to reach every nearby guardian fast rather than
+    /// thinned like an `Intent`.
+    Guardian = 0x30,
 }
 
 impl PacketKind {
@@ -133,6 +165,7 @@ impl PacketKind {
             0x11 => Self::IntentAck,
             0x20 => Self::GatewayRequest,
             0x21 => Self::GatewayResult,
+            0x30 => Self::Guardian,
             other => return Err(WireError::UnknownKind(other)),
         })
     }
@@ -194,6 +227,10 @@ pub enum WireError {
     /// Bytes remained after the packet was fully decoded.
     #[error("{0} trailing bytes after packet")]
     TrailingBytes(usize),
+
+    /// Not the hex a [`PeerId`]'s own `Display` produces.
+    #[error("not a valid peer id")]
+    InvalidPeerId,
 }
 
 /// A decoded packet.
@@ -660,11 +697,29 @@ mod tests {
     }
 
     #[test]
+    fn a_peer_id_round_trips_through_its_own_display() {
+        use std::str::FromStr;
+        let id = PeerId::from_public_key(&[0x42; 32]);
+        assert_eq!(PeerId::from_str(&id.to_string()).unwrap(), id);
+    }
+
+    #[test]
+    fn parsing_a_peer_id_refuses_anything_that_is_not_valid_hex_of_the_right_length() {
+        use std::str::FromStr;
+        assert_eq!(PeerId::from_str("too short"), Err(WireError::InvalidPeerId));
+        assert_eq!(PeerId::from_str("zz00000000000000"), Err(WireError::InvalidPeerId));
+        assert_eq!(PeerId::from_str(""), Err(WireError::InvalidPeerId));
+    }
+
+    #[test]
     fn broadcast_and_fanout_classes_match_the_design() {
         assert!(PacketKind::Intent.is_broadcast());
         assert!(PacketKind::Announce.is_broadcast());
         assert!(!PacketKind::Sealed.is_broadcast());
         assert!(!PacketKind::IntentAck.is_broadcast());
+        // Full-fanout even when used for the (broadcast, recipient: None)
+        // unlock request — see the variant's doc comment for why.
+        assert!(!PacketKind::Guardian.is_broadcast());
 
         // Announcements and gateway traffic must not be thinned: one is how
         // the mesh learns its shape, the other is how an offline node reaches

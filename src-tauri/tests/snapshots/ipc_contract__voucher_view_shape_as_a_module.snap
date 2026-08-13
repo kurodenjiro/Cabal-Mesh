@@ -1,0 +1,14 @@
+---
+source: tests/ipc_contract.rs
+expression: "shape(&VoucherView\n{\n    token_id: 7, voucher_type: \"Gateway License\".into(), description:\n    \"Earned by relaying settled transactions as a gateway\".into(), owner:\n    \"0xfF8dd6dbB7B97b44044573cFE843dE1F463637a9\".into(), minted_by:\n    \"0xfF8dd6dbB7B97b44044573cFE843dE1F463637a9\".into(), slot: 2, rarity: 1,\n    effect_bps: 500,\n})"
+---
+{
+  "tokenId": 7,
+  "voucherType": "Gateway License",
+  "description": "Earned by relaying settled transactions as a gateway",
+  "owner": "0xfF8dd6dbB7B97b44044573cFE843dE1F463637a9",
+  "mintedBy": "0xfF8dd6dbB7B97b44044573cFE843dE1F463637a9",
+  "slot": 2,
+  "rarity": 1,
+  "effectBps": 500
+}

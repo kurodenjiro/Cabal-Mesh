@@ -32,6 +32,10 @@ mod llm_json;
 mod lifecycle;
 mod telemetry;
 mod vault_key;
+mod security_state;
+pub mod guardian;
+pub mod guardian_actor;
+pub mod intent_chat;
 
 /// The Android Wi-Fi multicast lock mDNS needs. See src/multicast.rs.
 pub mod multicast;
@@ -181,6 +185,8 @@ pub fn run() {
                     .unwrap_or_else(|_| blockchain_bridge::DEFAULT_AVAX_RPC_URL.to_string());
 
                 let bridge = Arc::new(Mutex::new(BlockchainBridge::new(Some(rpc_url))));
+                let guardian_service = Arc::new(Mutex::new(guardian::GuardianService::open(&app_paths::data_dir())));
+                let guardian_approvals = guardian_actor::PendingApprovals::new();
 
                 // 1. Phase 1
                 SystemBootstrap::phase_1_sync(&bridge, &app_handle).await;
@@ -205,10 +211,63 @@ pub fn run() {
                     );
                     let forward = app_handle.clone();
                     tokio::spawn(async move {
-                        while let Some(event) = events.recv().await {
-                            let _ = forward.emit("ble-event", format!("{event:?}"));
+                        loop {
+                            match events.recv().await {
+                                Ok(event) => {
+                                    let _ = forward.emit("ble-event", format!("{event:?}"));
+                                }
+                                // A burst outpaced this consumer; the next
+                                // recv picks up from there rather than
+                                // stalling on events already gone.
+                                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                            }
                         }
                     });
+
+                    // Answers guardian traffic addressed to this device as a
+                    // guardian for someone else, for as long as the app
+                    // runs — a separate subscription from the forwarder
+                    // above, since only one consumer can drain any one of
+                    // them (see `BleHandle::subscribe`'s docs).
+                    let mut guardian_events = handle.subscribe();
+                    let guardian_ble = handle.clone();
+                    let guardian_state = Arc::clone(&guardian_service);
+                    let guardian_approvals_for_task = guardian_approvals.clone();
+                    let guardian_app_handle = app_handle.clone();
+                    tokio::spawn(async move {
+                        loop {
+                            match guardian_events.recv().await {
+                                Ok(ble::BleEvent::Received { from, kind: cabal_ble::wire::PacketKind::Guardian, payload }) => {
+                                    if let Ok(message) = cabal_guardian::protocol::GuardianMessage::from_bytes(&payload) {
+                                        if let Some(id) = guardian_actor::respond_to_guardian_traffic(
+                                            &guardian_state,
+                                            &guardian_ble,
+                                            &guardian_approvals_for_task,
+                                            from,
+                                            message,
+                                        )
+                                        .await
+                                        {
+                                            // A human has to see and act on
+                                            // this — see `PendingApprovals`'s
+                                            // docs for why nothing here sends
+                                            // a reply on its own.
+                                            let prompt = bindings::GuardianUnlockPrompt {
+                                                id,
+                                                from: cabal_core::NodeId::new(from.to_string()).truncated(),
+                                            };
+                                            let _ = guardian_app_handle.emit("guardian-unlock-request", prompt);
+                                        }
+                                    }
+                                }
+                                Ok(_) => {}
+                                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                            }
+                        }
+                    });
+
                     handle
                 });
                 if ble.is_none() {
@@ -253,10 +312,13 @@ pub fn run() {
                             ble: ble.clone(),
                             ble_transport: ble_transport.clone(),
                             agent: Arc::new(SharkAgent::new(None)),
+                            intent_chat: Arc::new(intent_chat::IntentChatParser::new(None)),
                             matcher: Arc::new(MatchAgent::new(None)),
                             zk_handler: Arc::new(ZKHandler::new(None)),
                             ollama: ollama_state,
                             bridge,
+                            guardian: guardian_service.clone(),
+                            guardian_approvals: guardian_approvals.clone(),
                             relay_bytes,
                         });
 
@@ -277,10 +339,13 @@ pub fn run() {
                             ble,
                             ble_transport,
                             agent: Arc::new(SharkAgent::new(None)),
+                            intent_chat: Arc::new(intent_chat::IntentChatParser::new(None)),
                             matcher: Arc::new(MatchAgent::new(None)),
                             zk_handler: Arc::new(ZKHandler::new(None)),
                             ollama: ollama_state,
                             bridge,
+                            guardian: guardian_service,
+                            guardian_approvals,
                             relay_bytes: Arc::new(AtomicU64::new(0)),
                         });
                     }
@@ -304,6 +369,7 @@ pub fn run() {
             commands::ble_status,
             commands::list_intents,
             commands::intent_form_options,
+            commands::parse_intent_chat,
             commands::preview_intent,
             commands::broadcast_intent,
             commands::intent_detail,
@@ -314,6 +380,29 @@ pub fn run() {
             commands::vault_assets,
             commands::vault_identities,
             commands::vault_keys,
+            commands::security_status,
+            commands::security_unlock,
+            commands::security_enable_passphrase,
+            commands::security_disable_passphrase,
+            commands::vault_export_key,
+            commands::vault_import_key,
+            commands::guardian_candidates,
+            commands::guardian_status,
+            commands::guardian_enroll,
+            commands::guardian_request_unlock,
+            commands::guardian_approve_unlock,
+            commands::guardian_deny_unlock,
+            commands::market_listings,
+            commands::market_buy,
+            commands::market_list_module,
+            commands::market_release_deal,
+            commands::market_refund_deal,
+            commands::market_my_deals,
+            commands::vault_modules,
+            commands::vault_loadout,
+            commands::vault_equip_module,
+            commands::vault_unequip_module,
+            commands::vault_redeem_module,
             commands::profile_summary,
             commands::set_offline_mode,
         ])

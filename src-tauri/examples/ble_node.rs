@@ -64,15 +64,17 @@ async fn main() {
     let (handle, mut events) = ble::spawn(transport, ble::fresh_identity(), Capabilities::none());
 
     tokio::spawn(async move {
-        while let Some(event) = events.recv().await {
-            match event {
-                BleEvent::PeerAppeared(peer) => println!("+ peer {peer}"),
-                BleEvent::PeerGone(peer) => println!("- peer {peer}"),
-                BleEvent::Received { from, kind, payload } => {
+        loop {
+            match events.recv().await {
+                Ok(BleEvent::PeerAppeared(peer)) => println!("+ peer {peer}"),
+                Ok(BleEvent::PeerGone(peer)) => println!("- peer {peer}"),
+                Ok(BleEvent::Received { from, kind, payload }) => {
                     let text = String::from_utf8_lossy(&payload);
                     println!("< {kind:?} from {from}: {text}");
                 }
-                BleEvent::Unavailable(reason) => println!("! radio unavailable: {reason}"),
+                Ok(BleEvent::Unavailable(reason)) => println!("! radio unavailable: {reason}"),
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
         }
     });

@@ -1,6 +1,27 @@
 # Chat intents, marketplace, and node modules — design
 
-**Status: proposal. None of this is built yet.** Written 2026-08-10.
+**Status: partially built.** Written 2026-08-10; updated 2026-08-13.
+
+**Chat intent (below) is built** — `parse_intent_chat` fills the same form
+fields `New.tsx` already validates through, unchanged.
+
+**Marketplace and modules: the mechanism is written, nothing is deployed.**
+Resolving the doc's four open questions surfaced a fifth, more urgent one:
+`CabalMeshVoucher`, already deployed to Fuji, has **no access control on
+minting at all** — anyone can call it directly and mint themselves any
+module for free. `contracts/contracts/CabalMeshVoucher.sol` (fixed) and the
+new `contracts/contracts/RelayRewards.sol` implement decisions 0–4 below,
+with 37 passing Hardhat tests
+(`contracts/test/{CabalMeshVoucher,Marketplace,RelayRewards}.test.ts`), and
+the Rust bridge's ABI bindings already match them
+(`src-tauri/abi/{CabalMeshVoucher,RelayRewards}.abi.json`). **None of it is
+deployed to Fuji** — deploying replaces the live contract address the app
+would eventually point at, which is a different kind of action than writing
+code, and is waiting on a separate go-ahead. Also not built: the Rust-side
+wiring that would make a real gateway relay actually call
+`RelayRewards.recordGatewayRelay` (needs product decisions about fee
+amount and gateway selection this doc doesn't make), and any
+Marketplace/Modules UI (`VAULT → MODULES`, the MARKET tab).
 
 Three connected changes: composing intents by conversation instead of by form,
 a marketplace for NFTs, and NFTs that measurably improve what a node earns.
@@ -227,29 +248,98 @@ NODES folds into HOME, which already shows mesh status, node id and uptime.
 Five tabs is already the limit at 390 px with the brand's tracking; a sixth
 would wrap.
 
-## Four things to settle before building
+## Five things, now settled
 
-**1. The old relay boost was a local JSON file.**
-In git history, `apply_relay_boost` simply added a float to `relay_boost.json`
-and saved it. If rewards are real AVAX, the multiplier **must** be derived from
-verified on-chain NFT ownership. A locally editable file is not a game
-mechanic, it is a mint button.
+The doc originally listed four open questions. Answering them honestly
+surfaced a fifth, more urgent one — decision 0 — that the other four
+actually depend on. All five are grounded in the contracts and Rust as they
+exist today (`contracts/contracts/*.sol`, `src-tauri/src/blockchain_bridge.rs`),
+not as the earlier draft assumed.
 
-**2. `CabalMeshVoucher` has no slot, rarity, or effect on-chain.**
-It stores `voucherType` (string) and `description`. Options: encode structure
-into `voucherType`, add ERC721 `tokenURI` metadata, or extend the contract.
-Metadata is the recommended route — standard, and external wallets can read it.
+**0. `CabalMeshVoucher.mintVoucher` has no access control — this blocks
+everything else.** `contracts/contracts/CabalMeshVoucher.sol:25` declares it
+`external` with no modifier: anyone, from any wallet, can call it directly
+against the deployed Fuji contract and mint themselves a token with any
+`voucherType` and `description` string they like, for free, right now — no
+app involved. This is worse than the local-file risk decision 1 below
+worries about: a farming defence built entirely at the app/relay layer
+still means nothing while the mint entry point itself has no gate. Nothing
+in decisions 1, 3 or 4 is meaningful until this is fixed.
 
-**3. Who pays the relay reward?** *(the load-bearing question)*
-If node A relays for node B, where does the AVAX come from — a fee the sender
-attaches to the intent, or emission from a treasury? A sender-paid fee is
-self-sustaining; emission needs funding and inflates. **Until this is answered
-the `0.0096 AVAX` on the HOME screen is decoration**, and both the HOME and
-MARKET designs above depend on the answer.
+**Decision: redeploy the voucher contract with minting restricted to a
+single on-chain caller — the reward contract from decision 3, not an
+off-chain admin key.** Restricting it to a *contract address* rather than a
+person keeps the reward path trustless: a module is minted only as the
+atomic side effect of a settlement this contract already verified on-chain,
+never by a party's own say-so, off-chain or on. `CabalMeshVoucher` is a
+plain `ERC721` with no `Ownable`, no proxy — not upgradeable — so this is a
+new deployment, not a migration. Low-stakes to do now: Fuji testnet, no
+value locked in the current contract yet.
 
-**4. Farming defence.**
-Two devices owned by one person can relay junk to each other forever. Rewards
-need evidence that a genuine third party wanted the data — for example, counting
-a relay only when it carries both the sender's signature and the recipient's
-receipt. This is the hardest part technically and should be designed early
-rather than retrofitted.
+**1. The old relay boost was a local JSON file, and it is still live dead
+code.** `apply_relay_boost` / `get_relay_boost_multiplier` /
+`relay_boost_path` were not deleted with the old RPG UI (`0a71f59` removed
+only the frontend caller in `src/App.tsx`) — they are still sitting in
+`blockchain_bridge.rs:841-852`, unreachable from any command today, ready
+to be wired back up by exactly the mistake this doc warns against.
+
+**Decision: delete them outright**, and compute the relay-yield multiplier
+on demand from verified on-chain module ownership every time it's shown —
+never cache or store it as an editable local value, in a file or anywhere
+else.
+
+**2. `CabalMeshVoucher` has no slot, rarity, or effect on-chain — and no
+metadata hook to add them to.** The contract has no `tokenURI` override, no
+`_baseURI`, no `ERC721URIStorage` — `tokenURI()` returns an empty string for
+every token today. The doc's original "recommended route," off-chain
+`tokenURI` metadata, is not achievable without a contract change either, so
+it is not actually cheaper than the alternative.
+
+**Decision: structured on-chain fields instead of a metadata URI** —
+`VoucherData` gains `uint8 slot`, `uint8 rarity`, `uint16 effectBps` (the
+module's effect as basis points, e.g. `1800` = +18%) alongside the existing
+`voucherType`/`description`. Every other contract this app reads
+(`IEscrow`, `IMarketplace`) is already read as typed on-chain calls through
+`sol!` bindings, not as fetched JSON from a URI a host somewhere has to keep
+serving — matching that pattern keeps one read path instead of two, and
+keeps a module's effect something Rust can verify directly rather than
+trust a metadata host to report honestly. `tokenURI` support for external
+wallet/marketplace display is worth adding later; it is not the source of
+truth either way.
+
+**3. Who pays the relay reward, and for which kind of relay specifically?**
+*(the question the rest depended on.)* The app relays two different ways,
+and only one of them is currently attributable to a specific node at all.
+BLE mesh relaying is flood-based — a packet is copied by whichever
+neighbours a thinned fanout selects (`cabal-ble/src/router.rs`), with no
+routing table and no single node identifiable as "the" relay for a given
+hop. **Gateway relaying is different**: a gateway submits an offline node's
+signed transaction to the chain itself, so the submitting address is
+already on-chain and already attributable, no new protocol needed.
+
+**Decision: relay rewards apply to gateway relaying only, for now** — a
+sender-paid fee, not treasury emission (self-sustaining, no inflation to
+fund), paid atomically out of the same settlement the relayed transaction
+produces. `RELAYED TODAY` / `relay_bytes` on HOME stays honest in the
+meantime: it is wired to `0` today (`mesh.rs`'s counter is initialized and
+read but never incremented — the `0.0096 AVAX` mock-up was decoration
+against a number that was already always zero), and should keep reading as
+"not tracked yet" rather than fabricate BLE-relay activity a reward can't
+actually attribute. Rewarding BLE flood relay is future work that needs a
+protocol change first (an attributable per-hop receipt), not a reward-layer
+decision.
+
+**4. Farming defence.** With reward scope narrowed to gateway relay
+(decision 3), the sybil case narrows with it: two devices owned by one
+person forwarding junk to each other over BLE earns nothing either way,
+because BLE relay isn't rewarded. What remains is a gateway paying itself
+by fronting its own transactions — defended against by the mechanism
+already required for payment to move at all: **the fee is deducted from a
+real settlement** (`Escrow`/`Marketplace` releasing to a counterparty), so
+"farming" it costs the same real AVAX moving between two real addresses
+that self-dealing already costs anywhere else in this app, gateway or not.
+No new signature/receipt scheme (`IntentAck`, reserved in the wire format
+but never implemented — `cabal-ble/src/wire.rs:143`) is needed for v1. A
+minimum settlement size or a same-address check between gateway and
+counterparty is worth adding if v1 shows it is actually exploited; it is
+not a blocker to start.

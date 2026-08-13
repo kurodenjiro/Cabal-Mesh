@@ -26,9 +26,13 @@
 //! Run `cargo insta review` to inspect diffs.
 
 use cabalmesh_lib::agent::ContentAnalysis;
+use cabalmesh_lib::bindings::GuardianUnlockPrompt;
 use cabalmesh_lib::blockchain_bridge::{
     AssetListingView, CompressedAsset, ContentRecord, DealView, IdentityView, InstantSession,
     QueuedTx, RelayedTxRecord, Snapshot, TxResult, VoucherView,
+};
+use cabalmesh_lib::commands::{
+    EquippedSlot, GuardianCandidate, GuardianEnrollResult, GuardianStatus, ModuleLoadout, SecurityStatus,
 };
 use cabalmesh_lib::matcher::MatchResult;
 use cabalmesh_lib::mesh::{MeshEvent, PrivacyIntent};
@@ -133,6 +137,26 @@ fn voucher_view_shape() {
         description: "AI compute credit".into(),
         owner: "0xfF8dd6dbB7B97b44044573cFE843dE1F463637a9".into(),
         minted_by: "0xfF8dd6dbB7B97b44044573cFE843dE1F463637a9".into(),
+        slot: 0,
+        rarity: 0,
+        effect_bps: 0,
+    }));
+}
+
+#[test]
+fn voucher_view_shape_as_a_module() {
+    // A module's slot/rarity/effect are what `VAULT → MODULES` reads to
+    // build the loadout — see docs/intent-chat-and-modules-design.md,
+    // decision 2.
+    insta::assert_snapshot!(shape(&VoucherView {
+        token_id: 7,
+        voucher_type: "Gateway License".into(),
+        description: "Earned by relaying settled transactions as a gateway".into(),
+        owner: "0xfF8dd6dbB7B97b44044573cFE843dE1F463637a9".into(),
+        minted_by: "0xfF8dd6dbB7B97b44044573cFE843dE1F463637a9".into(),
+        slot: 2,
+        rarity: 1,
+        effect_bps: 500,
     }));
 }
 
@@ -147,6 +171,55 @@ fn deal_view_shape() {
         status: "active".into(),
         role: "buyer".into(),
     }));
+}
+
+#[test]
+fn module_loadout_shape() {
+    insta::assert_snapshot!(shape(&ModuleLoadout {
+        equipped: vec![EquippedSlot { slot: 2, token_id: 7 }],
+        multiplier: 1.05,
+    }));
+}
+
+// ---------------------------------------------------------------------------
+// Guardian mesh unlock
+// ---------------------------------------------------------------------------
+
+#[test]
+fn guardian_candidate_shape() {
+    insta::assert_snapshot!(shape(&GuardianCandidate {
+        peer_id: "7f3a1209c2e100aa".into(),
+        label: "7F3A…00AA".into(),
+        hops: 1,
+    }));
+}
+
+#[test]
+fn guardian_status_shape() {
+    insta::assert_snapshot!(shape(&GuardianStatus {
+        enrolled: true,
+        guardian_count: 5,
+        threshold: 3,
+        holding_for: 0,
+    }));
+}
+
+#[test]
+fn guardian_enroll_result_shape() {
+    insta::assert_snapshot!(shape(&GuardianEnrollResult {
+        enrolled: vec!["7f3a1209c2e100aa".into()],
+        no_reply: vec!["91bec2e10800aabb".into()],
+    }));
+}
+
+#[test]
+fn guardian_unlock_prompt_shape() {
+    insta::assert_snapshot!(shape(&GuardianUnlockPrompt { id: 42, from: "4B12…9F00".into() }));
+}
+
+#[test]
+fn security_status_shape() {
+    insta::assert_snapshot!(shape(&SecurityStatus { locked: false, passphrase_enabled: true }));
 }
 
 // ---------------------------------------------------------------------------
@@ -387,14 +460,31 @@ fn command_inventory() {
         "broadcast_intent",
         "cancel_intent",
         "enter_mesh",
+        "guardian_approve_unlock",
+        "guardian_candidates",
+        "guardian_deny_unlock",
+        "guardian_enroll",
+        "guardian_request_unlock",
+        "guardian_status",
         "intent_detail",
         "intent_form_options",
         "intent_proof",
         "list_intents",
         "list_nearby_nodes",
+        "market_buy",
+        "market_list_module",
+        "market_listings",
+        "market_my_deals",
+        "market_refund_deal",
+        "market_release_deal",
         "mesh_snapshot",
+        "parse_intent_chat",
         "preview_intent",
         "profile_summary",
+        "security_disable_passphrase",
+        "security_enable_passphrase",
+        "security_status",
+        "security_unlock",
         "session_status",
         "set_offline_mode",
         "settle_intent",
@@ -402,10 +492,17 @@ fn command_inventory() {
         "subscribe_settlement_log",
         "unsubscribe",
         "vault_assets",
+        "vault_equip_module",
+        "vault_export_key",
         "vault_identities",
+        "vault_import_key",
         "vault_keys",
+        "vault_loadout",
+        "vault_modules",
+        "vault_redeem_module",
+        "vault_unequip_module",
     ];
     commands.sort_unstable();
-    assert_eq!(commands.len(), 21, "command count changed");
+    assert_eq!(commands.len(), 45, "command count changed");
     insta::assert_snapshot!(commands.join("\n"));
 }

@@ -163,6 +163,21 @@ pub fn separated(value: u64) -> String {
     out
 }
 
+/// Payload for the `guardian-unlock-request` event: this device's own tag
+/// matched someone's unlock broadcast and a human needs to decide.
+///
+/// `from` is a truncated peer id for display only — never the durable
+/// identity of whoever is asking, because there is no durable identity to
+/// show. It is exactly as anonymous to this screen as the mesh itself keeps
+/// everyone by default.
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "camelCase")]
+pub struct GuardianUnlockPrompt {
+    pub id: u32,
+    pub from: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

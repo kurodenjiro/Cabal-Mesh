@@ -70,9 +70,14 @@ pub struct Services {
     pub ble_transport: String,
     pub agent: Arc<SharkAgent>,
     pub matcher: Arc<MatchAgent>,
+    pub intent_chat: Arc<crate::intent_chat::IntentChatParser>,
     pub zk_handler: Arc<ZKHandler>,
     pub ollama: Arc<OllamaManager>,
     pub bridge: Arc<Mutex<BlockchainBridge>>,
+    pub guardian: Arc<Mutex<crate::guardian::GuardianService>>,
+    /// Unlock replies waiting on a human's approve/deny tap. See
+    /// `guardian_actor::PendingApprovals`'s docs for why this exists at all.
+    pub guardian_approvals: crate::guardian_actor::PendingApprovals,
     pub relay_bytes: Arc<AtomicU64>,
 }
 

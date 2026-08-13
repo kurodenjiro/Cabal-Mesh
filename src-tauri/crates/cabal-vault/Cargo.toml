@@ -13,6 +13,7 @@ tracing = { workspace = true }
 cabal-store = { path = "../cabal-store" }
 aes-gcm = "0.10.3"
 argon2 = "0.5"
+hex = "0.4"
 zeroize = { version = "1", features = ["derive"] }
 
 [dev-dependencies]

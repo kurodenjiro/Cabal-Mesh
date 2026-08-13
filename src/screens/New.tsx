@@ -43,6 +43,10 @@ export function New({ onBroadcast }: { onBroadcast: (id: IntentId) => void }) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  const [chatText, setChatText] = useState("");
+  const [chatBusy, setChatBusy] = useState(false);
+  const [chatError, setChatError] = useState<string | null>(null);
+
   useEffect(() => {
     let cancelled = false;
     invoke<FormOptions>("intent_form_options")
@@ -97,8 +101,69 @@ export function New({ onBroadcast }: { onBroadcast: (id: IntentId) => void }) {
     }
   };
 
+  // Fills the same fields the segmented controls below hold — this is not a
+  // separate composer, it is a faster way to set the one form that already
+  // exists. Whatever the model returns still goes through the same
+  // `preview_intent` / `broadcast_intent` validation as if it had been
+  // tapped in by hand; nothing here is trusted more than that.
+  const parseChat = async () => {
+    if (!chatText.trim() || chatBusy) return;
+    setChatBusy(true);
+    setChatError(null);
+    try {
+      const parsed = await invoke<IntentFields>("parse_intent_chat", { text: chatText });
+      if (parsed.action) setAction(parsed.action);
+      if (parsed.asset) setAsset(parsed.asset);
+      if (parsed.condition) setCondition(parsed.condition);
+      if (parsed.price) setPrice(parsed.price);
+      if (parsed.amount) setAmount(parsed.amount);
+      if (parsed.mode) setMode(parsed.mode);
+      if (parsed.privacy) setPrivacy(parsed.privacy);
+    } catch (failure) {
+      setChatError(errorCopy(failure));
+    } finally {
+      setChatBusy(false);
+    }
+  };
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-6)", padding: "var(--space-6)" }}>
+      <Panel label="SAY WHAT YOU WANT TO DO">
+        <div style={{ padding: "var(--space-6)", display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
+          <Input
+            id="intent-chat"
+            multiline
+            rows={2}
+            value={chatText}
+            placeholder="buy 10 avax under 95, shark mode"
+            onChange={(event) => setChatText((event.target as HTMLTextAreaElement).value)}
+          />
+          <Button
+            tone="secondary"
+            size="md"
+            block
+            className="cm-touch"
+            disabled={chatBusy || !chatText.trim()}
+            onClick={() => void parseChat()}
+          >
+            {chatBusy ? "READING…" : "FILL FROM TEXT"}
+          </Button>
+          {chatError && (
+            <span style={{ fontSize: "var(--text-base)", color: "var(--accent-blood-red)" }}>{chatError}</span>
+          )}
+          <span
+            style={{
+              fontFamily: "var(--type-label-family)",
+              fontSize: "var(--text-2xs)",
+              letterSpacing: "var(--tracking-widest)",
+              color: "var(--text-disabled)",
+            }}
+          >
+            SETS THE FIELDS BELOW. REVIEW THEM BEFORE SENDING — NOTHING BROADCASTS FROM THIS BOX.
+          </span>
+        </div>
+      </Panel>
+
       <Panel label="I WANT TO">
         <div style={{ padding: "var(--space-6)" }}>
           <Segmented name="Action" options={options?.actions ?? []} value={action} onChange={setAction} />

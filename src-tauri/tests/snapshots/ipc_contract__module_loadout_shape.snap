@@ -1,0 +1,13 @@
+---
+source: tests/ipc_contract.rs
+expression: "shape(&ModuleLoadout\n{ equipped: vec![EquippedSlot { slot: 2, token_id: 7 }], multiplier: 1.05, })"
+---
+{
+  "equipped": [
+    {
+      "slot": 2,
+      "tokenId": 7
+    }
+  ],
+  "multiplier": 1.05
+}

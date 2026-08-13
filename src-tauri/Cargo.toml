@@ -48,6 +48,9 @@ ts-rs = ["dep:ts-rs", "cabal-core/ts-rs"]
 cabal-core = { path = "crates/cabal-core" }
 cabal-store = { path = "crates/cabal-store" }
 cabal-vault = { path = "crates/cabal-vault" }
+# Shamir sharing over a vault key and sealed-box encryption to a guardian's
+# public key. No I/O — the BLE wiring and persistence live in src/guardian.rs.
+cabal-guardian = { path = "crates/cabal-guardian" }
 # The BLE mesh protocol: wire format, flood routing, sessions. No I/O — the
 # radio-shaped half lives in src/ble/, which is small on purpose.
 cabal-ble = { path = "crates/cabal-ble" }

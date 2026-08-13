@@ -41,6 +41,9 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 mod secret;
 pub use secret::Secret;
 
+mod passphrase;
+pub use passphrase::PassphraseKeyProvider;
+
 /// Why a vault operation failed.
 ///
 /// No variant carries key material, ciphertext or a passphrase. `Display` on
@@ -130,6 +133,49 @@ pub trait KeyProvider: Send + Sync {
     fn describe(&self) -> &'static str;
 }
 
+/// Lets a [`Vault`] hold whichever provider was chosen at runtime.
+///
+/// `BlockchainBridge` picks file-backed or passphrase-derived depending on
+/// what `SECURITY → ADVANCED` has configured, and swaps providers again when
+/// the user turns passphrase protection on or off. A generic `Vault<P>`
+/// cannot express "P changes after construction"; a trait object can.
+impl KeyProvider for Box<dyn KeyProvider> {
+    fn data_key(&self) -> Result<DataKey, VaultError> {
+        (**self).data_key()
+    }
+
+    fn describe(&self) -> &'static str {
+        (**self).describe()
+    }
+}
+
+/// Hands back a key this crate did not derive and does not own.
+///
+/// For a candidate key that arrived some other way — guardian shares
+/// reconstructed via Shamir, most notably, where the reconstruction
+/// happens entirely outside this crate and the only thing left to do is
+/// see whether it actually opens the vault. `Vault::load` succeeding is
+/// what proves the candidate right; this type carries no opinion either
+/// way, it only makes the candidate speakable as a [`KeyProvider`].
+pub struct StaticKeyProvider(DataKey);
+
+impl StaticKeyProvider {
+    #[must_use]
+    pub const fn new(key: DataKey) -> Self {
+        Self(key)
+    }
+}
+
+impl KeyProvider for StaticKeyProvider {
+    fn data_key(&self) -> Result<DataKey, VaultError> {
+        Ok(self.0.clone())
+    }
+
+    fn describe(&self) -> &'static str {
+        "externally-supplied"
+    }
+}
+
 /// An encrypted document as written to disk.
 #[derive(Debug, Serialize, Deserialize)]
 struct Envelope {
@@ -158,6 +204,21 @@ impl<P: KeyProvider> Vault<P> {
             store: cabal_store::JsonStore::compact(path),
             provider,
         }
+    }
+
+    /// The key this vault currently encrypts under.
+    ///
+    /// For the guardian scheme, which has to split this same key with
+    /// Shamir's scheme before it can hand pieces of it to anyone — there is
+    /// no other legitimate reason to reach for the raw key, and the naming
+    /// stays conspicuous for that reason.
+    ///
+    /// # Errors
+    ///
+    /// [`VaultError::KeyUnavailable`], exactly as [`Vault::save`] and
+    /// [`Vault::load`] can fail to obtain the same key.
+    pub fn key(&self) -> Result<DataKey, VaultError> {
+        self.provider.data_key()
     }
 
     /// Whether an encrypted document exists.

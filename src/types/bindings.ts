@@ -9,6 +9,12 @@
  */
 export type AppError = { "kind": "not_ready", "detail": { subsystem: string, } } | { "kind": "unsupported", "detail": { feature: string, } } | { "kind": "mesh_offline" } | { "kind": "invalid_intent", "detail": { field: string, reason: InvalidReason, } } | { "kind": "chain", "detail": { retryable: boolean, } } | { "kind": "vault_locked" } | { "kind": "too_many_subscriptions", "detail": { limit: number, } } | { "kind": "internal" };
 
+/**
+ * A Marketplace listing, always backed by a real CabalMeshVoucher tokenId
+ * the seller owns on-chain (enforced by the contract itself at list time).
+ */
+export type AssetListingView = { id: number, seller: string, description: string, priceWei: string, priceAvax: string, tokenId: number, };
+
 export type AssetOption = { name: string, 
 /**
  * Three-letter tag the board shows beside the name.
@@ -79,9 +85,24 @@ relayed: bigint,
 suppressed: bigint, offline: boolean, };
 
 /**
+ * A Marketplace deal (real on-chain state: Active/Released/Refunded) —
+ * the real "someone is transacting on this listing" signal.
+ */
+export type DealView = { 
+/**
+ * u32 — see [`AssetListingView::id`]'s comment for why.
+ */
+dealId: number, buyer: string, seller: string, tokenId: number, amountAvax: string, status: string, role: string, };
+
+/**
  * Delta direction. Domain matches `StatBlock`'s `deltaTone`.
  */
 export type DeltaTone = "up" | "down" | "neutral";
+
+/**
+ * One slot's currently equipped module.
+ */
+export type EquippedSlot = { slot: number, tokenId: number, };
 
 /**
  * Why an intent failed. A variant rather than a message, so the UI can render
@@ -93,6 +114,46 @@ export type FailureReason = "no_route" | "node_failure" | "condition_unmet" | "s
  * The options the compose screen offers.
  */
 export type FormOptions = { actions: Array<string>, assets: Array<AssetOption>, conditions: Array<string>, modes: Array<ModeOption>, privacyLevels: Array<string>, };
+
+/**
+ * A nearby node the user could pick as a guardian.
+ */
+export type GuardianCandidate = { 
+/**
+ * Full peer id — opaque to the UI, round-tripped back verbatim to
+ * `guardian_enroll`. Never shown; `label` is what renders.
+ */
+peerId: string, 
+/**
+ * Truncated for display, e.g. `7F3A…C2E1`.
+ */
+label: string, hops: number, };
+
+/**
+ * Who accepted an enrollment invitation, and who did not answer.
+ */
+export type GuardianEnrollResult = { enrolled: Array<string>, noReply: Array<string>, };
+
+/**
+ * What `SECURITY` shows about the guardian scheme, in both roles this
+ * device can play.
+ */
+export type GuardianStatus = { enrolled: boolean, guardianCount: number, threshold: number, 
+/**
+ * How many other owners this device holds a share for.
+ */
+holdingFor: number, };
+
+/**
+ * Payload for the `guardian-unlock-request` event: this device's own tag
+ * matched someone's unlock broadcast and a human needs to decide.
+ *
+ * `from` is a truncated peer id for display only — never the durable
+ * identity of whoever is asking, because there is no durable identity to
+ * show. It is exactly as anonymous to this screen as the mesh itself keeps
+ * everyone by default.
+ */
+export type GuardianUnlockPrompt = { id: number, from: string, };
 
 /**
  * Everything the detail screen renders.
@@ -221,6 +282,18 @@ uptime: string, connected: boolean, stats: Array<StatTile>, };
 export type ModeOption = { label: string, description: string, };
 
 /**
+ * The `NODE LOADOUT` panel's data: what's equipped, and the multiplier it
+ * actually produces right now.
+ */
+export type ModuleLoadout = { equipped: Array<EquippedSlot>, 
+/**
+ * Computed fresh from on-chain ownership on every call — see
+ * `BlockchainBridge::get_relay_multiplier`'s docs for why this is
+ * never cached.
+ */
+multiplier: number, };
+
+/**
  * A peer, as the nodes screen shows it.
  *
  * **No distance.** A libp2p peer has an identifier and an address, not
@@ -304,6 +377,20 @@ filledAt: string | null, };
 export type ReviewRow = { key: string, value: string, };
 
 /**
+ * Current state of the vault's unlock method, for the startup gate and the
+ * `SECURITY` screen.
+ */
+export type SecurityStatus = { 
+/**
+ * True only while the vault is passphrase-protected and no correct
+ * passphrase has been supplied yet this session. The frontend gates
+ * entry to the app on this field, not on `passphraseEnabled` alone —
+ * `passphraseEnabled` stays true even seconds after a successful
+ * unlock, when `locked` has already gone false.
+ */
+locked: boolean, passphraseEnabled: boolean, };
+
+/**
  * What the splash screen needs to decide what it is offering.
  */
 export type SessionStatus = { 
@@ -374,3 +461,34 @@ tag: string, name: string, amount: string,
  * Secondary line. Absent when there is nothing true to say.
  */
 detail: string | null, };
+
+/**
+ * A voucher NFT owned by a given wallet (used by the Redeem page, and by
+ * `VAULT → MODULES`).
+ */
+export type VoucherView = { 
+/**
+ * u32 — see [`AssetListingView::id`]'s comment for why.
+ */
+tokenId: number, voucherType: string, description: string, owner: string, 
+/**
+ * The address that originally minted this voucher (proof-of-possession at
+ * listing time) — lets the UI distinguish "I bought this from someone"
+ * from "I minted this myself to sell and still hold it unsold".
+ */
+mintedBy: string, 
+/**
+ * 0 = RADIO, 1 = CRYPTO, 2 = POWER, 3 = SOULBOUND. Meaningless — always
+ * `0` — on a non-module voucher (AI compute credit, etc.); `effect_bps`
+ * being `0` is what actually says "nothing to equip here."
+ */
+slot: number, 
+/**
+ * 0 = COMMON, 1 = UNCOMMON, 2 = RARE, 3 = LEGENDARY.
+ */
+rarity: number, 
+/**
+ * The module's effect in basis points (1800 = +18%). Zero for
+ * non-module vouchers.
+ */
+effectBps: number, };

@@ -40,6 +40,22 @@ sol! {
     "abi/CabalMeshVoucher.abi.json"
 }
 
+sol! {
+    #[sol(rpc)]
+    IRelayRewards,
+    "abi/RelayRewards.abi.json"
+}
+
+// No `mint_voucher` bridge method: `mintVoucher` is restricted on-chain to
+// the `RelayRewards` contract address (see `contracts/CabalMeshVoucher.sol`
+// and `docs/intent-chat-and-modules-design.md`, decision 0 — the previous
+// version let any caller mint any voucher to themselves, for free). A
+// user's own signer calling it now always reverts; there is no version of
+// this method that could still work. Minting happens only as the atomic
+// side effect of `IRelayRewards::recordGatewayRelay`, which nothing calls
+// yet — wiring an actual gateway-relay flow to it is follow-up work, not
+// done in this pass.
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct IdentityRecord {
     pub alias: String,
@@ -79,19 +95,30 @@ pub struct Snapshot {
 /// A Marketplace listing, always backed by a real CabalMeshVoucher tokenId
 /// the seller owns on-chain (enforced by the contract itself at list time).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "camelCase")]
 pub struct AssetListingView {
-    pub id: u64,
+    // u32, not u64: ts-rs maps u64 to TypeScript `bigint`, which the
+    // frontend would then have to thread through every comparison and
+    // command argument involving an id. These are sequential counters from
+    // a Solidity `uint256` — u32's four billion ids is not a real ceiling
+    // for a marketplace, so there is nothing to trade away by using it.
+    pub id: u32,
     pub seller: String,
     pub description: String,
     pub price_wei: String,  // decimal wei string, same precision rule as CompressedAsset.amount
     pub price_avax: String, // formatted for display/prompting, e.g. "0.05"
-    pub token_id: u64,
+    pub token_id: u32,
 }
 
-/// A voucher NFT owned by a given wallet (used by the Redeem page).
+/// A voucher NFT owned by a given wallet (used by the Redeem page, and by
+/// `VAULT → MODULES`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "camelCase")]
 pub struct VoucherView {
-    pub token_id: u64,
+    /// u32 — see [`AssetListingView::id`]'s comment for why.
+    pub token_id: u32,
     pub voucher_type: String,
     pub description: String,
     pub owner: String,
@@ -99,16 +126,28 @@ pub struct VoucherView {
     /// listing time) — lets the UI distinguish "I bought this from someone"
     /// from "I minted this myself to sell and still hold it unsold".
     pub minted_by: String,
+    /// 0 = RADIO, 1 = CRYPTO, 2 = POWER, 3 = SOULBOUND. Meaningless — always
+    /// `0` — on a non-module voucher (AI compute credit, etc.); `effect_bps`
+    /// being `0` is what actually says "nothing to equip here."
+    pub slot: u8,
+    /// 0 = COMMON, 1 = UNCOMMON, 2 = RARE, 3 = LEGENDARY.
+    pub rarity: u8,
+    /// The module's effect in basis points (1800 = +18%). Zero for
+    /// non-module vouchers.
+    pub effect_bps: u16,
 }
 
 /// A Marketplace deal (real on-chain state: Active/Released/Refunded) —
 /// the real "someone is transacting on this listing" signal.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "camelCase")]
 pub struct DealView {
-    pub deal_id: u64,
+    /// u32 — see [`AssetListingView::id`]'s comment for why.
+    pub deal_id: u32,
     pub buyer: String,
     pub seller: String,
-    pub token_id: u64,
+    pub token_id: u32,
     pub amount_avax: String,
     pub status: String, // "active" | "released" | "refunded"
     pub role: String,   // "buyer" | "seller" (relative to the address queried)
@@ -223,18 +262,44 @@ pub struct BlockchainBridge {
     pub identities: Vec<IdentityRecord>,
     /// Encrypted store for identities. Replaces the plaintext
     /// `identities.json`, which held private keys in the clear.
-    pub identity_vault: Vault<crate::vault_key::FileKeyProvider>,
+    ///
+    /// Boxed rather than a concrete `FileKeyProvider`: `SECURITY` lets the
+    /// user switch to a passphrase-derived key at runtime (see
+    /// `enable_passphrase`/`disable_passphrase`), and a generic `Vault<P>`
+    /// cannot express a provider that changes after construction.
+    pub identity_vault: Vault<Box<dyn cabal_vault::KeyProvider>>,
+    /// Where `identity_vault` is written. Kept alongside it because switching
+    /// key providers means building a whole new `Vault` at the same path.
+    vault_path: PathBuf,
+    /// The file-backed key `identity_vault` uses in [`UnlockMode::File`].
+    /// Deleted once passphrase protection is enabled, so `KEYS` is not
+    /// claiming protection this file would quietly undermine.
+    vault_key_path: PathBuf,
+    /// Salt for the passphrase-derived key, present only in
+    /// [`UnlockMode::Passphrase`].
+    vault_salt_path: PathBuf,
+    security_state_path: PathBuf,
+    /// True from construction until the correct passphrase is supplied, when
+    /// `security_state`'s mode is [`UnlockMode::Passphrase`]. Always false in
+    /// [`UnlockMode::File`], since that key needs no user input to open.
+    locked: bool,
     pub storage_path: PathBuf,
     pub chain_cache_path: PathBuf,
     pub pending_relay_path: PathBuf,
     pub relayed_history_path: PathBuf,
     pub content_store_path: PathBuf,
     pub received_content_path: PathBuf,
-    pub relay_boost_path: PathBuf,
+    /// Which module is equipped per slot — local display preference only,
+    /// re-verified against real ownership on every read. See
+    /// `get_relay_multiplier`.
+    pub equipped_modules_path: PathBuf,
     pub rpc_url: String,
     pub escrow_address: Option<Address>,
     pub marketplace_address: Option<Address>,
     pub voucher_address: Option<Address>,
+    /// Pays a gateway for relaying, and mints modules at milestones. See
+    /// `docs/intent-chat-and-modules-design.md`, decisions 0 and 3.
+    pub relay_rewards_address: Option<Address>,
     pub current_session: Option<InstantSession>,
 }
 
@@ -255,34 +320,192 @@ impl BlockchainBridge {
         let escrow_address = network.escrow().and_then(|s| Address::from_str(&s).ok());
         let marketplace_address = network.marketplace().and_then(|s| Address::from_str(&s).ok());
         let voucher_address = network.voucher().and_then(|s| Address::from_str(&s).ok());
+        let relay_rewards_address = network.relay_rewards().and_then(|s| Address::from_str(&s).ok());
 
         let app_dir = crate::app_paths::data_dir();
+        let vault_path = app_dir.join("vault.enc");
+        let vault_key_path = app_dir.join("vault.key");
+        let vault_salt_path = app_dir.join("vault.salt");
+        let security_state_path = app_dir.join("security.json");
+
+        let security = crate::security_state::SecurityState::load(&JsonStore::new(security_state_path.clone()));
+        let (provider, locked): (Box<dyn cabal_vault::KeyProvider>, bool) = match security.mode {
+            crate::security_state::UnlockMode::File => {
+                (Box::new(crate::vault_key::platform_provider(vault_key_path.clone())), false)
+            }
+            // Nothing decrypts the vault until `unlock_with_passphrase`
+            // supplies the passphrase; `load_identities` below is skipped
+            // while locked, so `identities` stays empty rather than the
+            // command surface racing an open that never happened.
+            crate::security_state::UnlockMode::Passphrase => (Box::new(crate::vault_key::LockedProvider), true),
+        };
 
         let mut bridge = Self {
             identities: Vec::new(),
-            identity_vault: Vault::new(
-                app_dir.join("vault.enc"),
-                crate::vault_key::platform_provider(app_dir.join("vault.key")),
-            ),
+            identity_vault: Vault::new(vault_path.clone(), provider),
+            vault_path,
+            vault_key_path,
+            vault_salt_path,
+            security_state_path,
+            locked,
             storage_path: app_dir.join("snapshot.enc"),
             chain_cache_path: app_dir.join("chain_cache.json"),
             pending_relay_path: app_dir.join("pending_relay_txs.json"),
             relayed_history_path: app_dir.join("relayed_history.json"),
             content_store_path: app_dir.join("content_store.json"),
             received_content_path: app_dir.join("received_content.json"),
-            relay_boost_path: app_dir.join("relay_boost.json"),
+            equipped_modules_path: app_dir.join("equipped_modules.json"),
             rpc_url,
             escrow_address,
             marketplace_address,
             voucher_address,
+            relay_rewards_address,
             current_session: None,
         };
-        let _ = bridge.load_identities();
+        if !bridge.locked {
+            let _ = bridge.load_identities();
+        }
         bridge
     }
 
     fn save_identities(&self) -> Result<(), Box<dyn Error>> {
         self.identity_vault.save(&self.identities)?;
+        Ok(())
+    }
+
+    /// Whether the vault needs a passphrase before any identity can be read
+    /// or signed with. Always `false` in `UnlockMode::File`.
+    pub fn is_locked(&self) -> bool {
+        self.locked
+    }
+
+    /// Which key provider currently protects the vault. Re-read from disk
+    /// rather than cached, so it can never drift from what `enable_passphrase`
+    /// / `disable_passphrase` last committed.
+    pub fn security_mode(&self) -> crate::security_state::UnlockMode {
+        crate::security_state::SecurityState::load(&JsonStore::new(self.security_state_path.clone())).mode
+    }
+
+    /// Supplies the passphrase for a vault in `UnlockMode::Passphrase`.
+    ///
+    /// Verified by actually decrypting: Argon2id never fails on a wrong
+    /// passphrase, only the AES-GCM decrypt that follows does, so a derived
+    /// key that merely didn't error proves nothing. Only a successful decrypt
+    /// replaces `identity_vault` and populates `identities` — a wrong
+    /// passphrase leaves the bridge locked and untouched, so a mistyped
+    /// attempt cannot brick the real vault.
+    ///
+    /// # Errors
+    ///
+    /// The passphrase was wrong, or no salt exists (passphrase mode was
+    /// never actually enabled).
+    pub fn unlock_with_passphrase(&mut self, passphrase: &str) -> Result<Vec<IdentityView>, Box<dyn Error>> {
+        let provider = cabal_vault::PassphraseKeyProvider::open(&self.vault_salt_path, passphrase)?;
+        let candidate = Vault::new(self.vault_path.clone(), Box::new(provider) as Box<dyn cabal_vault::KeyProvider>);
+        let records: Vec<IdentityRecord> = candidate.load()?;
+
+        self.identity_vault = candidate;
+        self.identities = records;
+        self.locked = false;
+        self.get_identity_views()
+    }
+
+    /// The key currently protecting the vault, for splitting into guardian
+    /// shares. Whatever the current unlock mode derives it from — a
+    /// file-backed key or a passphrase — the guardian scheme does not care;
+    /// it only ever needs this one 32-byte value.
+    ///
+    /// # Errors
+    ///
+    /// The vault is locked, or the key is unavailable.
+    pub fn current_vault_key(&self) -> Result<cabal_vault::DataKey, Box<dyn Error>> {
+        Ok(self.identity_vault.key()?)
+    }
+
+    /// Supplies a vault key reconstructed from guardian shares.
+    ///
+    /// Exactly [`Self::unlock_with_passphrase`]'s shape, deliberately: a
+    /// Shamir reconstruction has no integrity check of its own (see
+    /// `cabal_guardian::reconstruct`'s docs) — the only thing that actually
+    /// proves `candidate` is right is the same thing that proves any vault
+    /// key right, `Vault::load` succeeding, because AES-GCM authenticates
+    /// and Shamir does not. A wrong candidate — too few genuine shares,
+    /// stale ones from a removed guardian, anything — fails to decrypt here
+    /// and leaves the bridge locked and untouched.
+    ///
+    /// # Errors
+    ///
+    /// The candidate key was wrong.
+    pub fn unlock_with_guardian_key(&mut self, candidate: cabal_vault::DataKey) -> Result<Vec<IdentityView>, Box<dyn Error>> {
+        let provider = cabal_vault::StaticKeyProvider::new(candidate);
+        let candidate_vault = Vault::new(self.vault_path.clone(), Box::new(provider) as Box<dyn cabal_vault::KeyProvider>);
+        let records: Vec<IdentityRecord> = candidate_vault.load()?;
+
+        self.identity_vault = candidate_vault;
+        self.identities = records;
+        self.locked = false;
+        self.get_identity_views()
+    }
+
+    /// Turns passphrase protection on: re-encrypts the vault under a key
+    /// derived from `passphrase`, deletes the file-backed key it replaces,
+    /// and persists the switch so the next launch asks for the passphrase.
+    ///
+    /// # Errors
+    ///
+    /// The vault is locked, or re-encryption failed to round-trip.
+    pub fn enable_passphrase(&mut self, passphrase: &str) -> Result<(), Box<dyn Error>> {
+        if self.locked {
+            return Err("cannot enable passphrase protection on a locked vault".into());
+        }
+
+        let provider = cabal_vault::PassphraseKeyProvider::create(&self.vault_salt_path, passphrase)?;
+        let new_vault = Vault::new(self.vault_path.clone(), Box::new(provider) as Box<dyn cabal_vault::KeyProvider>);
+        new_vault.save(&self.identities)?;
+
+        // Round-trip before committing: an unreadable re-encryption must
+        // leave the working vault exactly as it was, not swap in something
+        // this session can decrypt but a future one cannot.
+        let round_tripped: Vec<IdentityRecord> = new_vault.load()?;
+        if round_tripped != self.identities {
+            return Err("re-encrypted vault did not read back identically".into());
+        }
+
+        self.identity_vault = new_vault;
+        // The old key protects nothing now; leaving it on disk would make
+        // the KEYS screen's claim of passphrase protection false.
+        let _ = fs::remove_file(&self.vault_key_path);
+
+        crate::security_state::SecurityState { mode: crate::security_state::UnlockMode::Passphrase }
+            .save(&JsonStore::new(self.security_state_path.clone()))?;
+        Ok(())
+    }
+
+    /// Turns passphrase protection off: re-encrypts under a fresh file-backed
+    /// key and removes the salt.
+    ///
+    /// # Errors
+    ///
+    /// The vault is locked, or re-encryption failed to round-trip.
+    pub fn disable_passphrase(&mut self) -> Result<(), Box<dyn Error>> {
+        if self.locked {
+            return Err("cannot disable passphrase protection on a locked vault".into());
+        }
+
+        let provider = crate::vault_key::platform_provider(self.vault_key_path.clone());
+        let new_vault = Vault::new(self.vault_path.clone(), Box::new(provider) as Box<dyn cabal_vault::KeyProvider>);
+        new_vault.save(&self.identities)?;
+
+        let round_tripped: Vec<IdentityRecord> = new_vault.load()?;
+        if round_tripped != self.identities {
+            return Err("re-encrypted vault did not read back identically".into());
+        }
+
+        self.identity_vault = new_vault;
+        let _ = fs::remove_file(&self.vault_salt_path);
+
+        crate::security_state::SecurityState { mode: crate::security_state::UnlockMode::File }
+            .save(&JsonStore::new(self.security_state_path.clone()))?;
         Ok(())
     }
 
@@ -364,7 +587,6 @@ impl BlockchainBridge {
     pub fn logout_identity(&mut self) -> Result<Vec<IdentityView>, Box<dyn Error>> {
         self.identities.clear();
         let _ = self.delete_snapshot();
-        let _ = fs::remove_file(&self.relay_boost_path);
         self.generate_new_identity("Genesis Fox".to_string(), "🦊".to_string())
     }
 
@@ -386,7 +608,6 @@ impl BlockchainBridge {
 
         self.identities = vec![IdentityRecord { alias, emoji, private_key_hex: normalized.into() }];
         let _ = self.delete_snapshot();
-        let _ = fs::remove_file(&self.relay_boost_path);
         self.save_identities()?;
         self.get_identity_views()
     }
@@ -657,24 +878,6 @@ impl BlockchainBridge {
         Ok(())
     }
 
-    /// Multiplier applied to the (already-estimated, not real-payout) relay
-    /// earnings shown in Relay Mode — starts at 1.0 (no boost) and is
-    /// permanently increased by redeeming an "AI Compute Credit" or "Relay
-    /// Bandwidth Credit" item voucher. Persisted locally, same honesty level
-    /// as the rest of the relay-reward estimate (no real fund movement).
-    pub fn get_relay_boost_multiplier(&self) -> f64 {
-        fs::read_to_string(&self.relay_boost_path)
-            .ok()
-            .and_then(|s| s.trim().parse::<f64>().ok())
-            .unwrap_or(1.0)
-    }
-
-    pub fn apply_relay_boost(&self, additional: f64) -> Result<f64, Box<dyn Error>> {
-        let updated = self.get_relay_boost_multiplier() + additional;
-        JsonStore::compact(&self.relay_boost_path).save(&updated)?;
-        Ok(updated)
-    }
-
     pub fn mark_relay_tx_status(&self, id: &str, status: &str, tx_hash: Option<String>) -> Result<(), Box<dyn Error>> {
         let mut pending = self.load_pending_relay_txs();
         if let Some(entry) = pending.iter_mut().find(|t| t.id == id) {
@@ -912,37 +1115,9 @@ impl BlockchainBridge {
         }))
     }
 
-    /// Mints a new voucher NFT to the primary identity. This mint call is
-    /// itself the proof-of-possession step: only the real key-holder can
-    /// mint a token into their own name.
-    pub async fn mint_voucher(&self, voucher_type: &str, description: &str) -> Result<u64, Box<dyn Error>> {
-        let signer = self.primary_signer()?;
-        let voucher_address = self.voucher_address.ok_or("VOUCHER_CONTRACT_ADDRESS not configured")?;
-
-        let provider = ProviderBuilder::new().wallet(signer).connect_http(self.rpc_url.parse()?);
-        let contract = IVoucher::new(voucher_address, provider);
-
-        let receipt = contract
-            .mintVoucher(voucher_type.to_string(), description.to_string())
-            .send()
-            .await?
-            .get_receipt()
-            .await?;
-
-        let token_id = receipt
-            .logs()
-            .iter()
-            .find_map(|log| log.log_decode::<IVoucher::VoucherMinted>().ok())
-            .map(|l| l.inner.data.tokenId.to::<u64>())
-            .ok_or("VoucherMinted event not found in receipt")?;
-
-        tracing::info!("✅ [Bridge] Voucher {} minted. Tx: {:?}", token_id, receipt.transaction_hash);
-        Ok(token_id)
-    }
-
     /// Approves the Marketplace contract to pull a specific voucher out of
     /// the seller's wallet, required before that voucher can be listed.
-    pub async fn approve_voucher(&self, token_id: u64) -> Result<String, Box<dyn Error>> {
+    pub async fn approve_voucher(&self, token_id: u32) -> Result<String, Box<dyn Error>> {
         let signer = self.primary_signer()?;
         let voucher_address = self.voucher_address.ok_or("VOUCHER_CONTRACT_ADDRESS not configured")?;
         let marketplace_address = self.marketplace_address.ok_or("MARKETPLACE_CONTRACT_ADDRESS not configured")?;
@@ -961,9 +1136,47 @@ impl BlockchainBridge {
         Ok(format!("{:?}", receipt.transaction_hash))
     }
 
+    /// Pays `gateway` `fee_wei` for relaying a transaction to the chain, and
+    /// — atomically, on-chain, no separate step — mints a module once
+    /// `gateway`'s cumulative relayed value crosses a milestone. See
+    /// `docs/intent-chat-and-modules-design.md`, decisions 0/3/4, and
+    /// `contracts/contracts/RelayRewards.sol`.
+    ///
+    /// **Nothing calls this yet.** It is the missing primitive, not a
+    /// working reward flow: which gateway actually carried a given
+    /// transaction, and what fee the sender attaches, are product decisions
+    /// (fee amount, gateway selection) this method deliberately does not
+    /// make on its own. It exists so that whatever calls it later — once
+    /// those decisions are made — does not also have to reinvent the
+    /// on-chain call.
+    ///
+    /// # Errors
+    ///
+    /// `RELAY_REWARDS_CONTRACT_ADDRESS` not configured (nothing is
+    /// deployed as of this writing), or the call reverts — most likely
+    /// because `gateway` is the zero address or `fee_wei` is zero.
+    pub async fn record_gateway_relay(&self, gateway: Address, fee_wei: U256) -> Result<String, Box<dyn Error>> {
+        let signer = self.primary_signer()?;
+        let relay_rewards_address =
+            self.relay_rewards_address.ok_or("RELAY_REWARDS_CONTRACT_ADDRESS not configured")?;
+
+        let provider = ProviderBuilder::new().wallet(signer).connect_http(self.rpc_url.parse()?);
+        let contract = IRelayRewards::new(relay_rewards_address, provider);
+
+        let receipt = contract.recordGatewayRelay(gateway).value(fee_wei).send().await?.get_receipt().await?;
+
+        tracing::info!(
+            "✅ [Bridge] Recorded gateway relay for {:?}, fee {}. Tx: {:?}",
+            gateway,
+            fee_wei,
+            receipt.transaction_hash
+        );
+        Ok(format!("{:?}", receipt.transaction_hash))
+    }
+
     /// Publishes a real on-chain listing backed by an owned, approved voucher.
     /// Returns the generated listing id.
-    pub async fn create_asset_listing(&self, description: &str, price_wei: U256, token_id: u64) -> Result<u64, Box<dyn Error>> {
+    pub async fn create_asset_listing(&self, description: &str, price_wei: U256, token_id: u32) -> Result<u32, Box<dyn Error>> {
         let signer = self.primary_signer()?;
         let marketplace_address = self.marketplace_address.ok_or("MARKETPLACE_CONTRACT_ADDRESS not configured")?;
 
@@ -984,7 +1197,7 @@ impl BlockchainBridge {
             .logs()
             .iter()
             .find_map(|log| log.log_decode::<IMarketplace::ListingCreated>().ok())
-            .map(|l| l.inner.data.id.to::<u64>())
+            .map(|l| l.inner.data.id.to::<u32>())
             .ok_or("ListingCreated event not found in receipt")?;
 
         tracing::info!("✅ [Bridge] Listing {} created. Tx: {:?}", listing_id, receipt.transaction_hash);
@@ -1004,12 +1217,12 @@ impl BlockchainBridge {
             .iter()
             .zip(result.ids.iter())
             .map(|(listing, id)| AssetListingView {
-                id: id.to::<u64>(),
+                id: id.to::<u32>(),
                 seller: listing.seller.to_string(),
                 description: listing.description.clone(),
                 price_wei: listing.priceWei.to_string(),
                 price_avax: alloy::primitives::utils::format_ether(listing.priceWei),
-                token_id: listing.tokenId.to::<u64>(),
+                token_id: listing.tokenId.to::<u32>(),
             })
             .collect();
 
@@ -1020,7 +1233,7 @@ impl BlockchainBridge {
     /// the Marketplace contract in a single transaction. Returns the deal id.
     /// If the RPC can't be reached within a few seconds, falls back to
     /// signing the transaction offline and queuing it for mesh relay.
-    pub async fn buy_listing(&self, listing_id: u64, price_wei: U256) -> Result<TxResult, Box<dyn Error>> {
+    pub async fn buy_listing(&self, listing_id: u32, price_wei: U256) -> Result<TxResult, Box<dyn Error>> {
         let signer = self.primary_signer()?;
         let marketplace_address = self.marketplace_address.ok_or("MARKETPLACE_CONTRACT_ADDRESS not configured")?;
 
@@ -1078,15 +1291,15 @@ impl BlockchainBridge {
             .logs()
             .iter()
             .find_map(|log| log.log_decode::<IMarketplace::DealCreated>().ok())
-            .map(|l| l.inner.data.dealId.to::<u64>())
+            .map(|l| l.inner.data.dealId.to::<u32>())
             .ok_or("DealCreated event not found in receipt")?;
 
         tracing::info!("✅ [Bridge] Deal {} created (voucher + AVAX locked). Tx: {:?}", deal_id, receipt.transaction_hash);
-        Ok(TxResult::Confirmed { id: deal_id })
+        Ok(TxResult::Confirmed { id: u64::from(deal_id) })
     }
 
     /// Releases a deal: pays the seller and transfers the voucher to the buyer.
-    pub async fn release_deal(&self, deal_id: u64) -> Result<String, Box<dyn Error>> {
+    pub async fn release_deal(&self, deal_id: u32) -> Result<String, Box<dyn Error>> {
         let signer = self.primary_signer()?;
         let marketplace_address = self.marketplace_address.ok_or("MARKETPLACE_CONTRACT_ADDRESS not configured")?;
 
@@ -1099,7 +1312,7 @@ impl BlockchainBridge {
     }
 
     /// Refunds a deal: returns AVAX to the buyer and the voucher to the seller.
-    pub async fn refund_deal(&self, deal_id: u64) -> Result<String, Box<dyn Error>> {
+    pub async fn refund_deal(&self, deal_id: u32) -> Result<String, Box<dyn Error>> {
         let signer = self.primary_signer()?;
         let marketplace_address = self.marketplace_address.ok_or("MARKETPLACE_CONTRACT_ADDRESS not configured")?;
 
@@ -1113,7 +1326,7 @@ impl BlockchainBridge {
 
     /// Burns a voucher the caller owns, claiming the service it represents.
     /// Requires real on-chain ownership (`ownerOf(tokenId) == msg.sender`).
-    pub async fn redeem_voucher(&self, token_id: u64) -> Result<String, Box<dyn Error>> {
+    pub async fn redeem_voucher(&self, token_id: u32) -> Result<String, Box<dyn Error>> {
         let signer = self.primary_signer()?;
         let voucher_address = self.voucher_address.ok_or("VOUCHER_CONTRACT_ADDRESS not configured")?;
 
@@ -1126,7 +1339,7 @@ impl BlockchainBridge {
     }
 
     /// Reads the current on-chain owner of a voucher (no signer required).
-    pub async fn get_voucher_owner(&self, token_id: u64) -> Result<String, Box<dyn Error>> {
+    pub async fn get_voucher_owner(&self, token_id: u32) -> Result<String, Box<dyn Error>> {
         let voucher_address = self.voucher_address.ok_or("VOUCHER_CONTRACT_ADDRESS not configured")?;
         let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
         let contract = IVoucher::new(voucher_address, provider);
@@ -1144,7 +1357,7 @@ impl BlockchainBridge {
         let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
         let contract = IVoucher::new(voucher_address, provider);
 
-        let next_id = contract.nextTokenId().call().await?.to::<u64>();
+        let next_id = contract.nextTokenId().call().await?.to::<u32>();
 
         let mut owned = Vec::new();
         for token_id in 1..next_id {
@@ -1161,11 +1374,84 @@ impl BlockchainBridge {
                     description: data.description,
                     owner: current_owner.to_string(),
                     minted_by: data.mintedBy.to_string(),
+                    slot: data.slot,
+                    rarity: data.rarity,
+                    effect_bps: data.effectBps,
                 });
             }
         }
 
         Ok(owned)
+    }
+
+    /// Which module is equipped in each slot — a local display preference,
+    /// never a source of truth about ownership. Keyed by `slot` (0-3).
+    fn load_equipped_modules(&self) -> std::collections::HashMap<u8, u32> {
+        fs::read_to_string(&self.equipped_modules_path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
+    }
+
+    fn save_equipped_modules(&self, equipped: &std::collections::HashMap<u8, u32>) -> Result<(), Box<dyn Error>> {
+        JsonStore::compact(&self.equipped_modules_path).save(equipped)?;
+        Ok(())
+    }
+
+    /// Every slot's currently equipped token id, if any.
+    pub fn get_equipped_modules(&self) -> std::collections::HashMap<u8, u32> {
+        self.load_equipped_modules()
+    }
+
+    /// Sets which token is equipped in `slot`, replacing whatever was there.
+    /// Does **not** check ownership — that check belongs to
+    /// [`Self::get_relay_multiplier`], the one place equip state actually
+    /// has an effect, so a stale or wrong equip entry is inert rather than
+    /// something this setter has to guard against.
+    pub fn equip_module(&self, slot: u8, token_id: u32) -> Result<(), Box<dyn Error>> {
+        let mut equipped = self.load_equipped_modules();
+        equipped.insert(slot, token_id);
+        self.save_equipped_modules(&equipped)
+    }
+
+    pub fn unequip_module(&self, slot: u8) -> Result<(), Box<dyn Error>> {
+        let mut equipped = self.load_equipped_modules();
+        equipped.remove(&slot);
+        self.save_equipped_modules(&equipped)
+    }
+
+    /// The relay-yield multiplier from currently equipped modules — `1.0`
+    /// plus each equipped module's `effectBps`, but **only for modules the
+    /// primary identity still actually owns on-chain right now**.
+    ///
+    /// This is the enforcement point `docs/intent-chat-and-modules-design.md`
+    /// decision 1 exists for: the old `relay_boost.json` was a number a
+    /// local file simply claimed. Equip state alone is not proof of
+    /// anything — it is only ever a local preference for *which* owned
+    /// module counts, never *whether* one is owned — so every call re-reads
+    /// ownership from the chain rather than trusting that a token equipped
+    /// yesterday is still held today.
+    pub async fn get_relay_multiplier(&self) -> f64 {
+        let equipped = self.load_equipped_modules();
+        if equipped.is_empty() {
+            return 1.0;
+        }
+
+        let owner = self.get_primary_address();
+        let Ok(owned) = self.get_owned_vouchers(&owner).await else {
+            // Chain unreachable: no verified ownership, so no boost is
+            // claimed — an optimistic multiplier here would be exactly the
+            // "trust a local number" mistake decision 1 corrects.
+            return 1.0;
+        };
+
+        let mut multiplier = 1.0;
+        for token_id in equipped.values() {
+            if let Some(module) = owned.iter().find(|v| v.token_id == *token_id) {
+                multiplier += f64::from(module.effect_bps) / 10_000.0;
+            }
+        }
+        multiplier
     }
 
     /// A Marketplace deal this address is involved in (as buyer or seller),
@@ -1178,7 +1464,7 @@ impl BlockchainBridge {
         let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
         let contract = IMarketplace::new(marketplace_address, provider);
 
-        let next_id = contract.nextDealId().call().await?.to::<u64>();
+        let next_id = contract.nextDealId().call().await?.to::<u32>();
 
         let mut deals = Vec::new();
         for deal_id in 1..next_id {
@@ -1198,7 +1484,7 @@ impl BlockchainBridge {
                 deal_id,
                 buyer: deal.buyer.to_string(),
                 seller: deal.seller.to_string(),
-                token_id: deal.tokenId.to::<u64>(),
+                token_id: deal.tokenId.to::<u32>(),
                 amount_avax: alloy::primitives::utils::format_ether(deal.amount),
                 status: status.to_string(),
                 role: if deal.seller == my_addr { "seller".to_string() } else { "buyer".to_string() },
@@ -1322,20 +1608,26 @@ mod offline_signing_tests {
             identities: Vec::new(),
             identity_vault: Vault::new(
                 tmp_dir.join("vault.enc"),
-                crate::vault_key::platform_provider(tmp_dir.join("vault.key")),
+                Box::new(crate::vault_key::platform_provider(tmp_dir.join("vault.key"))),
             ),
+            vault_path: tmp_dir.join("vault.enc"),
+            vault_key_path: tmp_dir.join("vault.key"),
+            vault_salt_path: tmp_dir.join("vault.salt"),
+            security_state_path: tmp_dir.join("security.json"),
+            locked: false,
             storage_path: tmp_dir.join("snapshot.enc"),
             chain_cache_path: tmp_dir.join("chain_cache.json"),
             pending_relay_path: tmp_dir.join("pending_relay_txs.json"),
             relayed_history_path: tmp_dir.join("relayed_history.json"),
             content_store_path: tmp_dir.join("content_store.json"),
             received_content_path: tmp_dir.join("received_content.json"),
-            relay_boost_path: tmp_dir.join("relay_boost.json"),
+            equipped_modules_path: tmp_dir.join("equipped_modules.json"),
             // Deliberately unreachable — proves sign_offline never touches the network.
             rpc_url: "http://127.0.0.1:9".to_string(),
             escrow_address: None,
             marketplace_address: None,
             voucher_address: None,
+            relay_rewards_address: None,
             current_session: None,
         };
         bridge.generate_new_identity("Test".to_string(), "🧪".to_string()).unwrap();
@@ -1384,19 +1676,25 @@ mod content_commitment_tests {
             identities: Vec::new(),
             identity_vault: Vault::new(
                 tmp_dir.join("vault.enc"),
-                crate::vault_key::platform_provider(tmp_dir.join("vault.key")),
+                Box::new(crate::vault_key::platform_provider(tmp_dir.join("vault.key"))),
             ),
+            vault_path: tmp_dir.join("vault.enc"),
+            vault_key_path: tmp_dir.join("vault.key"),
+            vault_salt_path: tmp_dir.join("vault.salt"),
+            security_state_path: tmp_dir.join("security.json"),
+            locked: false,
             storage_path: tmp_dir.join("snapshot.enc"),
             chain_cache_path: tmp_dir.join("chain_cache.json"),
             pending_relay_path: tmp_dir.join("pending_relay_txs.json"),
             relayed_history_path: tmp_dir.join("relayed_history.json"),
             content_store_path: tmp_dir.join("content_store.json"),
             received_content_path: tmp_dir.join("received_content.json"),
-            relay_boost_path: tmp_dir.join("relay_boost.json"),
+            equipped_modules_path: tmp_dir.join("equipped_modules.json"),
             rpc_url: "http://127.0.0.1:9".to_string(),
             escrow_address: None,
             marketplace_address: None,
             voucher_address: None,
+            relay_rewards_address: None,
             current_session: None,
         }
     }
@@ -1437,6 +1735,241 @@ mod content_commitment_tests {
             .expect("receive_content should not error even on mismatch");
         assert!(!rejected, "a signature from someone else must never be silently accepted");
         assert!(buyer_bridge.get_received_content(2).is_none());
+
+        std::fs::remove_dir_all(&tmp_dir).ok();
+    }
+
+    #[test]
+    fn equipping_and_unequipping_a_module_persists_locally() {
+        let tmp_dir = std::env::temp_dir().join(format!("cabalmesh_equip_test_{}", std::process::id()));
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let bridge = test_bridge(&tmp_dir);
+
+        assert!(bridge.get_equipped_modules().is_empty());
+
+        bridge.equip_module(0, 7).unwrap();
+        assert_eq!(bridge.get_equipped_modules().get(&0), Some(&7));
+
+        // Equipping a second module in the same slot replaces the first —
+        // one module per slot, matching the design doc's loadout.
+        bridge.equip_module(0, 12).unwrap();
+        assert_eq!(bridge.get_equipped_modules().get(&0), Some(&12));
+
+        bridge.unequip_module(0).unwrap();
+        assert!(bridge.get_equipped_modules().is_empty());
+
+        std::fs::remove_dir_all(&tmp_dir).ok();
+    }
+
+    #[tokio::test]
+    async fn the_relay_multiplier_is_1_with_nothing_equipped() {
+        let tmp_dir = std::env::temp_dir().join(format!("cabalmesh_multiplier_none_test_{}", std::process::id()));
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let bridge = test_bridge(&tmp_dir);
+
+        assert_eq!(bridge.get_relay_multiplier().await, 1.0);
+
+        std::fs::remove_dir_all(&tmp_dir).ok();
+    }
+
+    #[tokio::test]
+    async fn the_relay_multiplier_falls_back_to_1_rather_than_trust_a_stale_equip_entry() {
+        // The whole point of decision 1 in docs/intent-chat-and-modules-design.md:
+        // equipping a module is a local preference, never proof of ownership.
+        // With the chain unreachable there is no way to verify the equipped
+        // token is still held, so the multiplier must not claim a boost it
+        // cannot back — the same honesty rule `relay_boost.json` violated.
+        let tmp_dir = std::env::temp_dir().join(format!("cabalmesh_multiplier_unreachable_test_{}", std::process::id()));
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let mut bridge = test_bridge(&tmp_dir);
+        bridge.voucher_address = Some(Address::from_str("0x0000000000000000000000000000000000000001").unwrap());
+        bridge.equip_module(0, 1).unwrap();
+
+        // rpc_url in test_bridge is deliberately unreachable.
+        assert_eq!(bridge.get_relay_multiplier().await, 1.0);
+
+        std::fs::remove_dir_all(&tmp_dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+
+    /// Builds a bridge exactly as `BlockchainBridge::new` does, but scoped to
+    /// `tmp_dir` instead of the real app directory — so calling this twice
+    /// against the same directory simulates a process restart: whatever
+    /// `enable_passphrase` / `disable_passphrase` wrote to disk in the first
+    /// call is what the second call reads.
+    fn bridge_from_disk(tmp_dir: &PathBuf) -> BlockchainBridge {
+        let vault_path = tmp_dir.join("vault.enc");
+        let vault_key_path = tmp_dir.join("vault.key");
+        let vault_salt_path = tmp_dir.join("vault.salt");
+        let security_state_path = tmp_dir.join("security.json");
+
+        let security = crate::security_state::SecurityState::load(&JsonStore::new(security_state_path.clone()));
+        let (provider, locked): (Box<dyn cabal_vault::KeyProvider>, bool) = match security.mode {
+            crate::security_state::UnlockMode::File => {
+                (Box::new(crate::vault_key::platform_provider(vault_key_path.clone())), false)
+            }
+            crate::security_state::UnlockMode::Passphrase => (Box::new(crate::vault_key::LockedProvider), true),
+        };
+
+        let mut bridge = BlockchainBridge {
+            identities: Vec::new(),
+            identity_vault: Vault::new(vault_path.clone(), provider),
+            vault_path,
+            vault_key_path,
+            vault_salt_path,
+            security_state_path,
+            locked,
+            storage_path: tmp_dir.join("snapshot.enc"),
+            chain_cache_path: tmp_dir.join("chain_cache.json"),
+            pending_relay_path: tmp_dir.join("pending_relay_txs.json"),
+            relayed_history_path: tmp_dir.join("relayed_history.json"),
+            content_store_path: tmp_dir.join("content_store.json"),
+            received_content_path: tmp_dir.join("received_content.json"),
+            equipped_modules_path: tmp_dir.join("equipped_modules.json"),
+            rpc_url: "http://127.0.0.1:9".to_string(),
+            escrow_address: None,
+            marketplace_address: None,
+            voucher_address: None,
+            relay_rewards_address: None,
+            current_session: None,
+        };
+        if !bridge.locked {
+            let _ = bridge.load_identities();
+        }
+        bridge
+    }
+
+    #[test]
+    fn enabling_passphrase_survives_a_restart() {
+        let tmp_dir = std::env::temp_dir().join(format!("cabalmesh_security_enable_test_{}", std::process::id()));
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+
+        let mut bridge = bridge_from_disk(&tmp_dir);
+        bridge.generate_new_identity("Test".to_string(), "🔐".to_string()).unwrap();
+        let original = bridge.identities.clone();
+
+        bridge.enable_passphrase("correct horse battery staple").unwrap();
+        assert_eq!(bridge.security_mode(), crate::security_state::UnlockMode::Passphrase);
+        assert!(
+            !bridge.vault_key_path.exists(),
+            "the file-backed key must be gone once a passphrase protects the vault"
+        );
+
+        // A fresh process reading the same directory must come up locked,
+        // with no identities in memory until the passphrase is supplied.
+        let mut restarted = bridge_from_disk(&tmp_dir);
+        assert!(restarted.is_locked());
+        assert!(restarted.identities.is_empty());
+
+        assert!(
+            restarted.unlock_with_passphrase("wrong passphrase").is_err(),
+            "a wrong passphrase must be rejected"
+        );
+        assert!(restarted.is_locked(), "a rejected passphrase must not unlock the vault");
+
+        let views = restarted.unlock_with_passphrase("correct horse battery staple").unwrap();
+        assert!(!restarted.is_locked());
+        assert_eq!(restarted.identities, original);
+        // `bridge_from_disk` auto-generates a "Genesis Fox" identity the
+        // first time it runs (matching the app's zero-friction first-run
+        // behaviour), so `original` already holds that plus the "Test"
+        // identity pushed below — this just confirms nothing was lost or
+        // duplicated across the enable/lock/unlock round trip.
+        assert_eq!(views.len(), original.len());
+
+        std::fs::remove_dir_all(&tmp_dir).ok();
+    }
+
+    #[test]
+    fn disabling_passphrase_restores_file_backed_unlock() {
+        let tmp_dir = std::env::temp_dir().join(format!("cabalmesh_security_disable_test_{}", std::process::id()));
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+
+        let mut bridge = bridge_from_disk(&tmp_dir);
+        bridge.generate_new_identity("Test".to_string(), "🔓".to_string()).unwrap();
+        let original = bridge.identities.clone();
+
+        bridge.enable_passphrase("hunter2222").unwrap();
+        bridge.disable_passphrase().unwrap();
+        assert_eq!(bridge.security_mode(), crate::security_state::UnlockMode::File);
+        assert!(!bridge.vault_salt_path.exists(), "the salt must be gone once passphrase protection is off");
+
+        // A fresh process must come up unlocked and already holding the
+        // identities — file mode needs no user input to open.
+        let restarted = bridge_from_disk(&tmp_dir);
+        assert!(!restarted.is_locked());
+        assert_eq!(restarted.identities, original);
+
+        std::fs::remove_dir_all(&tmp_dir).ok();
+    }
+
+    #[test]
+    fn enabling_passphrase_on_a_locked_vault_is_refused() {
+        let tmp_dir = std::env::temp_dir().join(format!("cabalmesh_security_locked_test_{}", std::process::id()));
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+
+        let mut bridge = bridge_from_disk(&tmp_dir);
+        bridge.generate_new_identity("Test".to_string(), "🔐".to_string()).unwrap();
+        bridge.enable_passphrase("correct horse battery staple").unwrap();
+
+        // Nothing has unlocked this instance, so there is no in-memory
+        // plaintext to re-encrypt — enabling again must refuse rather than
+        // silently re-encrypting an empty identity list over the real vault.
+        let mut locked_view = bridge_from_disk(&tmp_dir);
+        assert!(locked_view.is_locked());
+        assert!(locked_view.enable_passphrase("another passphrase").is_err());
+
+        std::fs::remove_dir_all(&tmp_dir).ok();
+    }
+
+    #[test]
+    fn a_key_reconstructed_from_guardian_shares_unlocks_the_real_vault() {
+        // The other half of the guardian scheme's contract: `cabal_guardian`
+        // proves reconstruction round-trips a `DataKey` in its own tests,
+        // but the property that actually matters is whether that key opens
+        // *this* vault — which is what `Vault::load` authenticating proves,
+        // not anything Shamir's math can promise on its own.
+        let tmp_dir = std::env::temp_dir().join(format!("cabalmesh_guardian_unlock_test_{}", std::process::id()));
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+
+        let mut bridge = bridge_from_disk(&tmp_dir);
+        bridge.generate_new_identity("Test".to_string(), "🛡️".to_string()).unwrap();
+        let original = bridge.identities.clone();
+
+        let vault_key = bridge.current_vault_key().unwrap();
+        let shares = cabal_guardian::split(&vault_key, 3, 5).unwrap();
+        let reconstructed = cabal_guardian::reconstruct(3, &shares[1..4]).unwrap();
+
+        let views = bridge.unlock_with_guardian_key(reconstructed).unwrap();
+        assert!(!bridge.is_locked());
+        assert_eq!(bridge.identities, original);
+        assert_eq!(views.len(), original.len());
+
+        std::fs::remove_dir_all(&tmp_dir).ok();
+    }
+
+    #[test]
+    fn a_wrong_reconstructed_key_is_refused() {
+        let tmp_dir = std::env::temp_dir().join(format!("cabalmesh_guardian_unlock_wrong_test_{}", std::process::id()));
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+
+        let mut bridge = bridge_from_disk(&tmp_dir);
+        bridge.generate_new_identity("Test".to_string(), "🛡️".to_string()).unwrap();
+        let original = bridge.identities.clone();
+
+        // Shares from an unrelated split — the exact scenario the guardian
+        // crate's own docs warn reconstruction cannot detect on its own.
+        let wrong_key = cabal_vault::DataKey::from_bytes([0xAB; 32]);
+        let wrong_shares = cabal_guardian::split(&wrong_key, 3, 5).unwrap();
+        let reconstructed = cabal_guardian::reconstruct(3, &wrong_shares[0..3]).unwrap();
+
+        assert!(bridge.unlock_with_guardian_key(reconstructed).is_err());
+        assert!(!bridge.is_locked(), "a rejected candidate must not disturb an already-unlocked vault");
+        assert_eq!(bridge.identities, original);
 
         std::fs::remove_dir_all(&tmp_dir).ok();
     }
