@@ -146,6 +146,11 @@ lopdf = "0.44"
 # Wipes key material from memory on drop, so a heap dump after the fact does
 # not still contain it.
 zeroize = "1"
+
+# Turns the user's passphrase into the key that wraps the vault key. Memory
+# hardness is the property being bought: an attacker holding a copy of the key
+# file pays 64 MiB per guess, which is what a GPU farm cannot make cheap.
+argon2 = "0.5"
 thiserror.workspace = true
 tokio-util = { version = "0.7.19", features = ["rt"] }
 ts-rs = { version = "12.0.1", optional = true }
@@ -162,6 +167,12 @@ ts-rs = { version = "12.0.1", optional = true }
 # this keeps the local desktop dev workflow intact until then.
 [target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
 dotenv = "0.15.0"
+
+# Apple's Security.framework, for the device-bound half of the vault key. Only
+# where it exists: every other platform reports honestly that it has no binding
+# rather than linking a stub that pretends to.
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+security-framework = "3"
 
 # Apple platforms route to the unified log, so iOS output shows in Console.app
 # and macOS `log stream` — the only way to see anything from a device.

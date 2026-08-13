@@ -20,6 +20,14 @@ impl SystemBootstrap {
     pub async fn phase_1_sync(bridge: &Arc<Mutex<BlockchainBridge>>, app: &AppHandle) {
         Self::emit(app, "PHASE_1_SYNC", "Checking connection...", 10);
 
+        // Nothing to sync for: the wallet lives behind the vault passphrase,
+        // and syncing before it arrives would query the address `unknown` and
+        // report the resulting failure as a chain error on the splash screen.
+        if !bridge.lock().await.vault_state().is_unlocked() {
+            Self::emit(app, "PHASE_1_SYNC", "Vault locked. Waiting for the passphrase.", 30);
+            return;
+        }
+
         if Self::check_connectivity().await {
             Self::emit(app, "PHASE_1_SYNC", "Online. Syncing Avalanche RPC balance...", 20);
             let bridge_lock = bridge.lock().await;

@@ -222,6 +222,38 @@ pub struct IdentityView {
     pub address: String, // 0x-prefixed EVM address
 }
 
+/// Evidence that a wallet's key has been shown to its owner at least once.
+///
+/// Holds no key material — an address and a time. It exists so the app can
+/// tell "this wallet is recoverable" from "destroying this wallet destroys the
+/// funds in it", which is the difference between a replaceable wallet and an
+/// irreversible mistake.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeyBackupRecord {
+    /// The address that was revealed. Checked against the current wallet, so
+    /// one wallet's export never vouches for another's.
+    pub address: String,
+    pub exported_at: DateTime<Utc>,
+}
+
+/// What a restore attempt did, or why it did nothing.
+///
+/// Refusals are values rather than errors because each has different copy and
+/// a different next step for the user, and an error string cannot be switched
+/// on.
+#[derive(Debug, Clone)]
+pub enum WalletRestore {
+    Replaced {
+        address: String,
+        identities: Vec<IdentityView>,
+    },
+    /// The wallet about to be destroyed has never been revealed, so nobody can
+    /// get back into it. Nothing was changed.
+    BackupRequired { address: String },
+    /// The supplied text is not a private key. Nothing was changed.
+    InvalidKey,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompressedAsset {
     pub id: String,
@@ -719,7 +751,13 @@ pub struct BlockchainBridge {
     pub identities: Vec<IdentityRecord>,
     /// Encrypted store for identities. Replaces the plaintext
     /// `identities.json`, which held private keys in the clear.
-    pub identity_vault: Vault<crate::vault_key::FileKeyProvider>,
+    pub identity_vault: Vault<crate::vault_key::WrappedKeyProvider>,
+    /// A second handle on the same key provider the vault holds.
+    ///
+    /// `Vault` does not expose its provider, and unlocking is not a vault
+    /// operation — it is what has to happen before one is possible. Both
+    /// handles share the unlock slot, so opening this one opens the vault.
+    pub vault_key: crate::vault_key::WrappedKeyProvider,
     pub storage_path: PathBuf,
     pub chain_cache_path: PathBuf,
     pub module_loadout_cache_path: PathBuf,
@@ -728,6 +766,12 @@ pub struct BlockchainBridge {
     pub content_store_path: PathBuf,
     pub received_content_path: PathBuf,
     pub relay_boost_path: PathBuf,
+    /// Records that this wallet's key has been shown to its owner.
+    ///
+    /// Plaintext on purpose: it holds an address and a timestamp, never key
+    /// material, and encrypting it would put the record of "you can recover
+    /// this wallet" behind the very thing the user may have lost access to.
+    pub key_backup_path: PathBuf,
     pub rpc_url: String,
     pub chain_id: u64,
     pub escrow_address: Option<Address>,
@@ -788,12 +832,14 @@ impl BlockchainBridge {
 
         let app_dir = crate::app_paths::data_dir();
 
+        let vault_key = crate::vault_key::platform_provider(
+            app_dir.join("vault.key"),
+            crate::vault_key::VaultUnlock::new(),
+        );
         let mut bridge = Self {
             identities: Vec::new(),
-            identity_vault: Vault::new(
-                app_dir.join("vault.enc"),
-                crate::vault_key::platform_provider(app_dir.join("vault.key")),
-            ),
+            identity_vault: Vault::new(app_dir.join("vault.enc"), vault_key.clone()),
+            vault_key,
             storage_path: app_dir.join("snapshot.enc"),
             chain_cache_path: app_dir.join("chain_cache.json"),
             module_loadout_cache_path: app_dir.join("module_loadout_cache.json"),
@@ -802,6 +848,7 @@ impl BlockchainBridge {
             content_store_path: app_dir.join("content_store.json"),
             received_content_path: app_dir.join("received_content.json"),
             relay_boost_path: app_dir.join("relay_boost.json"),
+            key_backup_path: app_dir.join("key_backup.json"),
             rpc_url,
             chain_id: network.network.chain_id(),
             escrow_address,
@@ -823,7 +870,59 @@ impl BlockchainBridge {
         Ok(())
     }
 
+    /// Whether the vault can be read yet, and whether one exists at all.
+    #[must_use]
+    pub fn vault_state(&self) -> crate::vault_key::VaultState {
+        self.vault_key.state()
+    }
+
+    /// Supplies the passphrase and, if it opens the vault, loads the
+    /// identities it protects.
+    ///
+    /// Loading here rather than leaving it to the caller is what makes the
+    /// unlock complete: a vault that opened but whose identities were never
+    /// read would leave every signing path reporting an empty wallet.
+    pub fn unlock_vault(
+        &mut self,
+        secret: &Secret,
+    ) -> Result<(), crate::vault_key::UnlockFailure> {
+        self.vault_key.unlock(secret)?;
+
+        if self.identity_vault.exists() {
+            match self.identity_vault.load::<Vec<IdentityRecord>>() {
+                Ok(records) => self.identities = records,
+                Err(error) => {
+                    // The key opened but the vault did not. Refusing here
+                    // rather than generating a replacement wallet is the
+                    // difference between a bad day and a destroyed one.
+                    tracing::error!(target: "cabalmesh::vault", %error, "vault key opened but identities did not");
+                    self.vault_key.lock();
+                    return Err(crate::vault_key::UnlockFailure::Unusable);
+                }
+            }
+        }
+
+        if self.identities.is_empty() {
+            let _ = self.generate_new_identity("Genesis Fox".to_string(), "🦊".to_string());
+        }
+        Ok(())
+    }
+
+    /// Forgets the key. The passphrase is required again.
+    pub fn lock_vault(&mut self) {
+        self.identities.clear();
+        self.vault_key.lock();
+    }
+
     pub fn load_identities(&mut self) -> Result<Vec<IdentityView>, Box<dyn Error>> {
+        // Nothing below is possible without the key, and every branch of it
+        // would do the wrong thing without one: migration would fail, and the
+        // "no vault yet" branch would generate a wallet on top of one that is
+        // merely locked. A locked vault is a state, not a fresh install.
+        if !self.vault_key.is_unlocked() {
+            return Err(Box::new(cabal_vault::VaultError::KeyUnavailable));
+        }
+
         // Adopt any pre-encryption wallet first. This verifies a full decrypt
         // round trip before removing the plaintext, so a failure here leaves
         // the old file exactly where it was.
@@ -902,53 +1001,99 @@ impl BlockchainBridge {
         Ok(views)
     }
 
-    /// Discards the current wallet entirely and replaces it with a fresh
-    /// randomly-generated one. There's no multi-wallet slot concept anywhere
-    /// in this bridge (every signing path hard-codes `identities[0]`), so
-    /// "logout" means wiping the vec and generating a brand-new identity to
-    /// take its place, not just clearing state and leaving no signer at all.
-    pub fn logout_identity(&mut self) -> Result<Vec<IdentityView>, Box<dyn Error>> {
-        self.identities.clear();
-        let _ = self.delete_snapshot();
-        let _ = fs::remove_file(&self.relay_boost_path);
-        self.generate_new_identity("Genesis Fox".to_string(), "🦊".to_string())
+    /// Whether the current wallet's key has been shown to its owner.
+    ///
+    /// A record naming a **different** address is not evidence about this
+    /// wallet, which is the entire reason the address is stored alongside the
+    /// timestamp. Exporting wallet A and then restoring wallet B must not make
+    /// B look backed up.
+    #[must_use]
+    pub fn key_backup(&self) -> Option<KeyBackupRecord> {
+        let address = self.get_primary_address();
+        fs::read_to_string(&self.key_backup_path)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<KeyBackupRecord>(&raw).ok())
+            .filter(|record| record.address.eq_ignore_ascii_case(&address))
     }
 
-    /// Replaces the current wallet identity with one derived from a
-    /// user-supplied private key. The key is validated (it must actually
-    /// derive a signer) before anything is persisted to disk.
-    pub fn import_identity(
+    /// Reveals the current wallet's private key, and records that it was
+    /// revealed.
+    ///
+    /// Revealing and recording are one operation on purpose. The record is
+    /// what later permits this wallet to be replaced, so a path that showed
+    /// the key without recording it would leave the owner unable to restore,
+    /// and a path that recorded without showing would be a lie.
+    ///
+    /// The key is returned and never logged. Nothing in this function may
+    /// gain a `tracing` call that takes the key, however useful it looks.
+    pub fn reveal_primary_key(&self) -> Result<(String, Secret, KeyBackupRecord), Box<dyn Error>> {
+        let identity = self.identities.first().ok_or("no identity to reveal")?;
+        let address = PrivateKeySigner::from_str(identity.private_key_hex.expose())?
+            .address()
+            .to_string();
+
+        let record = KeyBackupRecord {
+            address: address.clone(),
+            exported_at: Utc::now(),
+        };
+        JsonStore::new(&self.key_backup_path).save(&record)?;
+
+        Ok((address, identity.private_key_hex.clone(), record))
+    }
+
+    /// Replaces the current wallet with one derived from a user-supplied
+    /// private key.
+    ///
+    /// Refuses unless the wallet being replaced has been revealed at least
+    /// once, because this is the operation that destroys it. The check lives
+    /// here rather than in the command layer so that a second caller cannot
+    /// arrive later and skip it.
+    pub fn restore_identity(
         &mut self,
-        private_key_hex: String,
+        private_key_hex: &str,
         alias: String,
         emoji: String,
-    ) -> Result<Vec<IdentityView>, Box<dyn Error>> {
-        let normalized = if private_key_hex.starts_with("0x") {
-            private_key_hex.trim().to_string()
+    ) -> Result<WalletRestore, Box<dyn Error>> {
+        let trimmed = private_key_hex.trim();
+        let normalized = if trimmed.starts_with("0x") {
+            trimmed.to_string()
         } else {
-            format!("0x{}", private_key_hex.trim())
+            format!("0x{trimmed}")
         };
-        PrivateKeySigner::from_str(&normalized)?;
+        // Validated before anything is persisted: a rejected key must leave
+        // the existing wallet exactly as it was.
+        let Ok(signer) = PrivateKeySigner::from_str(&normalized) else {
+            return Ok(WalletRestore::InvalidKey);
+        };
 
+        if !self.identities.is_empty() && self.key_backup().is_none() {
+            return Ok(WalletRestore::BackupRequired {
+                address: self.get_primary_address(),
+            });
+        }
+
+        let address = signer.address().to_string();
         self.identities = vec![IdentityRecord {
             alias,
             emoji,
             private_key_hex: normalized.into(),
         }];
+        // State belonging to the replaced wallet, not this one. A balance
+        // snapshot or a relay multiplier carried across would describe an
+        // address that is no longer here.
         let _ = self.delete_snapshot();
         let _ = fs::remove_file(&self.relay_boost_path);
+        // The restored wallet has not been exported *from this device*. The
+        // user may hold the key they just typed, but this device has no
+        // evidence of that, and inheriting the previous wallet's record would
+        // let one export authorise unlimited replacements.
+        let _ = fs::remove_file(&self.key_backup_path);
         self.save_identities()?;
-        self.get_identity_views()
-    }
 
-    /// The raw private key for the current wallet, so the user can save it
-    /// before logging out / importing a different one — this is the only
-    /// way to actually get back to a wallet after switching away from it,
-    /// since nothing else persists it anywhere recoverable.
-    pub fn get_primary_private_key(&self) -> Option<String> {
-        self.identities
-            .first()
-            .map(|id| id.private_key_hex.expose().to_owned())
+        Ok(WalletRestore::Replaced {
+            address,
+            identities: self.get_identity_views()?,
+        })
     }
 
     pub fn get_primary_address(&self) -> String {
@@ -4679,12 +4824,15 @@ mod offline_signing_tests {
         let tmp_dir = std::env::temp_dir().join(format!("cabalmesh_test_{}", std::process::id()));
         std::fs::create_dir_all(&tmp_dir).unwrap();
 
+        let vault_key = crate::vault_key::platform_provider(
+            tmp_dir.join("vault.key"),
+            crate::vault_key::VaultUnlock::new(),
+        );
+        vault_key.unlock(&Secret::new("test passphrase")).unwrap();
         let mut bridge = BlockchainBridge {
             identities: Vec::new(),
-            identity_vault: Vault::new(
-                tmp_dir.join("vault.enc"),
-                crate::vault_key::platform_provider(tmp_dir.join("vault.key")),
-            ),
+            identity_vault: Vault::new(tmp_dir.join("vault.enc"), vault_key.clone()),
+            vault_key,
             storage_path: tmp_dir.join("snapshot.enc"),
             chain_cache_path: tmp_dir.join("chain_cache.json"),
             module_loadout_cache_path: tmp_dir.join("module_loadout_cache.json"),
@@ -4693,6 +4841,7 @@ mod offline_signing_tests {
             content_store_path: tmp_dir.join("content_store.json"),
             received_content_path: tmp_dir.join("received_content.json"),
             relay_boost_path: tmp_dir.join("relay_boost.json"),
+            key_backup_path: tmp_dir.join("key_backup.json"),
             // Deliberately unreachable — proves sign_offline never touches the network.
             rpc_url: "http://127.0.0.1:9".to_string(),
             chain_id: 43_113,
@@ -4755,12 +4904,15 @@ mod content_commitment_tests {
     use super::*;
 
     fn test_bridge(tmp_dir: &PathBuf) -> BlockchainBridge {
+        let vault_key = crate::vault_key::platform_provider(
+            tmp_dir.join("vault.key"),
+            crate::vault_key::VaultUnlock::new(),
+        );
+        vault_key.unlock(&Secret::new("test passphrase")).unwrap();
         BlockchainBridge {
             identities: Vec::new(),
-            identity_vault: Vault::new(
-                tmp_dir.join("vault.enc"),
-                crate::vault_key::platform_provider(tmp_dir.join("vault.key")),
-            ),
+            identity_vault: Vault::new(tmp_dir.join("vault.enc"), vault_key.clone()),
+            vault_key,
             storage_path: tmp_dir.join("snapshot.enc"),
             chain_cache_path: tmp_dir.join("chain_cache.json"),
             module_loadout_cache_path: tmp_dir.join("module_loadout_cache.json"),
@@ -4769,6 +4921,7 @@ mod content_commitment_tests {
             content_store_path: tmp_dir.join("content_store.json"),
             received_content_path: tmp_dir.join("received_content.json"),
             relay_boost_path: tmp_dir.join("relay_boost.json"),
+            key_backup_path: tmp_dir.join("key_backup.json"),
             rpc_url: "http://127.0.0.1:9".to_string(),
             chain_id: 43_113,
             escrow_address: None,
@@ -5019,5 +5172,374 @@ mod relay_settlement_tests {
         assert!(writer
             .validate_three_distinct(relay(), writer.operator())
             .is_err());
+    }
+}
+
+#[cfg(test)]
+mod key_custody_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// A bridge with every path inside `dir`, and no network configured.
+    ///
+    /// Built literally rather than through `BlockchainBridge::new`, which
+    /// resolves paths from the process-wide app directory — a test that wrote
+    /// there would fight every other test and, worse, the developer's own
+    /// wallet.
+    fn bridge_in(dir: &TempDir) -> BlockchainBridge {
+        let dir = dir.path();
+        let vault_key = crate::vault_key::platform_provider(
+            dir.join("vault.key"),
+            crate::vault_key::VaultUnlock::new(),
+        );
+        vault_key.unlock(&Secret::new("test passphrase")).unwrap();
+        BlockchainBridge {
+            identities: Vec::new(),
+            identity_vault: Vault::new(dir.join("vault.enc"), vault_key.clone()),
+            vault_key,
+            storage_path: dir.join("snapshot.enc"),
+            chain_cache_path: dir.join("chain_cache.json"),
+            module_loadout_cache_path: dir.join("module_loadout_cache.json"),
+            pending_relay_path: dir.join("pending_relay_txs.json"),
+            relayed_history_path: dir.join("relayed_history.json"),
+            content_store_path: dir.join("content_store.json"),
+            received_content_path: dir.join("received_content.json"),
+            relay_boost_path: dir.join("relay_boost.json"),
+            key_backup_path: dir.join("key_backup.json"),
+            rpc_url: "http://127.0.0.1:9".to_string(),
+            chain_id: 43_113,
+            escrow_address: None,
+            marketplace_address: None,
+            module_marketplace_address: None,
+            module_market_modules_address: None,
+            voucher_address: None,
+            modules_address: None,
+            relay_settlement_address: None,
+            standing_release: None,
+            current_session: None,
+        }
+    }
+
+    fn with_identity(dir: &TempDir) -> BlockchainBridge {
+        let mut bridge = bridge_in(dir);
+        bridge
+            .generate_new_identity("Test".to_string(), "🧪".to_string())
+            .unwrap();
+        bridge
+    }
+
+    /// A valid key that is not the one under test.
+    const OTHER_KEY: &str = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
+
+    #[test]
+    fn a_fresh_wallet_has_no_backup() {
+        let dir = TempDir::new().unwrap();
+        assert!(with_identity(&dir).key_backup().is_none());
+    }
+
+    #[test]
+    fn revealing_records_the_backup_for_this_address() {
+        let dir = TempDir::new().unwrap();
+        let bridge = with_identity(&dir);
+
+        let (address, key, record) = bridge.reveal_primary_key().unwrap();
+
+        assert_eq!(record.address, address);
+        assert!(key.expose().starts_with("0x"));
+        assert_eq!(bridge.key_backup().unwrap(), record);
+    }
+
+    #[test]
+    fn the_revealed_key_derives_the_address_it_claims() {
+        // The property that makes an export worth anything: typed into
+        // another device, it must produce the same wallet.
+        let dir = TempDir::new().unwrap();
+        let bridge = with_identity(&dir);
+
+        let (address, key, _) = bridge.reveal_primary_key().unwrap();
+        let elsewhere = TempDir::new().unwrap();
+        let mut restored = bridge_in(&elsewhere);
+
+        let outcome = restored
+            .restore_identity(key.expose(), "Restored".into(), "🦊".into())
+            .unwrap();
+
+        match outcome {
+            WalletRestore::Replaced { address: restored_address, identities } => {
+                assert_eq!(restored_address, address);
+                assert_eq!(identities[0].address, address);
+            }
+            other => panic!("expected a restore, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn restoring_over_an_unexported_wallet_is_refused() {
+        // The wallet about to be destroyed has never been shown to anyone.
+        // Replacing it would be an unrecoverable loss performed by a tap.
+        let dir = TempDir::new().unwrap();
+        let mut bridge = with_identity(&dir);
+        let before = bridge.get_primary_address();
+
+        let outcome = bridge
+            .restore_identity(OTHER_KEY, "Restored".into(), "🦊".into())
+            .unwrap();
+
+        assert!(matches!(outcome, WalletRestore::BackupRequired { address } if address == before));
+        assert_eq!(bridge.get_primary_address(), before, "the wallet was replaced anyway");
+    }
+
+    #[test]
+    fn restoring_after_an_export_is_permitted() {
+        let dir = TempDir::new().unwrap();
+        let mut bridge = with_identity(&dir);
+        let before = bridge.get_primary_address();
+        bridge.reveal_primary_key().unwrap();
+
+        let outcome = bridge
+            .restore_identity(OTHER_KEY, "Restored".into(), "🦊".into())
+            .unwrap();
+
+        assert!(matches!(outcome, WalletRestore::Replaced { .. }));
+        assert_ne!(bridge.get_primary_address(), before);
+    }
+
+    #[test]
+    fn a_restored_wallet_does_not_inherit_the_previous_backup() {
+        // Otherwise one export would authorise an unlimited chain of
+        // replacements, each destroying a wallet nobody has a copy of.
+        let dir = TempDir::new().unwrap();
+        let mut bridge = with_identity(&dir);
+        bridge.reveal_primary_key().unwrap();
+        bridge
+            .restore_identity(OTHER_KEY, "Restored".into(), "🦊".into())
+            .unwrap();
+
+        assert!(bridge.key_backup().is_none());
+        assert!(matches!(
+            bridge
+                .restore_identity(OTHER_KEY, "Again".into(), "🦊".into())
+                .unwrap(),
+            WalletRestore::BackupRequired { .. }
+        ));
+    }
+
+    #[test]
+    fn a_backup_record_for_another_address_vouches_for_nothing() {
+        let dir = TempDir::new().unwrap();
+        let bridge = with_identity(&dir);
+
+        JsonStore::new(&bridge.key_backup_path)
+            .save(&KeyBackupRecord {
+                address: "0x000000000000000000000000000000000000dead".into(),
+                exported_at: Utc::now(),
+            })
+            .unwrap();
+
+        assert!(bridge.key_backup().is_none());
+    }
+
+    #[test]
+    fn a_malformed_key_changes_nothing() {
+        let dir = TempDir::new().unwrap();
+        let mut bridge = with_identity(&dir);
+        bridge.reveal_primary_key().unwrap();
+        let before = bridge.get_primary_address();
+
+        for candidate in ["", "not a key", "0x1234", &"0xff".repeat(40)] {
+            assert!(matches!(
+                bridge
+                    .restore_identity(candidate, "Restored".into(), "🦊".into())
+                    .unwrap(),
+                WalletRestore::InvalidKey
+            ), "{candidate} was accepted as a private key");
+        }
+
+        assert_eq!(bridge.get_primary_address(), before);
+        assert!(bridge.key_backup().is_some(), "a rejected restore consumed the backup record");
+    }
+
+    #[test]
+    fn a_key_without_its_prefix_is_accepted() {
+        // People copy keys out of tools that do not print `0x`.
+        let dir = TempDir::new().unwrap();
+        let mut bridge = with_identity(&dir);
+        bridge.reveal_primary_key().unwrap();
+
+        let outcome = bridge
+            .restore_identity(OTHER_KEY.trim_start_matches("0x"), "Restored".into(), "🦊".into())
+            .unwrap();
+
+        assert!(matches!(outcome, WalletRestore::Replaced { .. }));
+    }
+
+    #[test]
+    fn a_restored_wallet_survives_a_reload() {
+        let dir = TempDir::new().unwrap();
+        let mut bridge = with_identity(&dir);
+        bridge.reveal_primary_key().unwrap();
+        bridge
+            .restore_identity(OTHER_KEY, "Restored".into(), "🦊".into())
+            .unwrap();
+        let restored = bridge.get_primary_address();
+
+        let mut reopened = bridge_in(&dir);
+        reopened.load_identities().unwrap();
+
+        assert_eq!(reopened.get_primary_address(), restored);
+    }
+}
+
+#[cfg(test)]
+mod vault_unlock_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// A bridge whose vault is **closed**, as it is on every cold start.
+    fn locked_bridge_in(dir: &std::path::Path) -> BlockchainBridge {
+        let vault_key = crate::vault_key::platform_provider(
+            dir.join("vault.key"),
+            crate::vault_key::VaultUnlock::new(),
+        );
+        BlockchainBridge {
+            identities: Vec::new(),
+            identity_vault: Vault::new(dir.join("vault.enc"), vault_key.clone()),
+            vault_key,
+            storage_path: dir.join("snapshot.enc"),
+            chain_cache_path: dir.join("chain_cache.json"),
+            module_loadout_cache_path: dir.join("module_loadout_cache.json"),
+            pending_relay_path: dir.join("pending_relay_txs.json"),
+            relayed_history_path: dir.join("relayed_history.json"),
+            content_store_path: dir.join("content_store.json"),
+            received_content_path: dir.join("received_content.json"),
+            relay_boost_path: dir.join("relay_boost.json"),
+            key_backup_path: dir.join("key_backup.json"),
+            rpc_url: "http://127.0.0.1:9".to_string(),
+            chain_id: 43_113,
+            escrow_address: None,
+            marketplace_address: None,
+            module_marketplace_address: None,
+            module_market_modules_address: None,
+            voucher_address: None,
+            modules_address: None,
+            relay_settlement_address: None,
+            standing_release: None,
+            current_session: None,
+        }
+    }
+
+    #[test]
+    fn a_cold_start_is_locked_and_reads_nothing() {
+        let dir = TempDir::new().unwrap();
+        let mut bridge = locked_bridge_in(dir.path());
+
+        assert_eq!(bridge.vault_state(), crate::vault_key::VaultState::Uninitialized);
+        assert!(
+            bridge.load_identities().is_err(),
+            "identities were readable without a passphrase"
+        );
+        assert!(bridge.identities.is_empty());
+    }
+
+    #[test]
+    fn the_first_passphrase_creates_a_wallet() {
+        let dir = TempDir::new().unwrap();
+        let mut bridge = locked_bridge_in(dir.path());
+
+        bridge.unlock_vault(&Secret::new("a long enough passphrase")).unwrap();
+
+        assert_eq!(bridge.vault_state(), crate::vault_key::VaultState::Unlocked);
+        assert!(bridge.get_primary_address().starts_with("0x"));
+    }
+
+    #[test]
+    fn the_same_passphrase_returns_the_same_wallet_after_a_restart() {
+        let dir = TempDir::new().unwrap();
+        let mut first = locked_bridge_in(dir.path());
+        first.unlock_vault(&Secret::new("a long enough passphrase")).unwrap();
+        let address = first.get_primary_address();
+
+        let mut reopened = locked_bridge_in(dir.path());
+        assert_eq!(reopened.vault_state(), crate::vault_key::VaultState::Locked);
+        reopened.unlock_vault(&Secret::new("a long enough passphrase")).unwrap();
+
+        assert_eq!(reopened.get_primary_address(), address);
+    }
+
+    #[test]
+    fn a_wrong_passphrase_never_generates_a_replacement_wallet() {
+        // The failure that would matter most: answering a wrong passphrase by
+        // creating a fresh wallet would present a funded account as an empty
+        // one and lose it the moment anything was written.
+        let dir = TempDir::new().unwrap();
+        let mut first = locked_bridge_in(dir.path());
+        first.unlock_vault(&Secret::new("a long enough passphrase")).unwrap();
+        let address = first.get_primary_address();
+        let vault_before = std::fs::read(dir.path().join("vault.enc")).unwrap();
+
+        let mut attacker = locked_bridge_in(dir.path());
+        assert_eq!(
+            attacker.unlock_vault(&Secret::new("not the passphrase")),
+            Err(crate::vault_key::UnlockFailure::WrongSecret)
+        );
+        assert!(attacker.identities.is_empty());
+        assert_eq!(attacker.get_primary_address(), "unknown");
+        assert_eq!(
+            std::fs::read(dir.path().join("vault.enc")).unwrap(),
+            vault_before,
+            "a rejected unlock rewrote the vault"
+        );
+
+        // And the real passphrase still works afterwards.
+        let mut owner = locked_bridge_in(dir.path());
+        owner.unlock_vault(&Secret::new("a long enough passphrase")).unwrap();
+        assert_eq!(owner.get_primary_address(), address);
+    }
+
+    #[test]
+    fn locking_forgets_the_wallet_until_it_is_opened_again() {
+        let dir = TempDir::new().unwrap();
+        let mut bridge = locked_bridge_in(dir.path());
+        bridge.unlock_vault(&Secret::new("a long enough passphrase")).unwrap();
+        let address = bridge.get_primary_address();
+
+        bridge.lock_vault();
+
+        assert_eq!(bridge.vault_state(), crate::vault_key::VaultState::Locked);
+        assert_eq!(bridge.get_primary_address(), "unknown");
+
+        bridge.unlock_vault(&Secret::new("a long enough passphrase")).unwrap();
+        assert_eq!(bridge.get_primary_address(), address);
+    }
+
+    #[test]
+    fn no_plaintext_key_remains_after_a_full_cycle() {
+        // The condition this ticket exists to end, checked by looking at the
+        // directory rather than by trusting the code that wrote it.
+        let dir = TempDir::new().unwrap();
+        let mut bridge = locked_bridge_in(dir.path());
+        bridge.unlock_vault(&Secret::new("a long enough passphrase")).unwrap();
+        let key = cabal_vault::KeyProvider::data_key(&bridge.vault_key)
+            .expect("an unlocked vault has a key")
+            .expose_for_storage();
+
+        for entry in std::fs::read_dir(dir.path()).unwrap() {
+            let path = entry.unwrap().path();
+            let raw = std::fs::read(&path).unwrap_or_default();
+            assert!(
+                !contains(&raw, &key),
+                "{} contains the raw vault key",
+                path.display()
+            );
+            assert!(
+                !contains(&raw, hex::encode(key).as_bytes()),
+                "{} contains the hex-encoded vault key",
+                path.display()
+            );
+        }
+    }
+
+    fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack.windows(needle.len()).any(|window| window == needle)
     }
 }

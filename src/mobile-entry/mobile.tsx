@@ -6,11 +6,12 @@
  * raw px and hex values the adherence lint bans, and the brand forbids spring
  * physics outright.
  */
-import React, { useState } from "react";
+import React, { useCallback, useState } from "react";
 import ReactDOM from "react-dom/client";
 import "../ds/index";
 import { AppShell } from "../shell/AppShell";
 import { Splash } from "../screens/Splash";
+import { Unlock } from "../screens/Unlock";
 import { Home } from "../screens/Home";
 import { Market } from "../screens/Market";
 import { Intents } from "../screens/Intents";
@@ -27,9 +28,18 @@ function App() {
   // does that at process startup, not on a user action — so there is nothing
   // to wait for between splash and home.
   const [screen, setScreen] = useState<Screen>({ name: "splash" });
+  // The vault gate. Every screen past this point reads keys, so none of them
+  // can render until one has been supplied — a locked vault is not a state the
+  // rest of the app has a sensible rendering for.
+  const [unlocked, setUnlocked] = useState(false);
+  const onUnlocked = useCallback(() => setUnlocked(true), []);
 
   if (screen.name === "splash") {
     return <Splash onEnter={() => setScreen({ name: "home" })} />;
+  }
+
+  if (!unlocked) {
+    return <Unlock onUnlocked={onUnlocked} />;
   }
 
   return (

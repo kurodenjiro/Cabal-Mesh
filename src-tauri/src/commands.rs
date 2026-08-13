@@ -5771,6 +5771,246 @@ pub async fn vault_identities(state: State<'_, AppState>) -> Result<Vec<VaultRow
         .collect())
 }
 
+/// Whether the vault can be opened yet, and whether one exists at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum VaultStatusView {
+    /// No vault on this device. The next passphrase supplied creates one.
+    Uninitialized,
+    /// A vault exists and is closed. Nothing that touches a key works yet.
+    Locked,
+    Unlocked,
+}
+
+/// What supplying a passphrase did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
+#[serde(
+    tag = "status",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum VaultUnlockView {
+    Unlocked,
+    /// Wrong passphrase. Nothing was changed, and nothing was destroyed.
+    WrongSecret,
+    /// Too many recent attempts.
+    RateLimited { retry_in_seconds: i64 },
+    /// The stored key is unreadable, or was written by a build that knows a
+    /// derivation this one does not. Retyping will not help.
+    Unusable,
+    /// The key is bound to a device store this machine does not have — almost
+    /// always a key file copied from another device. The passphrase may be
+    /// right; on its own it is not enough, which is the point of the binding.
+    DeviceBindingUnavailable,
+}
+
+/// Whether the vault is open, closed, or absent.
+///
+/// # Errors
+///
+/// [`AppError::NotReady`] before bootstrap.
+#[tauri::command]
+pub async fn vault_status(state: State<'_, AppState>) -> Result<VaultStatusView, AppError> {
+    let services = state.services()?;
+    let bridge = services.bridge.lock().await;
+    Ok(match bridge.vault_state() {
+        crate::vault_key::VaultState::Uninitialized => VaultStatusView::Uninitialized,
+        crate::vault_key::VaultState::Locked => VaultStatusView::Locked,
+        crate::vault_key::VaultState::Unlocked => VaultStatusView::Unlocked,
+    })
+}
+
+/// Supplies the passphrase that opens the vault, creating one on first use.
+///
+/// # Errors
+///
+/// [`AppError::NotReady`] before bootstrap. Every refusal that is the user's
+/// to act on is a value rather than an error.
+#[tauri::command]
+pub async fn unlock_vault(
+    passphrase: String,
+    state: State<'_, AppState>,
+) -> Result<VaultUnlockView, AppError> {
+    let services = state.services()?;
+    let mut bridge = services.bridge.lock().await;
+
+    // Wrapped immediately so a stray format of the argument cannot print it.
+    let secret = cabal_vault::Secret::new(passphrase);
+    Ok(match bridge.unlock_vault(&secret) {
+        Ok(()) => {
+            tracing::info!(target: "cabalmesh::vault", "vault unlocked");
+            VaultUnlockView::Unlocked
+        }
+        Err(crate::vault_key::UnlockFailure::WrongSecret) => VaultUnlockView::WrongSecret,
+        Err(crate::vault_key::UnlockFailure::RateLimited { retry_in_seconds }) => {
+            VaultUnlockView::RateLimited { retry_in_seconds }
+        }
+        Err(crate::vault_key::UnlockFailure::Unusable) => VaultUnlockView::Unusable,
+        Err(crate::vault_key::UnlockFailure::DeviceBindingUnavailable) => {
+            VaultUnlockView::DeviceBindingUnavailable
+        }
+    })
+}
+
+/// Closes the vault. The passphrase is required again.
+///
+/// # Errors
+///
+/// [`AppError::NotReady`] before bootstrap.
+#[tauri::command]
+pub async fn lock_vault(state: State<'_, AppState>) -> Result<VaultStatusView, AppError> {
+    let services = state.services()?;
+    services.bridge.lock().await.lock_vault();
+    tracing::info!(target: "cabalmesh::vault", "vault locked");
+    Ok(VaultStatusView::Locked)
+}
+
+/// Whether this device can still get back into the current wallet.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
+#[serde(
+    tag = "status",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum WalletBackupView {
+    /// The key has never left this device. Losing the device loses the wallet.
+    NeverExported,
+    Exported { exported_at: String },
+}
+
+/// The current wallet's key, revealed on request.
+///
+/// The only shape in the IPC contract that carries key material. It exists
+/// because the alternative — a wallet nobody can ever copy — is not privacy,
+/// it is a wallet with a built-in expiry date.
+#[derive(Debug, Clone, serde::Serialize)]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
+#[serde(rename_all = "camelCase")]
+pub struct WalletKeyRevealView {
+    pub address: String,
+    /// 0x-prefixed secp256k1 private key.
+    pub private_key_hex: String,
+    pub exported_at: String,
+}
+
+/// What a restore attempt did.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(export, export_to = "../../src/types/bindings.ts")
+)]
+#[serde(
+    tag = "status",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum WalletRestoreView {
+    Replaced { address: String },
+    /// The wallet that would have been destroyed has never been revealed.
+    /// Nothing changed.
+    BackupRequired { address: String },
+    /// Not a private key. Nothing changed.
+    InvalidKey,
+}
+
+/// Whether the current wallet has ever been exported from this device.
+///
+/// # Errors
+///
+/// [`AppError::NotReady`] before bootstrap.
+#[tauri::command]
+pub async fn wallet_backup_status(state: State<'_, AppState>) -> Result<WalletBackupView, AppError> {
+    let services = state.services()?;
+    let bridge = services.bridge.lock().await;
+    Ok(backup_view(bridge.key_backup().as_ref()))
+}
+
+/// Reveals the current wallet's private key and records that it was revealed.
+///
+/// # Errors
+///
+/// [`AppError::NotReady`] before bootstrap, [`AppError::VaultLocked`] when no
+/// identity can be read.
+#[tauri::command]
+pub async fn reveal_wallet_key(
+    state: State<'_, AppState>,
+) -> Result<WalletKeyRevealView, AppError> {
+    let services = state.services()?;
+    let bridge = services.bridge.lock().await;
+
+    let (address, key, record) = bridge
+        .reveal_primary_key()
+        .map_err(|_| AppError::VaultLocked)?;
+
+    // Deliberately not logged, at any level. The one place in this file where
+    // that sentence is load-bearing.
+    tracing::info!(target: "cabalmesh::vault", %address, "wallet key revealed to its owner");
+
+    Ok(WalletKeyRevealView {
+        address,
+        private_key_hex: key.expose().to_owned(),
+        exported_at: record.exported_at.to_rfc3339(),
+    })
+}
+
+/// Replaces the current wallet with one restored from a private key.
+///
+/// # Errors
+///
+/// [`AppError::NotReady`] before bootstrap, [`AppError::VaultLocked`] when the
+/// replacement cannot be persisted.
+#[tauri::command]
+pub async fn restore_wallet_key(
+    private_key_hex: String,
+    state: State<'_, AppState>,
+) -> Result<WalletRestoreView, AppError> {
+    let services = state.services()?;
+    let mut bridge = services.bridge.lock().await;
+
+    let outcome = bridge
+        .restore_identity(&private_key_hex, "Restored Fox".to_string(), "🦊".to_string())
+        .map_err(|_| AppError::VaultLocked)?;
+
+    Ok(match outcome {
+        crate::blockchain_bridge::WalletRestore::Replaced { address, .. } => {
+            tracing::info!(target: "cabalmesh::vault", %address, "wallet restored from a supplied key");
+            WalletRestoreView::Replaced { address }
+        }
+        crate::blockchain_bridge::WalletRestore::BackupRequired { address } => {
+            WalletRestoreView::BackupRequired { address }
+        }
+        crate::blockchain_bridge::WalletRestore::InvalidKey => WalletRestoreView::InvalidKey,
+    })
+}
+
+fn backup_view(record: Option<&crate::blockchain_bridge::KeyBackupRecord>) -> WalletBackupView {
+    record.map_or(WalletBackupView::NeverExported, |record| {
+        WalletBackupView::Exported {
+            exported_at: record.exported_at.to_rfc3339(),
+        }
+    })
+}
+
 /// Key material metadata.
 ///
 /// **Never the key itself.** These rows describe what is held and where; the
@@ -5782,7 +6022,8 @@ pub async fn vault_identities(state: State<'_, AppState>) -> Result<Vec<VaultRow
 /// [`AppError::NotReady`] before bootstrap.
 #[tauri::command]
 pub async fn vault_keys(state: State<'_, AppState>) -> Result<Vec<VaultRow>, AppError> {
-    let _services = state.services()?;
+    let services = state.services()?;
+    let backup = services.bridge.lock().await.key_backup();
     Ok(vec![
         VaultRow {
             tag: "KEY".into(),
@@ -5794,15 +6035,48 @@ pub async fn vault_keys(state: State<'_, AppState>) -> Result<Vec<VaultRow>, App
             tag: "KEY".into(),
             name: "VAULT KEY".into(),
             amount: "AES-256-GCM".into(),
-            // Honest about what ticket 18 actually shipped: file-backed, not
-            // hardware-backed, until the keystore plugin lands.
-            detail: Some("FILE-BACKED. DEVICE KEY STORE PENDING.".into()),
+            // Says what the protection is and where it stops. The passphrase
+            // closes the at-rest hole; it does nothing about this process
+            // while it is running, and claiming otherwise would be the same
+            // overstatement this row used to make in the other direction.
+            detail: Some("PASSPHRASE-WRAPPED. NO PROTECTION WHILE UNLOCKED.".into()),
+        },
+        VaultRow {
+            tag: "KEY".into(),
+            name: "DEVICE BINDING".into(),
+            amount: match crate::device_binding::availability() {
+                crate::device_binding::Availability::Wired => "BOUND".into(),
+                crate::device_binding::Availability::NotWired => "NOT WIRED".into(),
+                crate::device_binding::Availability::Absent => "NONE".into(),
+            },
+            // The running platform's truth, not the best row in the table.
+            detail: Some(crate::device_binding::describe().into()),
+        },
+        // The real state of this wallet, not a fixed string. A row that always
+        // reads NOT BACKED UP is as useless once a backup exists as it was
+        // dishonest before one could.
+        match &backup {
+            None => VaultRow {
+                tag: "KEY".into(),
+                name: "KEY BACKUP".into(),
+                amount: "NONE".into(),
+                detail: Some("NEVER EXPORTED. LOSING THIS DEVICE LOSES THE WALLET.".into()),
+            },
+            Some(record) => VaultRow {
+                tag: "KEY".into(),
+                name: "KEY BACKUP".into(),
+                amount: "EXPORTED".into(),
+                detail: Some(format!(
+                    "SHOWN {}. RECOVERABLE ONLY IF YOU KEPT IT.",
+                    record.exported_at.format("%Y-%m-%d")
+                )),
+            },
         },
         VaultRow {
             tag: "KEY".into(),
             name: "RECOVERY PHRASE".into(),
             amount: "NONE".into(),
-            detail: Some("NOT BACKED UP.".into()),
+            detail: Some("NO SEED PHRASE EXISTS. THE KEY ITSELF IS THE BACKUP.".into()),
         },
     ])
 }

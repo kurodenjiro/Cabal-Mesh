@@ -196,7 +196,7 @@ export type IntentPreview = { rows: Array<ReviewRow>,
  * Present only when the sender explicitly selected and funded-route
  * capable three-wallet path. Estimated/pending rewards never appear here.
  */
-relayCharge: RelayChargePreview | null,
+relayCharge: RelayChargePreview | null, 
 /**
  * The dialog's closing line, chosen by whether this will broadcast now.
  */
@@ -577,3 +577,36 @@ tag: string, name: string, amount: string,
  * Secondary line. Absent when there is nothing true to say.
  */
 detail: string | null, };
+
+/**
+ * Whether the vault can be opened yet, and whether one exists at all.
+ */
+export type VaultStatusView = { "status": "uninitialized" } | { "status": "locked" } | { "status": "unlocked" };
+
+/**
+ * What supplying a passphrase did.
+ */
+export type VaultUnlockView = { "status": "unlocked" } | { "status": "wrong_secret" } | { "status": "rate_limited", retryInSeconds: bigint, } | { "status": "unusable" } | { "status": "device_binding_unavailable" };
+
+/**
+ * Whether this device can still get back into the current wallet.
+ */
+export type WalletBackupView = { "status": "never_exported" } | { "status": "exported", exportedAt: string, };
+
+/**
+ * The current wallet's key, revealed on request.
+ *
+ * The only shape in the IPC contract that carries key material. It exists
+ * because the alternative — a wallet nobody can ever copy — is not privacy,
+ * it is a wallet with a built-in expiry date.
+ */
+export type WalletKeyRevealView = { address: string, 
+/**
+ * 0x-prefixed secp256k1 private key.
+ */
+privateKeyHex: string, exportedAt: string, };
+
+/**
+ * What a restore attempt did.
+ */
+export type WalletRestoreView = { "status": "replaced", address: string, } | { "status": "backup_required", address: string, } | { "status": "invalid_key" };

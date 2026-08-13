@@ -73,9 +73,13 @@ Platform constraints that force layer 1 to exist:
 
 | Platform | Hardware-counted retry limit | Consequence |
 |---|---|---|
-| iOS / Android | yes (Secure Enclave / StrongBox) | a 6-digit PIN is sufficient |
-| macOS / Windows | partial (Secure Enclave / TPM) | PIN acceptable |
+| iOS / Android | yes (Secure Enclave / StrongBox) | a 6-digit PIN would be sufficient |
+| macOS / Windows | partial (Secure Enclave / TPM) | PIN would be acceptable |
 | **Linux** | no | **passphrase required** — a PIN is brute-forceable once the file is copied |
+
+Note the conditional. This table describes what each platform *offers*, and the
+factor actually shipped is decided by what has been *wired* — see "Decided —
+the layer-1 factor" below. Today that is a passphrase everywhere.
 
 A 6-digit PIN has only 10⁶ combinations. It is safe *only* when a hardware
 counter enforces the retry limit. Counting attempts in software is worthless:
@@ -308,12 +312,107 @@ their first real deposit does not:
 > Your wallet now holds real value but is only backed up on this device. Set up
 > three guardians?
 
+## Decided — the layer-1 factor
+
+**A passphrase, on every platform, until a hardware retry counter is actually
+wired.** Not "PIN where hardware allows": that phrasing describes a capability
+this build does not have yet, and shipping a PIN whose safety depends on a
+store nobody has connected would be claiming the protection rather than having
+it.
+
+The rule this follows: *a PIN is a passphrase with 10⁶ of entropy, and only a
+hardware counter makes that survivable.* Counting attempts in software is
+worthless once the file is copied — the attacker counts on their own machine,
+where nothing refuses. So the factor is chosen by what is wired, not by what
+the platform could in principle provide:
+
+| Platform | Hardware retry counter wired today | Layer-1 factor |
+|---|---|---|
+| macOS | no (Secure Enclave present, unused) | passphrase |
+| Windows | no (TPM present, unused) | passphrase |
+| Linux | none exists | passphrase |
+| iOS | no (Secure Enclave present, unused) | passphrase |
+| Android | no (StrongBox present, unused) | passphrase |
+
+A 6-digit PIN becomes available on a platform the day that platform's store is
+connected with a counter, and not before. That is a per-platform unlock of a
+feature, not a global switch.
+
+### Key derivation
+
+Argon2id, `m = 64 MiB`, `t = 3`, `p = 1`, 32-byte output, 16-byte random salt.
+
+Chosen against this attacker: *someone holding a copy of the key file, running
+offline on rented GPUs.* 64 MiB per guess is the parameter that hurts them —
+memory hardness is what a GPU cannot parallelise cheaply — and it is small
+enough to run on a phone without the OS killing the process.
+
+The parameters live **in the envelope**, not in the binary, so they can be
+raised later without orphaning a vault written under the old ones.
+
+They are measured rather than assumed, and the measurement is a test rather
+than a note in this document: the suite asserts the exact constants (so
+weakening them is a deliberate edit, never a typo) and asserts that one
+derivation completes within a ceiling on whatever platform is running the
+tests. Running that suite on the slowest supported target is what "measured on
+the slowest target" means in practice, and it keeps being true as the code
+moves rather than being true once.
+
+### Retries
+
+Attempts are counted in a file beside the vault, and the count and the
+next-permitted time both survive a process restart and a reboot. Backoff is
+exponential, capped.
+
+This is explicitly **not** a security control — see above, an attacker with the
+file does not ask this app for permission. It exists to make an over-the-
+shoulder or borrowed-device attempt tedious, and nothing more. The document
+should not later be read as if software counting were the defence.
+
+A wrong passphrase never destroys the vault. Wipe-on-failure turns a mistyped
+character into permanent loss, and the threat it defends against — an attacker
+with the file — was never going to type into this app anyway.
+
+### When the passphrase is forgotten
+
+**The wallet is gone, unless it was exported.** There is no reset, no recovery
+question, no support path. Argon2id over a random salt is not reversible by the
+people who wrote it.
+
+This is why the export path is a prerequisite rather than a companion feature:
+encrypting the key without shipping a way to take it off the device converts
+"malware could read this" into "a forgotten word destroys this", which is a
+worse failure because it has no attacker to blame and no one who can help.
+
+### What this does not defend against
+
+- **A device stolen while unlocked.** The secret has already been supplied.
+- **Malware running as the same user while the app is unlocked.** It does not
+  need the key file; it can ask the running process. The passphrase closes the
+  at-rest hole, not the running-process one.
+- **A keylogger.** It captures the passphrase as it is typed.
+- **Screen capture** of the export screen.
+
+Layer 2 is what narrows the first two, which is why it is a separate ticket and
+not a footnote here.
+
+### Rejected
+
+- **PIN everywhere.** 10⁶ offline guesses at 64 MiB each is still a weekend on
+  rented hardware, and it would be sold to the user as equivalent security.
+- **PIN where the hardware exists, passphrase elsewhere** — the original
+  proposal. Right in principle and wrong to implement first: it makes the
+  strength of the product depend on a store that is not yet connected, and it
+  splits the unlock code into two paths before either has run in anger.
+- **No layer 1, hardware only.** On every desktop store that unlocks per
+  session, any process running as the user can ask for the item. That is the
+  hole being fixed, not a fix for it.
+- **Deriving the vault key from the wallet key.** Then the vault protects
+  nothing: whoever reads it already has what it protects.
+
 ## Open decisions
 
-1. **Layer-1 factor: 6-digit PIN or passphrase?** PIN is far nicer to use but
-   needs a hardware retry counter, which Linux lacks. Passphrase works
-   everywhere. Possible answer: PIN where hardware allows, passphrase elsewhere.
-2. **Default K/N.** Proposal: 3-of-5, so two absent guardians do not block an
+1. **Default K/N.** Proposal: 3-of-5, so two absent guardians do not block an
    unlock.
 3. **Delay on recovery?** A 24–48h window with a veto notification defends
    against guardian collusion, at the cost of a day's wait after genuinely

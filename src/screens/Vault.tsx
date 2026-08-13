@@ -11,6 +11,9 @@ import type {
   ModuleView,
   NodeLoadout,
   VaultRow,
+  WalletBackupView,
+  WalletKeyRevealView,
+  WalletRestoreView,
 } from "../types/bindings";
 
 const TABS: VaultTab[] = ["ASSETS", "MODULES", "IDENTITIES", "KEYS"];
@@ -50,6 +53,7 @@ export function Vault({ tab, onTabChange }: { tab: VaultTab; onTabChange: (tab: 
   const [moduleRefresh, setModuleRefresh] = useState(0);
   const [selectedModule, setSelectedModule] = useState<ModuleView | null>(null);
   const [revealed, setRevealed] = useState(false);
+  const [rowRefresh, setRowRefresh] = useState(0);
 
   const refreshModules = useCallback(() => setModuleRefresh((value) => value + 1), []);
 
@@ -68,7 +72,7 @@ export function Vault({ tab, onTabChange }: { tab: VaultTab; onTabChange: (tab: 
     return () => {
       cancelled = true;
     };
-  }, [tab]);
+  }, [rowRefresh, tab]);
 
   useEffect(() => {
     if (tab !== "MODULES") return;
@@ -229,6 +233,8 @@ export function Vault({ tab, onTabChange }: { tab: VaultTab; onTabChange: (tab: 
         </Panel>
       )}
 
+      {tab === "KEYS" ? <KeyCustodyPanel onWalletChanged={() => setRowRefresh((value) => value + 1)} /> : null}
+
       <ModuleDetails
         module={selectedModule}
         loadout={loadout}
@@ -237,6 +243,273 @@ export function Vault({ tab, onTabChange }: { tab: VaultTab; onTabChange: (tab: 
         onClose={() => setSelectedModule(null)}
       />
     </div>
+  );
+}
+
+/**
+ * Getting the key out, and putting one back.
+ *
+ * Without this the wallet has a built-in expiry date: it is generated on first
+ * run, never leaves the device, and a lost phone is a lost balance with no one
+ * to ask. Both directions are deliberate two-step flows — the key is the
+ * wallet, so neither revealing it nor overwriting it should be reachable by a
+ * single mis-tap.
+ *
+ * **The revealed key lives in component state and nowhere else.** It is
+ * dropped when the dialog closes and must be requested again, so it is not
+ * sitting in a mounted component while the app is backgrounded and the OS
+ * photographs the screen for its app switcher.
+ */
+function KeyCustodyPanel({ onWalletChanged }: { onWalletChanged: () => void }) {
+  const [backup, setBackup] = useState<WalletBackupView | null>(null);
+  const [dialog, setDialog] = useState<"none" | "confirm-export" | "reveal" | "restore">("none");
+  const [revealedKey, setRevealedKey] = useState<WalletKeyRevealView | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [candidate, setCandidate] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const [restoreOutcome, setRestoreOutcome] = useState<WalletRestoreView | null>(null);
+
+  const refreshBackup = useCallback(() => {
+    invoke<WalletBackupView>("wallet_backup_status")
+      .then(setBackup)
+      .catch(() => setBackup(null));
+  }, []);
+
+  useEffect(refreshBackup, [refreshBackup]);
+
+  const closeDialog = useCallback(() => {
+    setDialog("none");
+    // Not merely hidden — removed. A key held in state is a key in the DOM
+    // tree's memory for as long as this screen stays mounted.
+    setRevealedKey(null);
+    setCopied(false);
+    setCandidate("");
+    setFailed(false);
+    setRestoreOutcome(null);
+  }, []);
+
+  const reveal = useCallback(async () => {
+    setBusy(true);
+    setFailed(false);
+    try {
+      setRevealedKey(await invoke<WalletKeyRevealView>("reveal_wallet_key"));
+      setDialog("reveal");
+      refreshBackup();
+    } catch {
+      setFailed(true);
+    } finally {
+      setBusy(false);
+    }
+  }, [refreshBackup]);
+
+  const restore = useCallback(async () => {
+    setBusy(true);
+    setFailed(false);
+    try {
+      const outcome = await invoke<WalletRestoreView>("restore_wallet_key", {
+        privateKeyHex: candidate,
+      });
+      setRestoreOutcome(outcome);
+      if (outcome.status === "replaced") {
+        setCandidate("");
+        refreshBackup();
+        onWalletChanged();
+      }
+    } catch {
+      setFailed(true);
+    } finally {
+      setBusy(false);
+    }
+  }, [candidate, onWalletChanged, refreshBackup]);
+
+  const copy = useCallback(async () => {
+    if (!revealedKey) return;
+    try {
+      await navigator.clipboard.writeText(revealedKey.privateKeyHex);
+      setCopied(true);
+    } catch {
+      // Clipboard access can be refused. The key is on screen either way, so
+      // this is a convenience failing, not the export failing.
+      setCopied(false);
+    }
+  }, [revealedKey]);
+
+  return (
+    <>
+      <Panel
+        label="KEY CUSTODY"
+        action={
+          <Badge tone={backup?.status === "exported" ? "info" : "alert"} size="sm">
+            {backup === null ? "CHECKING" : backup.status === "exported" ? "EXPORTED" : "NEVER EXPORTED"}
+          </Badge>
+        }
+      >
+        <div style={{ padding: "var(--space-5) var(--space-6)", display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
+          <p style={{ margin: 0, fontSize: "var(--text-sm)", color: "var(--text-muted)" }}>
+            {backup?.status === "exported"
+              ? `This key was shown on ${new Date(backup.exportedAt).toLocaleDateString()}. If you kept it, this wallet survives losing this device. If you did not, it does not.`
+              : "This key has never left this device. There is no seed phrase and no reset: lose the device and the wallet goes with it."}
+          </p>
+
+          {failed && dialog === "none" ? (
+            <ListingCopy title="KEY UNAVAILABLE" body="The vault would not open. Nothing was revealed or changed." alert />
+          ) : null}
+
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--space-3)" }}>
+            <Button
+              type="button"
+              tone="primary"
+              size="md"
+              className="cm-touch"
+              disabled={busy}
+              onClick={() => setDialog("confirm-export")}
+            >
+              EXPORT KEY
+            </Button>
+            <Button
+              type="button"
+              tone="ghost"
+              size="md"
+              className="cm-touch"
+              disabled={busy}
+              onClick={() => setDialog("restore")}
+            >
+              RESTORE FROM KEY
+            </Button>
+          </div>
+        </div>
+      </Panel>
+
+      <ModalDialog
+        open={dialog === "confirm-export"}
+        title="SHOW THE PRIVATE KEY?"
+        onClose={busy ? () => undefined : closeDialog}
+        footer={
+          <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "flex-end", gap: "var(--space-3)" }}>
+            <Button type="button" tone="ghost" size="md" className="cm-touch" disabled={busy} onClick={closeDialog}>
+              CANCEL
+            </Button>
+            <Button type="button" tone="primary" size="md" className="cm-touch" disabled={busy} onClick={reveal}>
+              {busy ? "READING VAULT" : "SHOW IT"}
+            </Button>
+          </div>
+        }
+      >
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
+          <ListingCopy
+            title="ANYONE HOLDING THIS KEY HOLDS THIS WALLET"
+            body="It is not a password and it cannot be changed. Whoever reads it can spend every asset in this wallet, on any device, forever."
+            alert
+          />
+          <ListingCopy
+            title="BEFORE YOU CONTINUE"
+            body="Make sure nobody can see this screen and nothing is recording it. Keep the key somewhere only you can reach — not a chat, not a photo library, not a note that syncs."
+          />
+        </div>
+      </ModalDialog>
+
+      <ModalDialog
+        open={dialog === "reveal"}
+        title="PRIVATE KEY"
+        onClose={closeDialog}
+        footer={
+          <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "flex-end", gap: "var(--space-3)" }}>
+            <Button type="button" tone="ghost" size="md" className="cm-touch" onClick={copy}>
+              {copied ? "COPIED" : "COPY"}
+            </Button>
+            <Button type="button" tone="primary" size="md" className="cm-touch" onClick={closeDialog}>
+              DONE
+            </Button>
+          </div>
+        }
+      >
+        {revealedKey ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-5)" }}>
+            <DetailField label="ADDRESS" value={revealedKey.address} />
+            <DetailField label="PRIVATE KEY" value={revealedKey.privateKeyHex} />
+            <ListingCopy
+              title="THIS IS THE ONLY BACKUP"
+              body="Storing it is the whole point; storing it somewhere readable by anything else defeats it. This app will not show a reminder and cannot recover it for you."
+              alert
+            />
+          </div>
+        ) : null}
+      </ModalDialog>
+
+      <ModalDialog
+        open={dialog === "restore"}
+        title="RESTORE FROM A KEY"
+        onClose={busy ? () => undefined : closeDialog}
+        footer={
+          <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "flex-end", gap: "var(--space-3)" }}>
+            <Button type="button" tone="ghost" size="md" className="cm-touch" disabled={busy} onClick={closeDialog}>
+              CLOSE
+            </Button>
+            <Button
+              type="button"
+              tone="primary"
+              size="md"
+              className="cm-touch"
+              disabled={busy || candidate.trim().length === 0}
+              onClick={restore}
+            >
+              {busy ? "RESTORING" : "REPLACE THIS WALLET"}
+            </Button>
+          </div>
+        }
+      >
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-5)" }}>
+          <ListingCopy
+            title="THIS REPLACES THE WALLET ON THIS DEVICE"
+            body="The current wallet is removed from this device. If you have not exported its key first, whatever it holds becomes unreachable."
+            alert
+          />
+
+          <label style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
+            <span style={listingLabelStyle}>PRIVATE KEY</span>
+            <input
+              type="password"
+              autoComplete="off"
+              spellCheck={false}
+              autoCapitalize="none"
+              value={candidate}
+              disabled={busy}
+              placeholder="0x…"
+              onChange={(event) => setCandidate(event.currentTarget.value)}
+              style={{
+                minHeight: "var(--control-min-height)",
+                border: "var(--border-hairline-style)",
+                background: "var(--surface-sunken)",
+                color: "var(--text-primary)",
+                fontFamily: "var(--type-data-family)",
+                fontSize: "var(--text-base)",
+                padding: "var(--space-3) var(--space-4)",
+              }}
+            />
+            <span style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)" }}>
+              A 64-character hexadecimal key, with or without its 0x prefix.
+            </span>
+          </label>
+
+          {failed ? (
+            <ListingCopy title="RESTORE NOT COMPLETED" body="The vault could not be written. The current wallet is unchanged." alert />
+          ) : null}
+
+          {restoreOutcome?.status === "invalid_key" ? (
+            <ListingCopy title="NOT A PRIVATE KEY" body="Nothing was changed. Check for a missing character or a copied address in place of a key." alert />
+          ) : restoreOutcome?.status === "backup_required" ? (
+            <ListingCopy
+              title="EXPORT THE CURRENT WALLET FIRST"
+              body={`${restoreOutcome.address} has never been shown to anyone. Replacing it now would destroy it. Close this, export it, then come back.`}
+              alert
+            />
+          ) : restoreOutcome?.status === "replaced" ? (
+            <ListingCopy title="WALLET RESTORED" body={`This device now holds ${restoreOutcome.address}. Export it to make it recoverable from here too.`} />
+          ) : null}
+        </div>
+      </ModalDialog>
+    </>
   );
 }
 

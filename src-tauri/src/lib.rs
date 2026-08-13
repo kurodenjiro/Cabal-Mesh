@@ -30,6 +30,8 @@ mod llm_json;
 /// Chain selection and contract addresses. See src/network_config.rs.
 pub mod network_config;
 mod telemetry;
+/// The device-bound half of the vault key. See src/device_binding.rs.
+pub mod device_binding;
 mod vault_key;
 pub mod zk_handler;
 
@@ -378,6 +380,12 @@ pub fn run() {
             commands::unequip_module,
             commands::vault_identities,
             commands::vault_keys,
+            commands::vault_status,
+            commands::unlock_vault,
+            commands::lock_vault,
+            commands::wallet_backup_status,
+            commands::reveal_wallet_key,
+            commands::restore_wallet_key,
             commands::profile_summary,
             commands::set_offline_mode,
         ])
