@@ -1,7 +1,41 @@
 # Identity, unlock, and mesh recovery — design
 
-**Status: proposal. None of this is built yet.** Written 2026-08-10.
-Current behaviour is described first so the gap is visible.
+**Status: partially built.** Written 2026-08-10; updated 2026-08-13 once the
+first two layers below actually shipped. What follows was written when none
+of it existed, and is kept as the design rationale — the parts now built
+match it, the parts that don't are noted inline.
+
+**Built and tested (including over a real, if loopback, transport — not just
+in-memory):**
+- **Passphrase unlock** (decision 1). `cabal_vault::PassphraseKeyProvider`
+  (Argon2id), opt-in, off by default. `VAULT → KEYS → SECURITY` in the app.
+- **Export / import / restore**, closing the "no way to export the key" gap
+  this doc opened with. `VAULT → KEYS → ADVANCED`.
+- **Guardian mesh unlock** (decisions 2–3's mechanism, minus the delay —
+  see below): enrollment (request → accept → sealed share), a broadcast
+  unlock request using unlinkable per-guardian tags rather than durable
+  peer identifiers (see "Mesh unlock" below — the design needed one addition
+  the original text didn't anticipate, spelled out where it's relevant), and
+  an unlock reply gated on an explicit human approval tap, exactly as this
+  doc specifies. `cabal_guardian` (crypto), `src/guardian.rs` (persistence +
+  protocol), `src/guardian_actor.rs` (BLE wiring), `VAULT → KEYS →
+  GUARDIANS`.
+
+**Not built — stated plainly rather than left ambiguous:**
+- The **24–48h recovery delay with a veto notification** (decision 3).
+  Needs a background task and a local/push notification that survive the
+  app being closed — real platform integration on iOS/Android that cannot
+  be built or verified without a physical device.
+- The **mobile PIN path** (decision 1's other half) — blocked on the native
+  key-store plugin (ticket 21).
+- The **five mock-up screens below are not pixel-matched.** The app has one
+  working screen per flow (enroll, approve, restore), not yet the
+  `CHOOSE GUARDIANS` / `DISTRIBUTING SHARES` / live per-guardian progress
+  presentation this doc sketches — those were left as a UI pass, not a
+  functional gap.
+- Guardian storage does not yet switch protection together with
+  `SECURITY`'s passphrase toggle; it is file-key-protected regardless of
+  that setting today.
 
 ## Where things stand
 
@@ -120,6 +154,23 @@ guardian ──[share, re-encrypted to nonce key]──> owner
                          → open vault → sign
                          → wipe VK from memory after T minutes
 ```
+
+**What actually shipped resolves a gap this sketch glosses over: how does
+`UnlockReq` reach the right guardians when nobody's BLE identity survives a
+restart?** `mesh.rs`'s own module doc is explicit that no durable
+identifier — not a nickname, not a wallet address, not a guardian's public
+key — may appear in a cleartext broadcast; a stable guardian identifier
+would be exactly the tracking surface that rule exists to prevent. The
+built version broadcasts one **unlinkable recognition tag per enrolled
+guardian** — `hash(guardian's public key, this request's nonce)` — instead
+of any identifier. Only a device that already holds the matching public key
+from enrollment can recognise its own tag; nobody else, including another
+guardian in the same broadcast, learns anything from it, and a guardian's
+tag differs on every request even to the same owner. `share` in the third
+line above is sealed to the owner's own enrollment-time public key rather
+than "re-encrypted to nonce key" — the nonce's only job is producing the
+tag; sealing is what protects the share in transit. See
+`cabal_guardian::protocol`'s module docs for the full reasoning.
 
 ### What this does and does not protect
 

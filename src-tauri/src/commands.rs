@@ -655,18 +655,13 @@ fn decimals_for(asset: &str) -> Option<u8> {
         .map(|(_, _, decimals)| *decimals)
 }
 
-/// Options for the compose screen.
+/// Builds [`FormOptions`] from the domain model and (best-effort) balances.
 ///
-/// Supplied by Rust rather than hardcoded on the frontend so a mode and its
-/// description cannot drift apart — they come from one `ExecutionMode` — and
-/// so the maximum comes from the same balance the vault screen shows.
-///
-/// # Errors
-///
-/// Never fails. An unavailable balance omits the maximum rather than failing
-/// the whole form: composing an intent offline is a supported path.
-#[tauri::command]
-pub async fn intent_form_options(state: State<'_, AppState>) -> Result<FormOptions, AppError> {
+/// Split out from the [`intent_form_options`] command so `parse_intent_chat`
+/// can embed the exact same option vocabulary in its prompt — the model's
+/// allowed answers come from this, not a second hardcoded list that could
+/// drift from what the segmented controls actually offer.
+async fn build_form_options(state: &AppState) -> FormOptions {
     use cabal_core::{Action, ExecutionMode, PrivacyLevel};
 
     // Balances are best-effort. Before bootstrap, or with no chain snapshot,
@@ -688,7 +683,7 @@ pub async fn intent_form_options(state: State<'_, AppState>) -> Result<FormOptio
         Err(_) => Vec::new(),
     };
 
-    Ok(FormOptions {
+    FormOptions {
         actions: Action::ALL.iter().map(|a| format!("{a:?}").to_uppercase()).collect(),
         assets: ASSETS
             .iter()
@@ -714,7 +709,22 @@ pub async fn intent_form_options(state: State<'_, AppState>) -> Result<FormOptio
             .iter()
             .map(|level| format!("{level:?}").to_uppercase())
             .collect(),
-    })
+    }
+}
+
+/// Options for the compose screen.
+///
+/// Supplied by Rust rather than hardcoded on the frontend so a mode and its
+/// description cannot drift apart — they come from one `ExecutionMode` — and
+/// so the maximum comes from the same balance the vault screen shows.
+///
+/// # Errors
+///
+/// Never fails. An unavailable balance omits the maximum rather than failing
+/// the whole form: composing an intent offline is a supported path.
+#[tauri::command]
+pub async fn intent_form_options(state: State<'_, AppState>) -> Result<FormOptions, AppError> {
+    Ok(build_form_options(&state).await)
 }
 
 /// One row of the confirm dialog.
@@ -760,7 +770,7 @@ const CONFIRM_QUEUED: &str =
 /// One type rather than seven parameters on two commands. That is what makes
 /// "preview and broadcast see the same input" a property of the signature
 /// instead of something a caller has to get right twice.
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
 #[serde(rename_all = "camelCase")]
 pub struct IntentFields {
@@ -896,6 +906,31 @@ async fn will_broadcast(state: &AppState) -> bool {
     mesh.snapshot()
         .await
         .is_ok_and(|snapshot| !snapshot.offline && snapshot.peer_count > 0)
+}
+
+/// Parses free text into intent fields via the local (or configured) LLM —
+/// the "say what you want to do" entry point in
+/// `docs/intent-chat-and-modules-design.md`.
+///
+/// **This is exactly as trusted as a hand-filled form.** The returned
+/// fields are raw strings, identical in shape to what `New.tsx` already
+/// builds from its own inputs; nothing about this command validates them,
+/// signs anything, or is closer to broadcast than the empty form is. The
+/// frontend feeds the result into the same `preview_intent` /
+/// `broadcast_intent` pipeline unchanged, which is what actually validates
+/// it. The model proposes; Rust still decides.
+///
+/// # Errors
+///
+/// [`AppError::Internal`] if the LLM could not be reached at all — a model
+/// that responded but not in valid JSON is *not* an error: every field
+/// comes back blank instead, which the review step already knows how to
+/// reject field by field.
+#[tauri::command]
+pub async fn parse_intent_chat(text: String, state: State<'_, AppState>) -> Result<IntentFields, AppError> {
+    let options = build_form_options(&state).await;
+    let services = state.services()?;
+    services.intent_chat.parse(&text, &options).await.map_err(AppError::internal_msg)
 }
 
 /// Validates a draft and returns what the confirm dialog shows.
@@ -1800,7 +1835,18 @@ pub async fn vault_identities(state: State<'_, AppState>) -> Result<Vec<VaultRow
 /// [`AppError::NotReady`] before bootstrap.
 #[tauri::command]
 pub async fn vault_keys(state: State<'_, AppState>) -> Result<Vec<VaultRow>, AppError> {
-    let _services = state.services()?;
+    let services = state.services()?;
+    let bridge = services.bridge.lock().await;
+
+    // Honest about which key provider is actually protecting the vault right
+    // now, rather than a description fixed at ticket 18. A locked vault has
+    // no in-memory bridge state to describe wrongly either way, so this reads
+    // straight from disk via `security_mode`.
+    let vault_key_detail = match bridge.security_mode() {
+        crate::security_state::UnlockMode::File => "FILE-BACKED. DEVICE KEY STORE PENDING.",
+        crate::security_state::UnlockMode::Passphrase => "PASSPHRASE-DERIVED (ARGON2ID).",
+    };
+
     Ok(vec![
         VaultRow {
             tag: "KEY".into(),
@@ -1812,9 +1858,7 @@ pub async fn vault_keys(state: State<'_, AppState>) -> Result<Vec<VaultRow>, App
             tag: "KEY".into(),
             name: "VAULT KEY".into(),
             amount: "AES-256-GCM".into(),
-            // Honest about what ticket 18 actually shipped: file-backed, not
-            // hardware-backed, until the keystore plugin lands.
-            detail: Some("FILE-BACKED. DEVICE KEY STORE PENDING.".into()),
+            detail: Some(vault_key_detail.into()),
         },
         VaultRow {
             tag: "KEY".into(),
@@ -1823,6 +1867,124 @@ pub async fn vault_keys(state: State<'_, AppState>) -> Result<Vec<VaultRow>, App
             detail: Some("NOT BACKED UP.".into()),
         },
     ])
+}
+
+/// Current state of the vault's unlock method, for the startup gate and the
+/// `SECURITY` screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "camelCase")]
+pub struct SecurityStatus {
+    /// True only while the vault is passphrase-protected and no correct
+    /// passphrase has been supplied yet this session. The frontend gates
+    /// entry to the app on this field, not on `passphraseEnabled` alone —
+    /// `passphraseEnabled` stays true even seconds after a successful
+    /// unlock, when `locked` has already gone false.
+    pub locked: bool,
+    pub passphrase_enabled: bool,
+}
+
+/// Whether the vault needs a passphrase before use, and how it is protected.
+///
+/// # Errors
+///
+/// [`AppError::NotReady`] before bootstrap.
+#[tauri::command]
+pub async fn security_status(state: State<'_, AppState>) -> Result<SecurityStatus, AppError> {
+    let services = state.services()?;
+    let bridge = services.bridge.lock().await;
+    Ok(SecurityStatus {
+        locked: bridge.is_locked(),
+        passphrase_enabled: bridge.security_mode() == crate::security_state::UnlockMode::Passphrase,
+    })
+}
+
+/// Supplies the passphrase for a locked vault. On success, identities become
+/// readable for the rest of the session.
+///
+/// # Errors
+///
+/// [`AppError::NotReady`] before bootstrap, [`AppError::VaultLocked`] if the
+/// passphrase was wrong.
+#[tauri::command]
+pub async fn security_unlock(passphrase: String, state: State<'_, AppState>) -> Result<(), AppError> {
+    let services = state.services()?;
+    let mut bridge = services.bridge.lock().await;
+    bridge.unlock_with_passphrase(&passphrase).map_err(|_| AppError::VaultLocked)?;
+    Ok(())
+}
+
+/// Turns passphrase protection on: re-encrypts the vault under a key derived
+/// from `passphrase` and deletes the file-backed key it replaces.
+///
+/// # Errors
+///
+/// [`AppError::NotReady`] before bootstrap, [`AppError::VaultLocked`] if the
+/// vault is locked or re-encryption failed.
+#[tauri::command]
+pub async fn security_enable_passphrase(passphrase: String, state: State<'_, AppState>) -> Result<(), AppError> {
+    let services = state.services()?;
+    let mut bridge = services.bridge.lock().await;
+    bridge.enable_passphrase(&passphrase).map_err(|_| AppError::VaultLocked)?;
+    Ok(())
+}
+
+/// Turns passphrase protection off, reverting to a freshly generated
+/// file-backed key.
+///
+/// # Errors
+///
+/// [`AppError::NotReady`] before bootstrap, [`AppError::VaultLocked`] if the
+/// vault is locked or re-encryption failed.
+#[tauri::command]
+pub async fn security_disable_passphrase(state: State<'_, AppState>) -> Result<(), AppError> {
+    let services = state.services()?;
+    let mut bridge = services.bridge.lock().await;
+    bridge.disable_passphrase().map_err(|_| AppError::VaultLocked)?;
+    Ok(())
+}
+
+/// The current wallet's raw private key, so it can be saved before switching
+/// away from it — the only way back to this wallet once identities change,
+/// since nothing else persists it anywhere recoverable. See
+/// `docs/identity-design.md`: this is the gap the doc calls more urgent than
+/// any feature it proposes, since without it a lost device is unrecoverable.
+///
+/// # Errors
+///
+/// [`AppError::NotReady`] before bootstrap, [`AppError::VaultLocked`] if the
+/// vault is locked or holds no identity yet.
+#[tauri::command]
+pub async fn vault_export_key(state: State<'_, AppState>) -> Result<String, AppError> {
+    let services = state.services()?;
+    let bridge = services.bridge.lock().await;
+    bridge.get_primary_private_key().ok_or(AppError::VaultLocked)
+}
+
+/// Replaces the current wallet with one derived from a supplied private key.
+///
+/// Destructive: the wallet this device held before is gone unless its own
+/// key was exported first. The frontend is responsible for warning about
+/// that before calling this — the command itself trusts the caller, same as
+/// every other mutating vault command.
+///
+/// # Errors
+///
+/// [`AppError::NotReady`] before bootstrap, [`AppError::VaultLocked`] if the
+/// vault is locked or the supplied key does not parse.
+#[tauri::command]
+pub async fn vault_import_key(
+    private_key_hex: String,
+    alias: String,
+    emoji: String,
+    state: State<'_, AppState>,
+) -> Result<(), AppError> {
+    let services = state.services()?;
+    let mut bridge = services.bridge.lock().await;
+    bridge
+        .import_identity(private_key_hex, alias, emoji)
+        .map(|_| ())
+        .map_err(|_| AppError::VaultLocked)
 }
 
 /// What the profile screen shows.
@@ -1905,4 +2067,392 @@ pub async fn set_offline_mode(offline: bool, state: State<'_, AppState>) -> Resu
     let services = state.services()?;
     let mesh = services.mesh.as_ref().ok_or(AppError::MeshOffline)?;
     mesh.set_offline(offline).await.map_err(|_| AppError::MeshOffline)
+}
+
+// ---------------------------------------------------------------------------
+// Guardian recovery
+// ---------------------------------------------------------------------------
+
+/// A nearby node the user could pick as a guardian.
+#[derive(Debug, Clone, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "camelCase")]
+pub struct GuardianCandidate {
+    /// Full peer id — opaque to the UI, round-tripped back verbatim to
+    /// `guardian_enroll`. Never shown; `label` is what renders.
+    pub peer_id: String,
+    /// Truncated for display, e.g. `7F3A…C2E1`.
+    pub label: String,
+    pub hops: u8,
+}
+
+/// Nearby BLE nodes the user could pick as guardians.
+///
+/// Empty rather than an error when there is no BLE plane — the same choice
+/// `list_nearby_nodes` makes, since "no radio" and "no candidates" read the
+/// same way to this screen.
+///
+/// # Errors
+///
+/// [`AppError::NotReady`] before bootstrap.
+#[tauri::command]
+pub async fn guardian_candidates(state: State<'_, AppState>) -> Result<Vec<GuardianCandidate>, AppError> {
+    let services = state.services()?;
+    let Some(ble) = services.ble.as_ref() else {
+        return Ok(Vec::new());
+    };
+    let peers = ble.peers().await.unwrap_or_default();
+    Ok(peers
+        .into_iter()
+        .map(|peer| {
+            let id = peer.id.to_string();
+            GuardianCandidate {
+                label: cabal_core::NodeId::new(id.clone()).truncated(),
+                peer_id: id,
+                hops: peer.hops,
+            }
+        })
+        .collect())
+}
+
+/// What `SECURITY` shows about the guardian scheme, in both roles this
+/// device can play.
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "camelCase")]
+pub struct GuardianStatus {
+    pub enrolled: bool,
+    pub guardian_count: usize,
+    pub threshold: u8,
+    /// How many other owners this device holds a share for.
+    pub holding_for: usize,
+}
+
+/// # Errors
+///
+/// [`AppError::NotReady`] before bootstrap.
+#[tauri::command]
+pub async fn guardian_status(state: State<'_, AppState>) -> Result<GuardianStatus, AppError> {
+    let services = state.services()?;
+    let service = services.guardian.lock().await;
+    let (guardian_count, threshold) = service.owner_guardian_status();
+    Ok(GuardianStatus {
+        enrolled: service.is_enrolled(),
+        guardian_count,
+        threshold,
+        holding_for: service.held_for().len(),
+    })
+}
+
+/// Who accepted an enrollment invitation, and who did not answer.
+#[derive(Debug, Clone, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "camelCase")]
+pub struct GuardianEnrollResult {
+    pub enrolled: Vec<String>,
+    pub no_reply: Vec<String>,
+}
+
+/// Invites `peer_ids` to become guardians and, for whoever accepts, sends a
+/// sealed share split from the current vault key.
+///
+/// Blocks for up to 20 seconds waiting on replies — see
+/// `guardian_actor::REPLY_TIMEOUT` — since a candidate is a human who has to
+/// notice a prompt.
+///
+/// # Errors
+///
+/// [`AppError::NotReady`] before bootstrap, [`AppError::MeshOffline`] if
+/// there is no BLE plane, [`AppError::VaultLocked`] if the vault is locked,
+/// [`AppError::Internal`] if nobody accepted or the threshold was invalid.
+#[tauri::command]
+pub async fn guardian_enroll(
+    peer_ids: Vec<String>,
+    threshold: u8,
+    state: State<'_, AppState>,
+) -> Result<GuardianEnrollResult, AppError> {
+    let services = state.services()?;
+    let ble = services.ble.as_ref().ok_or(AppError::MeshOffline)?;
+
+    let candidates: Vec<cabal_ble::PeerId> = peer_ids
+        .iter()
+        .map(|s| s.parse())
+        .collect::<Result<_, _>>()
+        .map_err(|_| AppError::InvalidIntent { field: "peer_ids", reason: crate::error::InvalidReason::Malformed })?;
+
+    let vault_key = {
+        let bridge = services.bridge.lock().await;
+        bridge.current_vault_key().map_err(|_| AppError::VaultLocked)?
+    };
+
+    let events = ble.subscribe();
+    let outcome = crate::guardian_actor::enroll_guardians(&services.guardian, ble, events, &candidates, threshold, &vault_key)
+        .await
+        .map_err(AppError::internal)?;
+
+    Ok(GuardianEnrollResult {
+        enrolled: outcome.enrolled.iter().map(ToString::to_string).collect(),
+        no_reply: outcome.no_reply.iter().map(ToString::to_string).collect(),
+    })
+}
+
+/// Broadcasts an unlock request, waits for enough guardians to answer, and —
+/// if a valid key comes back — opens the vault with it.
+///
+/// # Errors
+///
+/// [`AppError::NotReady`] before bootstrap, [`AppError::MeshOffline`] if
+/// there is no BLE plane, [`AppError::VaultLocked`] if too few guardians
+/// answered in time or the reconstructed key was wrong.
+#[tauri::command]
+pub async fn guardian_request_unlock(state: State<'_, AppState>) -> Result<(), AppError> {
+    let services = state.services()?;
+    let ble = services.ble.as_ref().ok_or(AppError::MeshOffline)?;
+
+    let events = ble.subscribe();
+    let candidate = crate::guardian_actor::request_unlock(&services.guardian, ble, events)
+        .await
+        .map_err(|_| AppError::VaultLocked)?;
+
+    let mut bridge = services.bridge.lock().await;
+    bridge.unlock_with_guardian_key(candidate).map_err(|_| AppError::VaultLocked)?;
+    Ok(())
+}
+
+/// Sends a pending unlock reply — the guardian side, called once the person
+/// taps APPROVE on the prompt `guardian-unlock-request` drove.
+///
+/// # Errors
+///
+/// [`AppError::NotReady`] before bootstrap, [`AppError::MeshOffline`] if
+/// there is no BLE plane, [`AppError::Internal`] if `id` was already
+/// resolved or never existed.
+#[tauri::command]
+pub async fn guardian_approve_unlock(id: u32, state: State<'_, AppState>) -> Result<(), AppError> {
+    let services = state.services()?;
+    let ble = services.ble.as_ref().ok_or(AppError::MeshOffline)?;
+    crate::guardian_actor::approve_unlock(&services.guardian_approvals, ble, id).await.map_err(AppError::internal)
+}
+
+/// Discards a pending unlock reply without sending anything.
+///
+/// # Errors
+///
+/// [`AppError::NotReady`] before bootstrap, [`AppError::Internal`] if `id`
+/// was already resolved or never existed.
+#[tauri::command]
+pub async fn guardian_deny_unlock(id: u32, state: State<'_, AppState>) -> Result<(), AppError> {
+    let services = state.services()?;
+    crate::guardian_actor::deny_unlock(&services.guardian_approvals, id).await.map_err(AppError::internal)
+}
+
+// ---------------------------------------------------------------------------
+// Marketplace and modules
+// ---------------------------------------------------------------------------
+//
+// Every command here wraps a `BlockchainBridge` method that already existed
+// and already worked — `create_asset_listing`, `buy_listing`,
+// `get_active_asset_listings`, `get_owned_vouchers`, and the rest were fully
+// implemented against real contracts, just never reachable from any command.
+// See docs/intent-chat-and-modules-design.md for the design and the five
+// decisions (0-4) this surface is built against — most load-bearing:
+// `CabalMeshVoucher` restricts minting to the `RelayRewards` contract now,
+// so nothing here can mint a module out of thin air the way the pre-fix
+// contract could.
+
+/// Active Marketplace listings.
+///
+/// # Errors
+///
+/// [`AppError::NotReady`] before bootstrap, [`AppError::Internal`] if the
+/// Marketplace contract isn't configured or the chain is unreachable.
+#[tauri::command]
+pub async fn market_listings(state: State<'_, AppState>) -> Result<Vec<crate::blockchain_bridge::AssetListingView>, AppError> {
+    let services = state.services()?;
+    let bridge = services.bridge.lock().await;
+    bridge.get_active_asset_listings().await.map_err(AppError::internal_msg)
+}
+
+/// Buys a listing: atomically locks `price_wei` AVAX and pulls its module
+/// into escrow. `price_wei` comes from the listing `market_listings` already
+/// returned — the contract itself rejects a wrong amount rather than
+/// trusting it, so a stale or wrong value here fails safely.
+///
+/// # Errors
+///
+/// [`AppError::NotReady`] before bootstrap, [`AppError::InvalidIntent`] if
+/// `price_wei` isn't a decimal number, [`AppError::Internal`] if the buy
+/// reverts (e.g. buying your own listing, or the listing is gone).
+#[tauri::command]
+pub async fn market_buy(
+    listing_id: u32,
+    price_wei: String,
+    state: State<'_, AppState>,
+) -> Result<crate::blockchain_bridge::TxResult, AppError> {
+    let services = state.services()?;
+    let price = price_wei.parse::<alloy::primitives::U256>().map_err(|_| AppError::InvalidIntent {
+        field: "price_wei",
+        reason: crate::error::InvalidReason::Malformed,
+    })?;
+    let bridge = services.bridge.lock().await;
+    bridge.buy_listing(listing_id, price).await.map_err(AppError::internal_msg)
+}
+
+/// Lists an owned module for sale — approves the Marketplace to move it,
+/// then creates the listing. Two on-chain steps behind one button, matching
+/// the design doc's "LIST ON MARKET" mock-up.
+///
+/// # Errors
+///
+/// [`AppError::NotReady`] before bootstrap, [`AppError::InvalidIntent`] if
+/// `price_avax` isn't a decimal AVAX amount, [`AppError::Internal`] if
+/// either on-chain step fails (most likely: the token isn't owned by this
+/// identity).
+#[tauri::command]
+pub async fn market_list_module(
+    token_id: u32,
+    description: String,
+    price_avax: String,
+    state: State<'_, AppState>,
+) -> Result<u32, AppError> {
+    let services = state.services()?;
+    let price = alloy::primitives::utils::parse_ether(&price_avax).map_err(|_| AppError::InvalidIntent {
+        field: "price_avax",
+        reason: crate::error::InvalidReason::Malformed,
+    })?;
+    let bridge = services.bridge.lock().await;
+    bridge.approve_voucher(token_id).await.map_err(AppError::internal_msg)?;
+    bridge.create_asset_listing(&description, price, token_id).await.map_err(AppError::internal_msg)
+}
+
+/// Releases a deal: pays the seller and transfers the module to the buyer.
+/// Only the buyer may call this — enforced on-chain, not here.
+///
+/// # Errors
+///
+/// [`AppError::NotReady`] before bootstrap, [`AppError::Internal`] if the
+/// call reverts.
+#[tauri::command]
+pub async fn market_release_deal(deal_id: u32, state: State<'_, AppState>) -> Result<(), AppError> {
+    let services = state.services()?;
+    let bridge = services.bridge.lock().await;
+    bridge.release_deal(deal_id).await.map(|_| ()).map_err(AppError::internal_msg)
+}
+
+/// Refunds a deal: returns AVAX to the buyer and the module to the seller.
+///
+/// # Errors
+///
+/// [`AppError::NotReady`] before bootstrap, [`AppError::Internal`] if the
+/// call reverts.
+#[tauri::command]
+pub async fn market_refund_deal(deal_id: u32, state: State<'_, AppState>) -> Result<(), AppError> {
+    let services = state.services()?;
+    let bridge = services.bridge.lock().await;
+    bridge.refund_deal(deal_id).await.map(|_| ()).map_err(AppError::internal_msg)
+}
+
+/// Deals this identity is party to, buyer or seller, with real on-chain
+/// status.
+///
+/// # Errors
+///
+/// [`AppError::NotReady`] before bootstrap, [`AppError::Internal`] if the
+/// Marketplace contract isn't configured or the chain is unreachable.
+#[tauri::command]
+pub async fn market_my_deals(state: State<'_, AppState>) -> Result<Vec<crate::blockchain_bridge::DealView>, AppError> {
+    let services = state.services()?;
+    let bridge = services.bridge.lock().await;
+    let address = bridge.get_primary_address();
+    bridge.get_my_deals(&address).await.map_err(AppError::internal_msg)
+}
+
+/// Every module (and other voucher) this identity owns on-chain right now.
+///
+/// # Errors
+///
+/// [`AppError::NotReady`] before bootstrap, [`AppError::Internal`] if the
+/// voucher contract isn't configured or the chain is unreachable.
+#[tauri::command]
+pub async fn vault_modules(state: State<'_, AppState>) -> Result<Vec<crate::blockchain_bridge::VoucherView>, AppError> {
+    let services = state.services()?;
+    let bridge = services.bridge.lock().await;
+    let address = bridge.get_primary_address();
+    bridge.get_owned_vouchers(&address).await.map_err(AppError::internal_msg)
+}
+
+/// One slot's currently equipped module.
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "camelCase")]
+pub struct EquippedSlot {
+    pub slot: u8,
+    pub token_id: u32,
+}
+
+/// The `NODE LOADOUT` panel's data: what's equipped, and the multiplier it
+/// actually produces right now.
+#[derive(Debug, Clone, serde::Serialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
+#[serde(rename_all = "camelCase")]
+pub struct ModuleLoadout {
+    pub equipped: Vec<EquippedSlot>,
+    /// Computed fresh from on-chain ownership on every call — see
+    /// `BlockchainBridge::get_relay_multiplier`'s docs for why this is
+    /// never cached.
+    pub multiplier: f64,
+}
+
+/// # Errors
+///
+/// [`AppError::NotReady`] before bootstrap.
+#[tauri::command]
+pub async fn vault_loadout(state: State<'_, AppState>) -> Result<ModuleLoadout, AppError> {
+    let services = state.services()?;
+    let bridge = services.bridge.lock().await;
+    let equipped =
+        bridge.get_equipped_modules().into_iter().map(|(slot, token_id)| EquippedSlot { slot, token_id }).collect();
+    let multiplier = bridge.get_relay_multiplier().await;
+    Ok(ModuleLoadout { equipped, multiplier })
+}
+
+/// Equips `token_id` in `slot`, replacing whatever was equipped there.
+///
+/// Does not check ownership — nothing needs to. An equip entry for a token
+/// this identity doesn't (or no longer does) own is inert: it silently
+/// contributes nothing to `vault_loadout`'s multiplier rather than being
+/// something this command has to reject. See
+/// `BlockchainBridge::get_relay_multiplier`.
+///
+/// # Errors
+///
+/// [`AppError::NotReady`] before bootstrap.
+#[tauri::command]
+pub async fn vault_equip_module(slot: u8, token_id: u32, state: State<'_, AppState>) -> Result<(), AppError> {
+    let services = state.services()?;
+    let bridge = services.bridge.lock().await;
+    bridge.equip_module(slot, token_id).map_err(AppError::internal_msg)
+}
+
+/// # Errors
+///
+/// [`AppError::NotReady`] before bootstrap.
+#[tauri::command]
+pub async fn vault_unequip_module(slot: u8, state: State<'_, AppState>) -> Result<(), AppError> {
+    let services = state.services()?;
+    let bridge = services.bridge.lock().await;
+    bridge.unequip_module(slot).map_err(AppError::internal_msg)
+}
+
+/// Burns an owned module or voucher, claiming what it represents.
+///
+/// # Errors
+///
+/// [`AppError::NotReady`] before bootstrap, [`AppError::Internal`] if the
+/// call reverts (most likely: not the owner).
+#[tauri::command]
+pub async fn vault_redeem_module(token_id: u32, state: State<'_, AppState>) -> Result<(), AppError> {
+    let services = state.services()?;
+    let bridge = services.bridge.lock().await;
+    bridge.redeem_voucher(token_id).await.map(|_| ()).map_err(AppError::internal_msg)
 }

@@ -6,23 +6,26 @@ import { HardhatEthersSigner } from "@nomicfoundation/hardhat-ethers/signers";
 describe("Marketplace", function () {
     let marketplace: Marketplace;
     let voucher: CabalMeshVoucher;
+    // Stands in for the real `RelayRewards` contract — see
+    // CabalMeshVoucher.test.ts for why an EOA signer is enough here.
+    let rewards: HardhatEthersSigner;
     let seller: HardhatEthersSigner;
     let buyer: HardhatEthersSigner;
     let other: HardhatEthersSigner;
     const price = ethers.parseEther("1.0");
 
     async function mintAndApprove(): Promise<bigint> {
-        await voucher.connect(seller).mintVoucher("AI Compute Credit", "1 hour Ollama compute");
+        await voucher.connect(rewards).mintVoucher(seller.address, "AI Compute Credit", "1 hour Ollama compute", 0, 0, 0);
         const tokenId = 1n;
         await voucher.connect(seller).approve(await marketplace.getAddress(), tokenId);
         return tokenId;
     }
 
     beforeEach(async function () {
-        [seller, buyer, other] = await ethers.getSigners();
+        [rewards, seller, buyer, other] = await ethers.getSigners();
 
         const Voucher = await ethers.getContractFactory("CabalMeshVoucher");
-        voucher = await Voucher.deploy();
+        voucher = await Voucher.deploy(rewards.address);
         await voucher.waitForDeployment();
 
         const Marketplace = await ethers.getContractFactory("Marketplace");
@@ -45,7 +48,7 @@ describe("Marketplace", function () {
     });
 
     it("reverts listing a voucher the caller doesn't own", async function () {
-        await voucher.connect(seller).mintVoucher("AI Compute Credit", "desc");
+        await voucher.connect(rewards).mintVoucher(seller.address, "AI Compute Credit", "desc", 0, 0, 0);
         await voucher.connect(seller).approve(await marketplace.getAddress(), 1n);
 
         await expect(
@@ -54,7 +57,7 @@ describe("Marketplace", function () {
     });
 
     it("reverts listing a voucher not yet approved for the marketplace", async function () {
-        await voucher.connect(seller).mintVoucher("AI Compute Credit", "desc");
+        await voucher.connect(rewards).mintVoucher(seller.address, "AI Compute Credit", "desc", 0, 0, 0);
 
         await expect(
             marketplace.connect(seller).createListing("desc", price, 1n)
@@ -132,7 +135,7 @@ describe("Marketplace", function () {
         const tokenIdA = await mintAndApprove();
         await marketplace.connect(seller).createListing("Item A", price, tokenIdA);
 
-        await voucher.connect(seller).mintVoucher("Relay Bandwidth Credit", "500MB");
+        await voucher.connect(rewards).mintVoucher(seller.address, "Relay Bandwidth Credit", "500MB", 0, 0, 0);
         const tokenIdB = 2n;
         await voucher.connect(seller).approve(await marketplace.getAddress(), tokenIdB);
         await marketplace.connect(seller).createListing("Item B", price, tokenIdB);

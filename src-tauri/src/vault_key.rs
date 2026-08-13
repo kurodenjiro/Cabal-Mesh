@@ -103,6 +103,26 @@ fn key_bytes(key: &DataKey) -> [u8; 32] {
     key.expose_for_storage()
 }
 
+/// Stands in for the real provider while the vault is passphrase-protected
+/// and locked.
+///
+/// Refuses every call rather than falling back to generating or reading a
+/// file-backed key — that would silently defeat passphrase protection the
+/// moment `unlock_with_passphrase` had not yet run. The bridge installs this
+/// at startup when `SecurityState::mode` is [`crate::security_state::UnlockMode::Passphrase`],
+/// and replaces it once the correct passphrase is supplied.
+pub struct LockedProvider;
+
+impl KeyProvider for LockedProvider {
+    fn data_key(&self) -> Result<DataKey, VaultError> {
+        Err(VaultError::KeyUnavailable)
+    }
+
+    fn describe(&self) -> &'static str {
+        "locked"
+    }
+}
+
 /// The provider for this platform.
 pub fn platform_provider(key_path: PathBuf) -> FileKeyProvider {
     if !cfg!(desktop) {

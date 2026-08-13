@@ -19,12 +19,12 @@ struct OllamaResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MatchResult {
-    pub listing_id: u64,
+    pub listing_id: u32,
     pub seller: String,
     pub description: String,
     pub price_avax: String,
     pub price_wei: String,
-    pub token_id: u64,
+    pub token_id: u32,
     pub reason: String,
 }
 
@@ -111,12 +111,17 @@ Catalog:
         // above and silently looks like "no match" even though the model
         // did pick something — recover the id with a looser scan before
         // giving up.
-        let matched_id = match parsed["matched_id"].as_u64() {
+        // Widened to u64 only because the model's output has to be parsed as
+        // one; a real listing id always fits in u32 (see AssetListingView::id).
+        let matched_id: u64 = match parsed["matched_id"].as_u64() {
             Some(id) => id,
             None => match crate::llm_json::recover_number_field(json_slice, "matched_id") {
                 Some(id) => id,
                 None => return Ok(None),
             },
+        };
+        let Ok(matched_id) = u32::try_from(matched_id) else {
+            return Ok(None); // model hallucinated an id outside any real range
         };
 
         let listing = match listings.iter().find(|l| l.id == matched_id) {

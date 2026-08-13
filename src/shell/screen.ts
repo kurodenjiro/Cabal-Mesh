@@ -13,10 +13,11 @@
 export type IntentId = string;
 
 export type IntentTab = "ACTIVE" | "PENDING" | "HISTORY";
-export type VaultTab = "ASSETS" | "IDENTITIES" | "KEYS";
+export type VaultTab = "ASSETS" | "IDENTITIES" | "MODULES" | "KEYS";
 
 export type Screen =
   | { name: "splash" }
+  | { name: "unlock" }
   | { name: "home" }
   | { name: "intents"; tab: IntentTab }
   | { name: "new" }
@@ -24,6 +25,7 @@ export type Screen =
   | { name: "settled"; id: IntentId }
   | { name: "nodes" }
   | { name: "vault"; tab: VaultTab }
+  | { name: "market" }
   | { name: "profile" };
 
 /** The five destinations in the tab bar. */
@@ -55,6 +57,7 @@ export const TABS: ReadonlyArray<{ key: TabKey; label: string; icon: GlyphName }
 export function back(screen: Screen): Screen {
   switch (screen.name) {
     case "splash":
+    case "unlock":
     case "home":
       return screen;
     case "intents":
@@ -66,6 +69,8 @@ export function back(screen: Screen): Screen {
     case "detail":
     case "settled":
       return { name: "intents", tab: "ACTIVE" };
+    case "market":
+      return { name: "vault", tab: "MODULES" };
   }
 }
 
@@ -82,17 +87,19 @@ export function activeTab(screen: Screen): TabKey | null {
     case "nodes":
       return "nodes";
     case "vault":
+    case "market":
       return "vault";
     case "profile":
       return "profile";
     case "splash":
+    case "unlock":
       return null;
   }
 }
 
-/** Splash is full-bleed: no header, no tab bar. */
+/** Splash and unlock are full-bleed: no header, no tab bar. */
 export function hasChrome(screen: Screen): boolean {
-  return screen.name !== "splash";
+  return screen.name !== "splash" && screen.name !== "unlock";
 }
 
 /** Header title per screen, matching the prototype. */
@@ -112,9 +119,12 @@ export function title(screen: Screen): string {
       return "NODES";
     case "vault":
       return "VAULT";
+    case "market":
+      return "MARKET";
     case "profile":
       return "PROFILE";
     case "splash":
+    case "unlock":
       return "";
   }
 }

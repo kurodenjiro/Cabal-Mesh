@@ -37,6 +37,13 @@ export function useLogStream(
 
   useEffect(() => {
     if (!enabled) return;
+    // `new Channel()` reaches into `window.__TAURI_INTERNALS__` synchronously
+    // in its constructor — outside `invoke`'s own async/await boundary, so a
+    // throw here isn't a promise rejection `.catch` can reach. Guarded so the
+    // browser-only dev preview (no Tauri runtime) can render every other
+    // screen instead of crashing on mount — see the same guard in
+    // `GuardianApproval`.
+    if (!("__TAURI_INTERNALS__" in window)) return;
 
     const channel = new Channel<LogLine>();
     channel.onmessage = onLine;

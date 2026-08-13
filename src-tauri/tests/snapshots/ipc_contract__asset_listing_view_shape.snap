@@ -1,11 +1,12 @@
 ---
 source: tests/ipc_contract.rs
+expression: "shape(&AssetListingView\n{\n    id: 7, seller: \"0xfF8dd6dbB7B97b44044573cFE843dE1F463637a9\".into(),\n    description: \"AI compute credit\".into(), price_wei:\n    \"50000000000000000\".into(), price_avax: \"0.05\".into(), token_id: 42,\n})"
 ---
 {
   "id": 7,
   "seller": "0xfF8dd6dbB7B97b44044573cFE843dE1F463637a9",
   "description": "AI compute credit",
-  "price_wei": "50000000000000000",
-  "price_avax": "0.05",
-  "token_id": 42
+  "priceWei": "50000000000000000",
+  "priceAvax": "0.05",
+  "tokenId": 42
 }

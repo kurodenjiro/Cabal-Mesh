@@ -28,7 +28,7 @@ use cabal_ble::wire::PacketKind;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::broadcast::Receiver as BleEventReceiver;
 
 /// Long enough for announcements to cross and be processed, short enough that
 /// a hang fails the suite rather than stalling it.
@@ -49,7 +49,7 @@ fn address(port: u16) -> SocketAddr {
 }
 
 /// Starts a node listening on `port` and dialling `peers`.
-fn node(port: u16, peers: &[u16]) -> (BleHandle, UnboundedReceiver<BleEvent>) {
+fn node(port: u16, peers: &[u16]) -> (BleHandle, BleEventReceiver<BleEvent>) {
     let transport = LoopbackTransport::new(
         address(port),
         peers.iter().copied().map(address).collect(),
@@ -77,7 +77,7 @@ async fn until(mut check: impl FnMut() -> bool, within: Duration) -> bool {
 }
 
 /// Collects events that have arrived so far.
-fn drain(events: &mut UnboundedReceiver<BleEvent>) -> Vec<BleEvent> {
+fn drain(events: &mut BleEventReceiver<BleEvent>) -> Vec<BleEvent> {
     let mut out = Vec::new();
     while let Ok(event) = events.try_recv() {
         out.push(event);
@@ -218,6 +218,54 @@ async fn an_intent_crosses_three_nodes_by_being_relayed() {
     .await;
 
     assert!(arrived, "the intent was not relayed to the far node");
+}
+
+#[tokio::test]
+async fn a_directed_send_reaches_only_its_recipient_even_through_a_relay() {
+    // A—B—C, no link between A and C. Guardian shares (and anything else
+    // that must go to one specific peer rather than the whole mesh) need
+    // this: B must forward it without ever handing it to its own app layer,
+    // and C must be the only one who does.
+    let port_a = free_port();
+    let port_b = free_port();
+    let port_c = free_port();
+
+    let (alice, _alice_events) = node(port_a, &[]);
+    let (_bob, mut bob_events) = node(port_b, &[port_a]);
+    let (carol, mut carol_events) = node(port_c, &[port_b]);
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let carol_id = carol.status().await.expect("carol status").peer_id;
+
+    alice
+        .send_to(carol_id, PacketKind::IntentAck, b"for carol only".to_vec())
+        .await
+        .expect("send_to");
+
+    let mut received: Vec<Vec<u8>> = Vec::new();
+    let arrived = until(
+        || {
+            for event in drain(&mut carol_events) {
+                if let BleEvent::Received { kind: PacketKind::IntentAck, payload, .. } = event {
+                    received.push(payload);
+                }
+            }
+            !received.is_empty()
+        },
+        Duration::from_secs(3),
+    )
+    .await;
+
+    assert!(arrived, "the directed packet never reached carol");
+    assert_eq!(received, vec![b"for carol only".to_vec()]);
+
+    // Bob relayed it — he must not also have delivered it to his own app,
+    // since the packet was never addressed to him.
+    let bob_saw_it = drain(&mut bob_events)
+        .iter()
+        .any(|event| matches!(event, BleEvent::Received { kind: PacketKind::IntentAck, .. }));
+    assert!(!bob_saw_it, "an intermediate relay delivered a directed packet to its own app");
 }
 
 #[tokio::test]

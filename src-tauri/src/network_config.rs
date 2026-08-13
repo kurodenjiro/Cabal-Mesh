@@ -71,11 +71,13 @@ impl Network {
                 escrow: None,
                 marketplace: None,
                 voucher: None,
+                relay_rewards: None,
             },
             Self::Mainnet => Contracts {
                 escrow: None,
                 marketplace: None,
                 voucher: None,
+                relay_rewards: None,
             },
         }
     }
@@ -88,10 +90,15 @@ pub struct Contracts {
     pub escrow: Option<&'static str>,
     pub marketplace: Option<&'static str>,
     pub voucher: Option<&'static str>,
+    /// Pays a gateway for relaying, and mints modules at milestones. See
+    /// `docs/intent-chat-and-modules-design.md`, decisions 0 and 3 — `None`
+    /// here until the fixed voucher and this contract are actually
+    /// deployed, which as of this writing they are not.
+    pub relay_rewards: Option<&'static str>,
 }
 
 /// Resolved chain configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NetworkConfig {
     #[serde(default)]
@@ -105,18 +112,8 @@ pub struct NetworkConfig {
     pub marketplace_address: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub voucher_address: Option<String>,
-}
-
-impl Default for NetworkConfig {
-    fn default() -> Self {
-        Self {
-            network: Network::default(),
-            rpc_url: None,
-            escrow_address: None,
-            marketplace_address: None,
-            voucher_address: None,
-        }
-    }
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay_rewards_address: Option<String>,
 }
 
 impl NetworkConfig {
@@ -154,6 +151,9 @@ impl NetworkConfig {
         if let Some(address) = var("VOUCHER_CONTRACT_ADDRESS") {
             self.voucher_address = Some(address);
         }
+        if let Some(address) = var("RELAY_REWARDS_CONTRACT_ADDRESS") {
+            self.relay_rewards_address = Some(address);
+        }
     }
 
     /// The endpoint to use.
@@ -186,6 +186,14 @@ impl NetworkConfig {
         self.voucher_address
             .clone()
             .or_else(|| self.network.contracts().voucher.map(ToOwned::to_owned))
+    }
+
+    /// `RelayRewards` address, resolved as [`NetworkConfig::escrow`].
+    #[must_use]
+    pub fn relay_rewards(&self) -> Option<String> {
+        self.relay_rewards_address
+            .clone()
+            .or_else(|| self.network.contracts().relay_rewards.map(ToOwned::to_owned))
     }
 }
 
@@ -229,6 +237,10 @@ mod tests {
         // A plausible-looking wrong address fails as a chain error. None fails
         // as "not configured", which is the truth and is actionable.
         assert!(NetworkConfig::default().escrow().is_none());
+        // relay_rewards specifically: nothing is deployed as of this
+        // writing (docs/intent-chat-and-modules-design.md decisions 0/3),
+        // and this must read as "not configured," not a guessed address.
+        assert!(NetworkConfig::default().relay_rewards().is_none());
     }
 
     #[test]
