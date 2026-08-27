@@ -49,7 +49,7 @@ sol! {
 // No `mint_voucher` bridge method: `mintVoucher` is restricted on-chain to
 // the `RelayRewards` contract address (see `contracts/CabalMeshVoucher.sol`
 // and `docs/intent-chat-and-modules-design.md`, decision 0 — the previous
-// version let any caller mint any voucher to themselves, for free). A
+// version let any caller mint any module card to themselves, for free). A
 // user's own signer calling it now always reverts; there is no version of
 // this method that could still work. Minting happens only as the atomic
 // side effect of `IRelayRewards::recordGatewayRelay`, which nothing calls
@@ -111,29 +111,32 @@ pub struct AssetListingView {
     pub token_id: u32,
 }
 
-/// A voucher NFT owned by a given wallet (used by the Redeem page, and by
-/// `VAULT → MODULES`).
+/// A module-card NFT owned by a given wallet (used by the Redeem page, and
+/// by `VAULT → MODULES`). Backed by a real `CabalMeshVoucher` tokenId
+/// on-chain — "module card" is the name this type gives that token in every
+/// Rust/TypeScript signature and every screen; the deployed contract itself
+/// keeps its own name, `CabalMeshVoucher`, unchanged.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(export, export_to = "../../src/types/bindings.ts"))]
 #[serde(rename_all = "camelCase")]
-pub struct VoucherView {
+pub struct ModuleCardView {
     /// u32 — see [`AssetListingView::id`]'s comment for why.
     pub token_id: u32,
-    pub voucher_type: String,
+    pub module_type: String,
     pub description: String,
     pub owner: String,
-    /// The address that originally minted this voucher (proof-of-possession at
+    /// The address that originally minted this card (proof-of-possession at
     /// listing time) — lets the UI distinguish "I bought this from someone"
     /// from "I minted this myself to sell and still hold it unsold".
     pub minted_by: String,
     /// 0 = RADIO, 1 = CRYPTO, 2 = POWER, 3 = SOULBOUND. Meaningless — always
-    /// `0` — on a non-module voucher (AI compute credit, etc.); `effect_bps`
+    /// `0` — on a non-module card (AI compute credit, etc.); `effect_bps`
     /// being `0` is what actually says "nothing to equip here."
     pub slot: u8,
     /// 0 = COMMON, 1 = UNCOMMON, 2 = RARE, 3 = LEGENDARY.
     pub rarity: u8,
     /// The module's effect in basis points (1800 = +18%). Zero for
-    /// non-module vouchers.
+    /// non-module cards.
     pub effect_bps: u16,
 }
 
@@ -156,7 +159,7 @@ pub struct DealView {
 /// A piece of content (e.g. a book page) committed to by its seller: a real
 /// EIP-191 signature over the exact text, verifiable by recovering the
 /// signer's address — used in place of a literal ZK proof (no `nargo`/Noir
-/// available), same honesty tradeoff already made for voucher ownership.
+/// available), same honesty tradeoff already made for module-card ownership.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContentRecord {
     pub token_id: u64,
@@ -1115,9 +1118,9 @@ impl BlockchainBridge {
         }))
     }
 
-    /// Approves the Marketplace contract to pull a specific voucher out of
-    /// the seller's wallet, required before that voucher can be listed.
-    pub async fn approve_voucher(&self, token_id: u32) -> Result<String, Box<dyn Error>> {
+    /// Approves the Marketplace contract to pull a specific module card out
+    /// of the seller's wallet, required before that card can be listed.
+    pub async fn approve_module_card(&self, token_id: u32) -> Result<String, Box<dyn Error>> {
         let signer = self.primary_signer()?;
         let voucher_address = self.voucher_address.ok_or("VOUCHER_CONTRACT_ADDRESS not configured")?;
         let marketplace_address = self.marketplace_address.ok_or("MARKETPLACE_CONTRACT_ADDRESS not configured")?;
@@ -1132,7 +1135,7 @@ impl BlockchainBridge {
             .get_receipt()
             .await?;
 
-        tracing::info!("✅ [Bridge] Voucher {} approved for Marketplace. Tx: {:?}", token_id, receipt.transaction_hash);
+        tracing::info!("✅ [Bridge] Module card {} approved for Marketplace. Tx: {:?}", token_id, receipt.transaction_hash);
         Ok(format!("{:?}", receipt.transaction_hash))
     }
 
@@ -1174,7 +1177,7 @@ impl BlockchainBridge {
         Ok(format!("{:?}", receipt.transaction_hash))
     }
 
-    /// Publishes a real on-chain listing backed by an owned, approved voucher.
+    /// Publishes a real on-chain listing backed by an owned, approved module card.
     /// Returns the generated listing id.
     pub async fn create_asset_listing(&self, description: &str, price_wei: U256, token_id: u32) -> Result<u32, Box<dyn Error>> {
         let signer = self.primary_signer()?;
@@ -1229,7 +1232,7 @@ impl BlockchainBridge {
         Ok(views)
     }
 
-    /// Atomically locks `price_wei` AVAX and pulls the seller's voucher into
+    /// Atomically locks `price_wei` AVAX and pulls the seller's module card into
     /// the Marketplace contract in a single transaction. Returns the deal id.
     /// If the RPC can't be reached within a few seconds, falls back to
     /// signing the transaction offline and queuing it for mesh relay.
@@ -1248,7 +1251,7 @@ impl BlockchainBridge {
             return Err("You can't buy your own listing".into());
         }
 
-        // A listing can go stale if its voucher was burned outside a normal
+        // A listing can go stale if its module card was burned outside a normal
         // sale (e.g. the seller redeemed their own still-listed item) — the
         // Marketplace contract has no way to know that and never flips
         // `active` back off. Catch it here with a clear message instead of
@@ -1294,11 +1297,11 @@ impl BlockchainBridge {
             .map(|l| l.inner.data.dealId.to::<u32>())
             .ok_or("DealCreated event not found in receipt")?;
 
-        tracing::info!("✅ [Bridge] Deal {} created (voucher + AVAX locked). Tx: {:?}", deal_id, receipt.transaction_hash);
+        tracing::info!("✅ [Bridge] Deal {} created (module card + AVAX locked). Tx: {:?}", deal_id, receipt.transaction_hash);
         Ok(TxResult::Confirmed { id: u64::from(deal_id) })
     }
 
-    /// Releases a deal: pays the seller and transfers the voucher to the buyer.
+    /// Releases a deal: pays the seller and transfers the module card to the buyer.
     pub async fn release_deal(&self, deal_id: u32) -> Result<String, Box<dyn Error>> {
         let signer = self.primary_signer()?;
         let marketplace_address = self.marketplace_address.ok_or("MARKETPLACE_CONTRACT_ADDRESS not configured")?;
@@ -1311,7 +1314,7 @@ impl BlockchainBridge {
         Ok(format!("{:?}", receipt.transaction_hash))
     }
 
-    /// Refunds a deal: returns AVAX to the buyer and the voucher to the seller.
+    /// Refunds a deal: returns AVAX to the buyer and the module card to the seller.
     pub async fn refund_deal(&self, deal_id: u32) -> Result<String, Box<dyn Error>> {
         let signer = self.primary_signer()?;
         let marketplace_address = self.marketplace_address.ok_or("MARKETPLACE_CONTRACT_ADDRESS not configured")?;
@@ -1324,9 +1327,10 @@ impl BlockchainBridge {
         Ok(format!("{:?}", receipt.transaction_hash))
     }
 
-    /// Burns a voucher the caller owns, claiming the service it represents.
-    /// Requires real on-chain ownership (`ownerOf(tokenId) == msg.sender`).
-    pub async fn redeem_voucher(&self, token_id: u32) -> Result<String, Box<dyn Error>> {
+    /// Burns a module card the caller owns, claiming the service it
+    /// represents. Requires real on-chain ownership
+    /// (`ownerOf(tokenId) == msg.sender`).
+    pub async fn redeem_module_card(&self, token_id: u32) -> Result<String, Box<dyn Error>> {
         let signer = self.primary_signer()?;
         let voucher_address = self.voucher_address.ok_or("VOUCHER_CONTRACT_ADDRESS not configured")?;
 
@@ -1334,12 +1338,12 @@ impl BlockchainBridge {
         let contract = IVoucher::new(voucher_address, provider);
 
         let receipt = contract.redeemVoucher(U256::from(token_id)).send().await?.get_receipt().await?;
-        tracing::info!("✅ [Bridge] Voucher {} redeemed. Tx: {:?}", token_id, receipt.transaction_hash);
+        tracing::info!("✅ [Bridge] Module card {} redeemed. Tx: {:?}", token_id, receipt.transaction_hash);
         Ok(format!("{:?}", receipt.transaction_hash))
     }
 
-    /// Reads the current on-chain owner of a voucher (no signer required).
-    pub async fn get_voucher_owner(&self, token_id: u32) -> Result<String, Box<dyn Error>> {
+    /// Reads the current on-chain owner of a module card (no signer required).
+    pub async fn get_module_card_owner(&self, token_id: u32) -> Result<String, Box<dyn Error>> {
         let voucher_address = self.voucher_address.ok_or("VOUCHER_CONTRACT_ADDRESS not configured")?;
         let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
         let contract = IVoucher::new(voucher_address, provider);
@@ -1348,10 +1352,10 @@ impl BlockchainBridge {
         Ok(owner.to_string())
     }
 
-    /// Lists every voucher the given address currently owns on-chain — used
-    /// by the Redeem page so it only ever shows vouchers the caller really
+    /// Lists every module card the given address currently owns on-chain —
+    /// used by the Redeem page so it only ever shows cards the caller really
     /// holds, never a claim it has to trust.
-    pub async fn get_owned_vouchers(&self, owner: &str) -> Result<Vec<VoucherView>, Box<dyn Error>> {
+    pub async fn get_owned_module_cards(&self, owner: &str) -> Result<Vec<ModuleCardView>, Box<dyn Error>> {
         let voucher_address = self.voucher_address.ok_or("VOUCHER_CONTRACT_ADDRESS not configured")?;
         let owner_addr = Address::from_str(owner)?;
         let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
@@ -1368,9 +1372,9 @@ impl BlockchainBridge {
                 continue;
             }
             if let Ok(data) = contract.vouchers(U256::from(token_id)).call().await {
-                owned.push(VoucherView {
+                owned.push(ModuleCardView {
                     token_id,
-                    voucher_type: data.voucherType,
+                    module_type: data.voucherType,
                     description: data.description,
                     owner: current_owner.to_string(),
                     minted_by: data.mintedBy.to_string(),
@@ -1438,7 +1442,7 @@ impl BlockchainBridge {
         }
 
         let owner = self.get_primary_address();
-        let Ok(owned) = self.get_owned_vouchers(&owner).await else {
+        let Ok(owned) = self.get_owned_module_cards(&owner).await else {
             // Chain unreachable: no verified ownership, so no boost is
             // claimed — an optimistic multiplier here would be exactly the
             // "trust a local number" mistake decision 1 corrects.
@@ -1457,7 +1461,7 @@ impl BlockchainBridge {
     /// A Marketplace deal this address is involved in (as buyer or seller),
     /// with its real on-chain status — this IS the "an agent is dealing with
     /// this listing" signal: `active` means a buyer has locked funds against
-    /// a seller's voucher and it's awaiting release/refund.
+    /// a seller's module card and it's awaiting release/refund.
     pub async fn get_my_deals(&self, address: &str) -> Result<Vec<DealView>, Box<dyn Error>> {
         let marketplace_address = self.marketplace_address.ok_or("MARKETPLACE_CONTRACT_ADDRESS not configured")?;
         let my_addr = Address::from_str(address)?;
@@ -1531,7 +1535,7 @@ impl BlockchainBridge {
     /// Signs the exact text with this node's identity key — a real,
     /// verifiable commitment standing in for a literal ZK proof (no
     /// `nargo`/Noir available). `token_id` is filled in by the caller once
-    /// the voucher has actually been minted.
+    /// the module card has actually been minted.
     pub fn sign_content(&self, text: &str) -> Result<ContentRecord, Box<dyn Error>> {
         let signer = self.primary_signer()?;
         let signature = signer.sign_message_sync(text.as_bytes())?;

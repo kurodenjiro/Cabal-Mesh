@@ -42,7 +42,7 @@ These render, accept input, and are stored — but nothing downstream reads them
   **Neither is called from `src/commands.rs`** — grep returns nothing. They were
   only reachable through the `legacy` module, deleted in 3e18664. So "AI agents
   negotiate" is currently 0% live.
-- **Marketplace / vouchers.** `Marketplace.sol` and `CabalMeshVoucher.sol` are
+- **Marketplace / module cards.** `Marketplace.sol` and `CabalMeshVoucher.sol` are
   deployed to Fuji, but no command in the current 21-command surface exposes
   them. The frontend cannot mint, list, or buy anything.
 - **Key export / import / backup.** Also removed with `legacy`. See

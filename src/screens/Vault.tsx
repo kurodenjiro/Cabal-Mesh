@@ -10,7 +10,7 @@ import type {
   ModuleLoadout,
   SecurityStatus,
   VaultRow,
-  VoucherView,
+  ModuleCardView,
 } from "../types/bindings";
 
 const SLOT_NAMES = ["RADIO", "CRYPTO", "POWER", "SOULBOUND"] as const;
@@ -915,13 +915,13 @@ function GuardianPanel() {
  */
 function ModulesPanel({ onOpenMarket }: { onOpenMarket: () => void }) {
   const [loadout, setLoadout] = useState<ModuleLoadout | null>(null);
-  const [owned, setOwned] = useState<VoucherView[] | null>(null);
+  const [owned, setOwned] = useState<ModuleCardView[] | null>(null);
   const [busy, setBusy] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = () => {
     invoke<ModuleLoadout>("vault_loadout").then(setLoadout).catch(() => setLoadout(null));
-    invoke<VoucherView[]>("vault_modules").then(setOwned).catch(() => setOwned([]));
+    invoke<ModuleCardView[]>("vault_modules").then(setOwned).catch(() => setOwned([]));
   };
   useEffect(refresh, []);
 
@@ -961,7 +961,7 @@ function ModulesPanel({ onOpenMarket }: { onOpenMarket: () => void }) {
   const equippedBySlot = new Map((loadout?.equipped ?? []).map((e) => [e.slot, e.tokenId]));
   // Shown as-is, not filtered to "real modules": `slot`/`effectBps` of 0 is
   // indistinguishable between an actual COMMON RADIO module worth nothing
-  // and an older non-module voucher (AI compute credit, etc.) — guessing
+  // and an older non-module card (AI compute credit, etc.) — guessing
   // which is which would be exactly the kind of invented distinction this
   // screen should not make.
   const modules = owned ?? [];
@@ -993,7 +993,7 @@ function ModulesPanel({ onOpenMarket }: { onOpenMarket: () => void }) {
                     color: item ? "var(--text-primary)" : "var(--text-disabled)",
                   }}
                 >
-                  {item ? item.voucherType.toUpperCase() : "EMPTY"}
+                  {item ? item.moduleType.toUpperCase() : "EMPTY"}
                 </span>
               </div>
             );
@@ -1047,7 +1047,7 @@ function ModulesPanel({ onOpenMarket }: { onOpenMarket: () => void }) {
                 >
                   <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
                     <span style={{ fontFamily: "var(--type-heading-family)", color: "var(--text-primary)" }}>
-                      {module.voucherType}
+                      {module.moduleType}
                     </span>
                     <span style={label}>
                       {SLOT_NAMES[module.slot] ?? "—"} · {RARITY_NAMES[module.rarity] ?? "—"}

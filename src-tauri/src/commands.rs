@@ -2252,7 +2252,7 @@ pub async fn guardian_deny_unlock(id: u32, state: State<'_, AppState>) -> Result
 //
 // Every command here wraps a `BlockchainBridge` method that already existed
 // and already worked — `create_asset_listing`, `buy_listing`,
-// `get_active_asset_listings`, `get_owned_vouchers`, and the rest were fully
+// `get_active_asset_listings`, `get_owned_module_cards`, and the rest were fully
 // implemented against real contracts, just never reachable from any command.
 // See docs/intent-chat-and-modules-design.md for the design and the five
 // decisions (0-4) this surface is built against — most load-bearing:
@@ -2321,7 +2321,7 @@ pub async fn market_list_module(
         reason: crate::error::InvalidReason::Malformed,
     })?;
     let bridge = services.bridge.lock().await;
-    bridge.approve_voucher(token_id).await.map_err(AppError::internal_msg)?;
+    bridge.approve_module_card(token_id).await.map_err(AppError::internal_msg)?;
     bridge.create_asset_listing(&description, price, token_id).await.map_err(AppError::internal_msg)
 }
 
@@ -2367,18 +2367,19 @@ pub async fn market_my_deals(state: State<'_, AppState>) -> Result<Vec<crate::bl
     bridge.get_my_deals(&address).await.map_err(AppError::internal_msg)
 }
 
-/// Every module (and other voucher) this identity owns on-chain right now.
+/// Every module card (and other card type) this identity owns on-chain
+/// right now.
 ///
 /// # Errors
 ///
 /// [`AppError::NotReady`] before bootstrap, [`AppError::Internal`] if the
-/// voucher contract isn't configured or the chain is unreachable.
+/// module-card contract isn't configured or the chain is unreachable.
 #[tauri::command]
-pub async fn vault_modules(state: State<'_, AppState>) -> Result<Vec<crate::blockchain_bridge::VoucherView>, AppError> {
+pub async fn vault_modules(state: State<'_, AppState>) -> Result<Vec<crate::blockchain_bridge::ModuleCardView>, AppError> {
     let services = state.services()?;
     let bridge = services.bridge.lock().await;
     let address = bridge.get_primary_address();
-    bridge.get_owned_vouchers(&address).await.map_err(AppError::internal_msg)
+    bridge.get_owned_module_cards(&address).await.map_err(AppError::internal_msg)
 }
 
 /// One slot's currently equipped module.
@@ -2444,7 +2445,7 @@ pub async fn vault_unequip_module(slot: u8, state: State<'_, AppState>) -> Resul
     bridge.unequip_module(slot).map_err(AppError::internal_msg)
 }
 
-/// Burns an owned module or voucher, claiming what it represents.
+/// Burns an owned module card, claiming what it represents.
 ///
 /// # Errors
 ///
@@ -2454,5 +2455,5 @@ pub async fn vault_unequip_module(slot: u8, state: State<'_, AppState>) -> Resul
 pub async fn vault_redeem_module(token_id: u32, state: State<'_, AppState>) -> Result<(), AppError> {
     let services = state.services()?;
     let bridge = services.bridge.lock().await;
-    bridge.redeem_voucher(token_id).await.map(|_| ()).map_err(AppError::internal_msg)
+    bridge.redeem_module_card(token_id).await.map(|_| ()).map_err(AppError::internal_msg)
 }

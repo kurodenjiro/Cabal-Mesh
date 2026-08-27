@@ -31,7 +31,7 @@ Audited 2026-08-10 (`docs/product-status.md`), re-checked against the current br
 
 ### Not wired up at all
 - **AI negotiation** — `SharkAgent`/`MatchAgent` exist but are called from nowhere in `commands.rs`
-- **Marketplace / vouchers** — `Marketplace.sol` and `CabalMeshVoucher.sol` deployed to Fuji, no command exposes them, no UI
+- **Marketplace / module cards** — `Marketplace.sol` and `CabalMeshVoucher.sol` deployed to Fuji, no command exposes them, no UI
 - **ZK proving / verification** — no code at all. `zk_handler.rs` and `noir-circuit/` were deleted on 2026-08-27 because nothing called them; Phase 4 starts from an empty page
 - **Confidential compute (FHE/MPC)** — no code exists
 - **Recovery delay + veto** — the 24h window and push notification are designed but not built
