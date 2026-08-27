@@ -36,7 +36,6 @@ use cabalmesh_lib::commands::{
 };
 use cabalmesh_lib::matcher::MatchResult;
 use cabalmesh_lib::mesh::{MeshEvent, PrivacyIntent};
-use cabalmesh_lib::zk_handler::{ProofRequest, ZKProof};
 use chrono::{TimeZone, Utc};
 use serde::Serialize;
 
@@ -320,24 +319,6 @@ fn match_result_shape() {
         price_wei: "50000000000000000".into(),
         token_id: 42,
         reason: "matches intent and is under the ceiling".into(),
-    }));
-}
-
-#[test]
-fn proof_request_shape() {
-    insta::assert_snapshot!(shape(&ProofRequest {
-        balance: 1000,
-        bid_amount: 95,
-        price_ceiling: 100,
-    }));
-}
-
-#[test]
-fn zk_proof_shape() {
-    insta::assert_snapshot!(shape(&ZKProof {
-        proof: "0xa4f2c9e1b70d5533".into(),
-        public_inputs: vec!["95".into()],
-        encrypted_intent: "{\"bid\":95,\"verified\":true}".into(),
     }));
 }
 

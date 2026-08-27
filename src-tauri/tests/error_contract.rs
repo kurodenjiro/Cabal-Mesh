@@ -21,7 +21,7 @@ fn shape(error: &AppError) -> String {
 fn every_error_variant() {
     let variants = [
         AppError::NotReady { subsystem: "mesh" },
-        AppError::Unsupported { feature: "zk_proof" },
+        AppError::Unsupported { feature: "local_llm" },
         AppError::MeshOffline,
         AppError::InvalidIntent {
             field: "amount",
@@ -69,7 +69,7 @@ fn every_invalid_reason() {
 fn no_variant_leaks_infrastructure_detail() {
     let variants = [
         AppError::NotReady { subsystem: "mesh" },
-        AppError::Unsupported { feature: "zk_proof" },
+        AppError::Unsupported { feature: "local_llm" },
         AppError::MeshOffline,
         AppError::InvalidIntent {
             field: "amount",

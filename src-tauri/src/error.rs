@@ -268,7 +268,7 @@ mod tests {
             AppError::MeshOffline,
             AppError::VaultLocked,
             AppError::Internal,
-            AppError::Unsupported { feature: "zk_proof" },
+            AppError::Unsupported { feature: "local_llm" },
         ] {
             let message = error.to_string();
             assert!(!message.ends_with('.'), "{message}");

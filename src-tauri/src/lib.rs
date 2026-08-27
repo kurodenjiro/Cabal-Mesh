@@ -27,7 +27,6 @@ pub mod bootstrap_config;
 
 /// Chain selection and contract addresses. See src/network_config.rs.
 pub mod network_config;
-pub mod zk_handler;
 mod llm_json;
 mod lifecycle;
 mod telemetry;
@@ -71,7 +70,6 @@ pub mod error;
 use app_initializer::SystemBootstrap;
 use agent::SharkAgent;
 use matcher::MatchAgent;
-use zk_handler::ZKHandler;
 use ollama_manager::OllamaManager;
 use blockchain_bridge::BlockchainBridge;
 use std::sync::atomic::AtomicU64;
@@ -314,7 +312,6 @@ pub fn run() {
                             agent: Arc::new(SharkAgent::new(None)),
                             intent_chat: Arc::new(intent_chat::IntentChatParser::new(None)),
                             matcher: Arc::new(MatchAgent::new(None)),
-                            zk_handler: Arc::new(ZKHandler::new(None)),
                             ollama: ollama_state,
                             bridge,
                             guardian: guardian_service.clone(),
@@ -341,7 +338,6 @@ pub fn run() {
                             agent: Arc::new(SharkAgent::new(None)),
                             intent_chat: Arc::new(intent_chat::IntentChatParser::new(None)),
                             matcher: Arc::new(MatchAgent::new(None)),
-                            zk_handler: Arc::new(ZKHandler::new(None)),
                             ollama: ollama_state,
                             bridge,
                             guardian: guardian_service,
