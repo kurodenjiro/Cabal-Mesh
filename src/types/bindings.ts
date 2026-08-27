@@ -282,6 +282,40 @@ uptime: string, connected: boolean, stats: Array<StatTile>, };
 export type ModeOption = { label: string, description: string, };
 
 /**
+ * A module-card NFT owned by a given wallet (used by the Redeem page, and
+ * by `VAULT → MODULES`). Backed by a real `CabalMeshVoucher` tokenId
+ * on-chain — "module card" is the name this type gives that token in every
+ * Rust/TypeScript signature and every screen; the deployed contract itself
+ * keeps its own name, `CabalMeshVoucher`, unchanged.
+ */
+export type ModuleCardView = { 
+/**
+ * u32 — see [`AssetListingView::id`]'s comment for why.
+ */
+tokenId: number, moduleType: string, description: string, owner: string, 
+/**
+ * The address that originally minted this card (proof-of-possession at
+ * listing time) — lets the UI distinguish "I bought this from someone"
+ * from "I minted this myself to sell and still hold it unsold".
+ */
+mintedBy: string, 
+/**
+ * 0 = RADIO, 1 = CRYPTO, 2 = POWER, 3 = SOULBOUND. Meaningless — always
+ * `0` — on a non-module card (AI compute credit, etc.); `effect_bps`
+ * being `0` is what actually says "nothing to equip here."
+ */
+slot: number, 
+/**
+ * 0 = COMMON, 1 = UNCOMMON, 2 = RARE, 3 = LEGENDARY.
+ */
+rarity: number, 
+/**
+ * The module's effect in basis points (1800 = +18%). Zero for
+ * non-module cards.
+ */
+effectBps: number, };
+
+/**
  * The `NODE LOADOUT` panel's data: what's equipped, and the multiplier it
  * actually produces right now.
  */
@@ -461,34 +495,3 @@ tag: string, name: string, amount: string,
  * Secondary line. Absent when there is nothing true to say.
  */
 detail: string | null, };
-
-/**
- * A voucher NFT owned by a given wallet (used by the Redeem page, and by
- * `VAULT → MODULES`).
- */
-export type VoucherView = { 
-/**
- * u32 — see [`AssetListingView::id`]'s comment for why.
- */
-tokenId: number, voucherType: string, description: string, owner: string, 
-/**
- * The address that originally minted this voucher (proof-of-possession at
- * listing time) — lets the UI distinguish "I bought this from someone"
- * from "I minted this myself to sell and still hold it unsold".
- */
-mintedBy: string, 
-/**
- * 0 = RADIO, 1 = CRYPTO, 2 = POWER, 3 = SOULBOUND. Meaningless — always
- * `0` — on a non-module voucher (AI compute credit, etc.); `effect_bps`
- * being `0` is what actually says "nothing to equip here."
- */
-slot: number, 
-/**
- * 0 = COMMON, 1 = UNCOMMON, 2 = RARE, 3 = LEGENDARY.
- */
-rarity: number, 
-/**
- * The module's effect in basis points (1800 = +18%). Zero for
- * non-module vouchers.
- */
-effectBps: number, };

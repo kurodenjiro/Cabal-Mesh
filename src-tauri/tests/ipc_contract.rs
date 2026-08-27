@@ -29,7 +29,7 @@ use cabalmesh_lib::agent::ContentAnalysis;
 use cabalmesh_lib::bindings::GuardianUnlockPrompt;
 use cabalmesh_lib::blockchain_bridge::{
     AssetListingView, CompressedAsset, ContentRecord, DealView, IdentityView, InstantSession,
-    QueuedTx, RelayedTxRecord, Snapshot, TxResult, VoucherView,
+    ModuleCardView, QueuedTx, RelayedTxRecord, Snapshot, TxResult,
 };
 use cabalmesh_lib::commands::{
     EquippedSlot, GuardianCandidate, GuardianEnrollResult, GuardianStatus, ModuleLoadout, SecurityStatus,
@@ -113,7 +113,7 @@ fn instant_session_shape() {
 }
 
 // ---------------------------------------------------------------------------
-// Marketplace, vouchers, deals
+// Marketplace, module cards, deals
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -129,10 +129,10 @@ fn asset_listing_view_shape() {
 }
 
 #[test]
-fn voucher_view_shape() {
-    insta::assert_snapshot!(shape(&VoucherView {
+fn module_card_view_shape() {
+    insta::assert_snapshot!(shape(&ModuleCardView {
         token_id: 42,
-        voucher_type: "compute".into(),
+        module_type: "compute".into(),
         description: "AI compute credit".into(),
         owner: "0xfF8dd6dbB7B97b44044573cFE843dE1F463637a9".into(),
         minted_by: "0xfF8dd6dbB7B97b44044573cFE843dE1F463637a9".into(),
@@ -143,13 +143,13 @@ fn voucher_view_shape() {
 }
 
 #[test]
-fn voucher_view_shape_as_a_module() {
+fn module_card_view_shape_as_a_module() {
     // A module's slot/rarity/effect are what `VAULT → MODULES` reads to
     // build the loadout — see docs/intent-chat-and-modules-design.md,
     // decision 2.
-    insta::assert_snapshot!(shape(&VoucherView {
+    insta::assert_snapshot!(shape(&ModuleCardView {
         token_id: 7,
-        voucher_type: "Gateway License".into(),
+        module_type: "Gateway License".into(),
         description: "Earned by relaying settled transactions as a gateway".into(),
         owner: "0xfF8dd6dbB7B97b44044573cFE843dE1F463637a9".into(),
         minted_by: "0xfF8dd6dbB7B97b44044573cFE843dE1F463637a9".into(),

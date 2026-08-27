@@ -14,7 +14,7 @@ import { useEffect, useState, type CSSProperties } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Button, Input, Panel, Select } from "../ds";
 import { errorCopy } from "../state/errorCopy";
-import type { AssetListingView, DealView, VoucherView } from "../types/bindings";
+import type { AssetListingView, DealView, ModuleCardView } from "../types/bindings";
 
 const label: CSSProperties = {
   fontFamily: "var(--type-label-family)",
@@ -26,14 +26,14 @@ const label: CSSProperties = {
 export function Market() {
   const [listings, setListings] = useState<AssetListingView[] | null>(null);
   const [deals, setDeals] = useState<DealView[] | null>(null);
-  const [owned, setOwned] = useState<VoucherView[] | null>(null);
+  const [owned, setOwned] = useState<ModuleCardView[] | null>(null);
   const [busy, setBusy] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = () => {
     invoke<AssetListingView[]>("market_listings").then(setListings).catch(() => setListings([]));
     invoke<DealView[]>("market_my_deals").then(setDeals).catch(() => setDeals([]));
-    invoke<VoucherView[]>("vault_modules").then(setOwned).catch(() => setOwned([]));
+    invoke<ModuleCardView[]>("vault_modules").then(setOwned).catch(() => setOwned([]));
   };
   useEffect(refresh, []);
 
@@ -77,7 +77,7 @@ export function Market() {
   }
 
   const activeDeals = (deals ?? []).filter((deal) => deal.status === "active");
-  const unlisted = (owned ?? []).filter((module) => module.voucherType.length > 0);
+  const unlisted = (owned ?? []).filter((module) => module.moduleType.length > 0);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-6)" }}>
@@ -214,7 +214,7 @@ export function Market() {
  * `LIST ON MARKET`: two on-chain steps (approve, then list) behind one
  * button — see `BlockchainBridge::create_asset_listing`'s doc comment.
  */
-function SellPanel({ modules, onListed }: { modules: VoucherView[]; onListed: () => void }) {
+function SellPanel({ modules, onListed }: { modules: ModuleCardView[]; onListed: () => void }) {
   const [tokenId, setTokenId] = useState("");
   const [price, setPrice] = useState("");
   const [busy, setBusy] = useState(false);
@@ -228,7 +228,7 @@ function SellPanel({ modules, onListed }: { modules: VoucherView[]; onListed: ()
     try {
       await invoke("market_list_module", {
         tokenId: selected.tokenId,
-        description: selected.voucherType,
+        description: selected.moduleType,
         priceAvax: price,
       });
       setTokenId("");
@@ -254,7 +254,7 @@ function SellPanel({ modules, onListed }: { modules: VoucherView[]; onListed: ()
               value={tokenId}
               onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setTokenId(e.target.value)}
               placeholder="Choose a module"
-              options={modules.map((m) => ({ value: String(m.tokenId), label: `${m.voucherType} · #${m.tokenId}` }))}
+              options={modules.map((m) => ({ value: String(m.tokenId), label: `${m.moduleType} · #${m.tokenId}` }))}
             />
             <Input
               value={price}
