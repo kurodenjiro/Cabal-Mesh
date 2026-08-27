@@ -32,7 +32,6 @@
 		5DEFBDD5CFAF068723C5F7C3 /* blockchain_bridge.rs */ = {isa = PBXFileReference; path = blockchain_bridge.rs; sourceTree = "<group>"; };
 		5E71DF7CA96CF870DCA9B90C /* main.rs */ = {isa = PBXFileReference; path = main.rs; sourceTree = "<group>"; };
 		6381BF9D971DAC1D56771A71 /* app_paths.rs */ = {isa = PBXFileReference; path = app_paths.rs; sourceTree = "<group>"; };
-		68111548D055A0DCBB238910 /* zk_handler.rs */ = {isa = PBXFileReference; path = zk_handler.rs; sourceTree = "<group>"; };
 		6BB2419FBE7B2E26258426D7 /* libapp.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libapp.a; sourceTree = "<group>"; };
 		6E5666DC468B633EE473CC90 /* assets */ = {isa = PBXFileReference; lastKnownFileType = folder; path = assets; sourceTree = SOURCE_ROOT; };
 		717C049A78CF4413B804A16C /* Metal.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Metal.framework; path = System/Library/Frameworks/Metal.framework; sourceTree = SDKROOT; };
@@ -141,7 +140,6 @@
 				953D1C2690441D9BD5964DA6 /* ollama_config.rs */,
 				1C4D340AB4F3A77BD77D0540 /* ollama_manager.rs */,
 				5519D6633873728B0F0604E0 /* platform.rs */,
-				68111548D055A0DCBB238910 /* zk_handler.rs */,
 			);
 			name = src;
 			path = ../../src;

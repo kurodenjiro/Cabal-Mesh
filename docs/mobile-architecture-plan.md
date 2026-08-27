@@ -11,7 +11,7 @@ Scope of this document: **Rust / `src-tauri` only.** Frontend is deferred; §7 d
 
 | Area | Decision |
 |---|---|
-| ZK proving | **Out of mobile scope.** `nargo` shell-out stays desktop-only behind `#[cfg(desktop)]`. A mobile Rust stub returns `AppError::Unsupported` for internal callers/tests; the mobile webview is not granted that command, so direct JS invocation is denied by ACL first. |
+| ZK proving | **Superseded 2026-08-27 — `zk_handler.rs` and the circuit were deleted, unused, so there is nothing to gate. The rest of this row describes the plan as it stood.** Out of mobile scope: `nargo` shell-out stays desktop-only behind `#[cfg(desktop)]`. A mobile Rust stub returns `AppError::Unsupported` for internal callers/tests; the mobile webview is not granted that command, so direct JS invocation is denied by ACL first. |
 | LLM / agent | **Out of mobile scope.** Ollama process spawning is desktop-only. Same stub + ACL treatment. |
 | Mesh transport | mDNS on LAN (**Android; iOS only with Apple's managed multicast entitlement**) + relay bootstrap (`relay` client + `dcutr` + `identify` + `ping`) + QUIC/TCP transport. Network changes recover by re-dial/rejoin/replay-dedupe; no seamless QUIC-migration promise. |
 | Relay infrastructure | **Self-hosted relay, address baked in as the default**, user-overridable in Profile. See §2.7.1 — this is an infra deliverable, not just code. |
@@ -32,7 +32,7 @@ Rationale for `Unsupported` over deleting the handlers: Rust/TypeScript still sh
 |---|---|---|---|---|
 | B1 | `keyring = "3.6.3"` in `Cargo.toml` | `Cargo.toml` | Desktop-only backends (Keychain/CredMan/secret-service). **Also: zero usages in the codebase.** | Delete the dep. |
 | B2 | `Command::new("ollama")` | `ollama_manager.rs:21,38,62,77` | No process spawning on iOS/Android. | `#[cfg(desktop)]`; mobile uses the HTTP path only, or nothing. |
-| B3 | `Command::new("nargo")` | `zk_handler.rs:53` | Same. | `#[cfg(desktop)]`. |
+| B3 | ~~`Command::new("nargo")`~~ | ~~`zk_handler.rs:53`~~ | **Moot 2026-08-27** — the handler and circuit were deleted as unused, so no `nargo` spawn exists to gate. | — |
 | B4 | `dirs::data_dir()` | `blockchain_bridge.rs:228` | Returns garbage/`.` on mobile; app sandbox path must come from the platform. | `app.path().app_data_dir()` via Tauri path API, injected at construction. |
 | B5 | `dotenv::dotenv()` + 5× `std::env::var` for contract addresses | `lib.rs:630`, `blockchain_bridge.rs:209-231` | No `.env` file ships to a mobile bundle; env vars are not settable. | Layered config: compile-time defaults → `tauri.conf.json` → runtime settings store. |
 | B6 | `reqwest 0.11` default features (native-tls) | `Cargo.toml` | Android has no system OpenSSL; link failure or runtime TLS failure. | `reqwest 0.12`, `default-features = false`, `features = ["json","rustls-tls"]`. Unify — lockfile currently carries **three** reqwest majors (0.11 / 0.12 / 0.13). |
@@ -760,6 +760,10 @@ opt-level = 3              # optimized deps; a debug-build libp2p is unusably sl
 ---
 
 ## 4. Feature gating for ZK / LLM
+
+> **Superseded for ZK (2026-08-27).** The ZK handler and circuit were deleted as unused,
+> so the `generate_zk_bid_proof` gating below describes a command that no longer exists.
+> The LLM half still stands, and the pattern is the one to reuse if proving returns.
 
 ```rust
 // src/commands/intents.rs

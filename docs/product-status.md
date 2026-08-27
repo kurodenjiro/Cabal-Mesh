@@ -48,10 +48,13 @@ These render, accept input, and are stored — but nothing downstream reads them
 - **Key export / import / backup.** Also removed with `legacy`. See
   `identity-design.md` — this is the most urgent gap, because a wallet is
   auto-created with no way to ever get the key out of it.
-- **ZK verification.** `zk_handler::verify_proof` now shells out to
-  `nargo verify` (47e81d8) instead of checking for non-empty strings, but it
-  has **not been run against a real circuit** — this environment has no `nargo`.
-  Nothing calls it yet either.
+- **ZK proving and verification.** **Removed, 2026-08-27.** `zk_handler.rs`
+  and `noir-circuit/` are gone. Nothing ever called either one: no command
+  reached `generate_proof` or `verify_proof`, `intent_proof` returns the
+  settlement hash rather than a ZK proof, and neither path had been run against
+  a real circuit because this environment has no `nargo`. Deleting it is not a
+  loss of capability — the capability was never wired. Restoring the scaffolding
+  is `git revert` away if the Phase-4 work starts.
 - **Confidential compute (FHE/MPC).** No code exists.
 - **Private Swap.** No interface exists, despite older README wording.
 
@@ -59,7 +62,7 @@ These render, accept input, and are stored — but nothing downstream reads them
 
 | Platform | Secure element | BLE | Notes |
 |---|---|---|---|
-| iOS | Secure Enclave | yes | ZK proving unavailable (`nargo` cannot spawn) |
+| iOS | Secure Enclave | yes | no ZK proving anywhere in the build |
 | Android | Keystore / StrongBox | yes | same |
 | macOS | Secure Enclave (Apple Silicon) | yes (CoreBluetooth) | needs `NSBluetoothAlwaysUsageDescription`, see 4dfa252 |
 | Windows | TPM | **no** | BLE plane silently does not run |
@@ -71,7 +74,7 @@ back to the IP plane without telling the user the offline plane is off.
 ## Suggested MVP cut
 
 One true story beats three half-built ones. The offline mesh settlement path is
-provable today; AI and ZK are not.
+provable today; AI is not, and ZK no longer has code to point at.
 
 **Remove or disable** so the UI stops implying capabilities that do not exist:
 SWAP/STAKE, the three unfunded assets, and either wire PRIVACY/MODE to real

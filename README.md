@@ -23,9 +23,9 @@ In this network, you are a **Nobody**. Every trace—from your physical location
 
 2. **The Invisible Brain** (Confidential Computation)
    - Ollama AI Agents with "Shark Mode" aggressive negotiation
-   - Noir ZK-Circuits generate a proof per bid; on-chain/IPC verification of
-     that proof is not implemented yet (`zk_handler::verify_proof` only
-     checks the proof and public inputs are non-empty)
+   - Zero-knowledge bid proofs: **not started.** The Noir circuit and its
+     `nargo` shell-out were removed once it was clear nothing called them —
+     see `docs/product-status.md`
    - Confidential Compute (FHE/MPC): not started — no code exists for this
 
 3. **The Settlement Layer** (Avalanche)
@@ -42,7 +42,6 @@ In this network, you are a **Nobody**. Every trace—from your physical location
 - **Rust** 1.91+ (needed by the `alloy` EVM crate; run `rustup update stable`)
 - **Node.js** 18+
 - **Ollama** (for AI agent) - [Install](https://ollama.ai)
-- **Nargo** (for Noir circuits, optional) - [Install](https://noir-lang.org)
 
 ### Installation
 
@@ -86,14 +85,13 @@ settle (`Detail` → `Settled`) is the core loop.
 ### Example Intent
 
 ```
-Buy 10 AVAX under $95 using Shark Mode
+Buy 10 AVAX under $25 using Shark Mode
 ```
 
 The system will:
-1. Generate a Noir ZK-proof of your balance
-2. Negotiate via Ollama AI (localhost:11434)
-3. Broadcast encrypted intent to mesh
-4. Settle via the on-chain Escrow contract on Avalanche when online
+1. Negotiate via Ollama AI (localhost:11434)
+2. Broadcast encrypted intent to mesh
+3. Settle via the on-chain Escrow contract on Avalanche when online
 
 ### Going Offline
 
@@ -115,12 +113,8 @@ cabalmesh/
 │   └── src/
 │       ├── mesh.rs               # libp2p mesh networking
 │       ├── agent.rs              # Ollama AI integration
-│       ├── zk_handler.rs         # Noir ZK proofs
 │       ├── blockchain_bridge.rs  # Avalanche identity/RPC/Escrow bridge (alloy)
 │       └── lib.rs                # Tauri commands
-├── noir-circuit/                 # Noir ZK circuits
-│   └── src/
-│       └── main.nr               # Bid verification circuit
 ├── contracts/                    # Hardhat project
 │   ├── contracts/Escrow.sol      # On-chain escrow contract
 │   ├── scripts/deploy.ts         # Deploys to Fuji, hands off ABI
@@ -133,11 +127,11 @@ cabalmesh/
 ### 1. Offline Intent Execution
 Post tasks while completely offline. Local mesh agents relay, negotiate, and sign deals, only hitting Avalanche when an internet gateway is reached.
 
-### 2. Verifiable Aggression
-Noir proofs ensure your AI agent followed your "Aggressive" strategy without cheating or leaking your price ceiling.
+### 2. Verifiable Aggression *(planned)*
+The intent is that a proof shows your agent followed your strategy without leaking your price ceiling. No proving code is in the build today.
 
-### 3. Sybil-Resistant ZK-Reputation
-Nodes prove honesty via zero-knowledge without revealing interaction history.
+### 3. Sybil-Resistant ZK-Reputation *(planned)*
+Nodes would prove honesty in zero knowledge without revealing interaction history. Nothing is implemented.
 
 ### 4. On-Chain Escrow
 Deals lock native AVAX in a minimal `Escrow.sol` contract (deposit → release, or depositor/expiry-based refund) instead of being purely simulated.
@@ -179,7 +173,7 @@ npx hardhat test   # Runs against Hardhat's in-memory network, no real funds
 |-------|-----------|---------|
 | **Physical** | Libp2p + mDNS | Hide IP/location |
 | **Negotiation** | Ollama + FHE | Protect strategy |
-| **Verification** | Noir ZK | Prove without revealing |
+| **Verification** | Zero-knowledge proofs *(planned)* | Prove without revealing |
 | **Settlement** | On-chain Escrow (Avalanche) | Trustless deal settlement |
 
 ## 📦 Dependencies
@@ -233,7 +227,6 @@ MIT License - see LICENSE file
 ## 🙏 Acknowledgments
 
 - **Avalanche** - C-Chain settlement layer
-- **Noir** - Zero-knowledge circuits
 - **libp2p** - P2P networking
 - **Tauri** - Cross-platform desktop framework
 - **Ollama** - Local AI models

@@ -37,7 +37,6 @@ use crate::error::AppError;
 use crate::matcher::MatchAgent;
 use crate::ollama_manager::OllamaManager;
 use crate::subscriptions::Registry;
-use crate::zk_handler::ZKHandler;
 use serde::Serialize;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, RwLock};
@@ -71,7 +70,6 @@ pub struct Services {
     pub agent: Arc<SharkAgent>,
     pub matcher: Arc<MatchAgent>,
     pub intent_chat: Arc<crate::intent_chat::IntentChatParser>,
-    pub zk_handler: Arc<ZKHandler>,
     pub ollama: Arc<OllamaManager>,
     pub bridge: Arc<Mutex<BlockchainBridge>>,
     pub guardian: Arc<Mutex<crate::guardian::GuardianService>>,
@@ -85,8 +83,6 @@ pub struct Services {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlatformCaps {
-    /// Whether the Noir toolchain can be invoked. Desktop only.
-    pub zk_proving: bool,
     /// Whether a local model server can be spawned. Desktop only.
     pub local_llm: bool,
     /// Whether the mesh can keep running while backgrounded. False on iOS,
@@ -99,7 +95,6 @@ impl PlatformCaps {
     #[must_use]
     pub const fn current() -> Self {
         Self {
-            zk_proving: cfg!(desktop),
             local_llm: crate::platform::CAN_SPAWN_PROCESSES,
             background_mesh: cfg!(not(target_os = "ios")),
         }
