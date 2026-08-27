@@ -5,13 +5,32 @@
     "deployedAt": "2026-07-20T02:31:43.312Z"
   },
   "voucher": {
-    "address": "0xaEa0F434e6332D1C661087EE3EDdB791f2668bCc",
+    "address": "0x3649E46eCD6A0bd187f0046C4C35a7B31C92bA1E",
     "chainId": 43113,
-    "deployedAt": "2026-07-22T22:27:10.919Z"
+    "deployedAt": "2026-08-11T16:21:17.650Z",
+    "issuer": "0xf24FF3a9CF04c71Dbc94D0b566f7A27B94566cac"
+  },
+  "relaySettlement": {
+    "address": "0x78D714e1b47Bb86FE15788B917C9CC7B77975529",
+    "chainId": 43113,
+    "deployedAt": "2026-08-12T00:00:00.000Z",
+    "deployer": "0xf24FF3a9CF04c71Dbc94D0b566f7A27B94566cac",
+    "deploymentTxHash": "0x6804b0a0fd48c699688b92e7f0de3e86c593f3f04900ac5c2467c6fe7311e823",
+    "smokeRoute": {
+      "routeId": "0xa51658b4b676afa4568940f877a56ca4e7a4a481c5356b9b9a632922d71e1810",
+      "fundingTxHash": "0xfeaba29d8da4064bd08dc0632deaaaaa1c489d6c2b36c2fa17b0ecc0f72d1ad7",
+      "settlementTxHash": "0x97cd7c59f1645d1bc7ba72494e6c1f8dcf94fa9881a3d47bc842758ed154e1f5",
+      "relayer": "0xCB1aEd54952390b173743FA92f69d9e4921A4eab",
+      "recipient": "0x10600B55da62B8f54B518547163F2Db96B2336C6",
+      "relayRewardNavax": "100000"
+    }
   },
   "marketplace": {
-    "address": "0xE68CAf5c9830607344ce58Daa89ebEB68d4f3158",
+    "address": "0xb6F2B9415fc599130084b7F20B84738aCBB15930",
     "chainId": 43113,
-    "deployedAt": "2026-07-22T22:27:10.919Z"
+    "deployedAt": "2026-08-11T16:21:17.650Z",
+    "governor": "0xf24FF3a9CF04c71Dbc94D0b566f7A27B94566cac",
+    "releaseWindowSeconds": 259200,
+    "collection": "0x3649E46eCD6A0bd187f0046C4C35a7B31C92bA1E"
   }
 }

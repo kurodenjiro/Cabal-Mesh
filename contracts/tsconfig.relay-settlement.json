@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [],
+  "files": [
+    "./hardhat.config.ts",
+    "./scripts/deployRelaySettlement.ts",
+    "./scripts/smokeRelaySettlementFuji.ts"
+  ]
+}

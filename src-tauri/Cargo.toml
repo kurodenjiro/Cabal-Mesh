@@ -46,6 +46,8 @@ ts-rs = ["dep:ts-rs", "cabal-core/ts-rs"]
 [dependencies]
 # The domain model. No I/O, no runtime — see crates/cabal-core/src/lib.rs.
 cabal-core = { path = "crates/cabal-core" }
+cabal-rewards = { path = "crates/cabal-rewards" }
+cabal-standing = { path = "crates/cabal-standing" }
 cabal-store = { path = "crates/cabal-store" }
 cabal-vault = { path = "crates/cabal-vault" }
 # Shamir sharing over a vault key and sealed-box encryption to a guardian's
@@ -60,6 +62,8 @@ cabal-ble = { path = "crates/cabal-ble" }
 cabal-ble-macos = { path = "crates/cabal-ble-macos" }
 # The Android radio, as a Tauri mobile plugin: Kotlin behind a Rust handle.
 tauri-plugin-cabal-ble = { path = "tauri-plugin-cabal-ble" }
+# The Android Keystore, same shape and same reason: the API is Java.
+tauri-plugin-cabal-keystore = { path = "tauri-plugin-cabal-keystore" }
 
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
@@ -145,6 +149,11 @@ lopdf = "0.44"
 # Wipes key material from memory on drop, so a heap dump after the fact does
 # not still contain it.
 zeroize = "1"
+
+# Turns the user's passphrase into the key that wraps the vault key. Memory
+# hardness is the property being bought: an attacker holding a copy of the key
+# file pays 64 MiB per guess, which is what a GPU farm cannot make cheap.
+argon2 = "0.5"
 thiserror.workspace = true
 tokio-util = { version = "0.7.19", features = ["rt"] }
 ts-rs = { version = "12.0.1", optional = true }
@@ -161,6 +170,12 @@ ts-rs = { version = "12.0.1", optional = true }
 # this keeps the local desktop dev workflow intact until then.
 [target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
 dotenv = "0.15.0"
+
+# Apple's Security.framework, for the device-bound half of the vault key. Only
+# where it exists: every other platform reports honestly that it has no binding
+# rather than linking a stub that pretends to.
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+security-framework = "3"
 
 # Apple platforms route to the unified log, so iOS output shows in Console.app
 # and macOS `log stream` — the only way to see anything from a device.
@@ -189,4 +204,3 @@ tempfile = "3"
 cabal-core = { path = "crates/cabal-core" }
 insta = "1.48.0"
 tauri = { version = "2", features = ["test"] }
-

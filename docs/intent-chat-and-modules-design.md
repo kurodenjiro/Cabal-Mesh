@@ -1,27 +1,32 @@
 # Chat intents, marketplace, and node modules — design
 
-**Status: partially built.** Written 2026-08-10; updated 2026-08-13.
+**Status: partially built.** Written 2026-08-10; updated 2026-08-27 once
+Marketplace/Modules UI shipped. `intent-inference-runtime.md`'s always-available
+local model was evaluated as an alternative to the path below and not adopted —
+`parse_intent_chat` (the configured LLM, same as everywhere else in the app)
+stayed the one entry point, so intent parsing has a single code path rather
+than two.
 
-**Chat intent (below) is built** — `parse_intent_chat` fills the same form
-fields `New.tsx` already validates through, unchanged.
+**Chat intent is built** — `parse_intent_chat` fills the same form fields
+`New.tsx` already validates through, unchanged; the model proposes, Rust
+still decides.
 
-**Marketplace and modules: the mechanism is written, nothing is deployed.**
-Resolving the doc's four open questions surfaced a fifth, more urgent one:
-`CabalMeshVoucher`, already deployed to Fuji, has **no access control on
-minting at all** — anyone can call it directly and mint themselves any
-module for free. `contracts/contracts/CabalMeshVoucher.sol` (fixed) and the
-new `contracts/contracts/RelayRewards.sol` implement decisions 0–4 below,
-with 37 passing Hardhat tests
-(`contracts/test/{CabalMeshVoucher,Marketplace,RelayRewards}.test.ts`), and
-the Rust bridge's ABI bindings already match them
-(`src-tauri/abi/{CabalMeshVoucher,RelayRewards}.abi.json`). **None of it is
-deployed to Fuji** — deploying replaces the live contract address the app
-would eventually point at, which is a different kind of action than writing
-code, and is waiting on a separate go-ahead. Also not built: the Rust-side
-wiring that would make a real gateway relay actually call
-`RelayRewards.recordGatewayRelay` (needs product decisions about fee
-amount and gateway selection this doc doesn't make), and any
-Marketplace/Modules UI (`VAULT → MODULES`, the MARKET tab).
+**Marketplace and modules: deployed, and the UI is real.**
+`CabalMeshVoucher`'s mint access-control gap this doc originally opened with
+is fixed on-chain — minting is now restricted to the `RelayRewards` contract
+address, and a direct call reverts. `contracts/contracts/CabalMeshVoucher.sol`
+and `contracts/contracts/RelayRewards.sol` implement decisions 0–4 below, with
+passing Hardhat tests (`contracts/test/{CabalMeshVoucher,Marketplace,
+RelayRewards}.test.ts`), and the Rust bridge's ABI bindings match them
+(`src-tauri/abi/{CabalMeshVoucher,RelayRewards}.abi.json`). `VAULT → MODULES`
+and the MARKET tab are real screens against real contracts — listing, buying,
+releasing, and refunding a deal all reach the chain
+(`market_listings`/`market_buy`/`market_list_module`/`market_release_deal`/
+`market_refund_deal`/`market_my_deals` in `commands.rs`). **Not yet wired:**
+`BlockchainBridge::record_gateway_relay` exists and is untested against a real
+route, but no command calls it — a real gateway relay does not yet earn a
+module the way this doc describes; that needs the product decisions about fee
+amount and gateway selection this doc doesn't make.
 
 Three connected changes: composing intents by conversation instead of by form,
 a marketplace for NFTs, and NFTs that measurably improve what a node earns.
@@ -114,6 +119,25 @@ only produces `IntentFields`. `parse_draft` still validates, `preview_intent`
 still builds the review rows from the draft, and broadcasting still re-parses
 the same fields. The AI proposes; Rust decides; the user confirms. The model
 never broadcasts.
+
+**Resolved 2026-08-12:** `propose_intent` runs the embedded model in a bounded
+worker and has no app-state argument, so it cannot reach the ledger, mesh,
+vault, signer, queue, or chain. Complete proposals pass through the same
+`parse_draft` function used by review and broadcast before six read-only chips
+are returned. Partial or ambiguous input names missing fields without defaults;
+unavailable, timed-out, refused, or domain-invalid inference leaves the phrase
+editable and offers the manual fields. No intent text or model output enters a
+log or IPC response.
+
+**Resolved 2026-08-12:** all six parsed chips open focus-trapped editors whose
+options and precision come from Rust. Amount editing reads the latest real
+snapshot through `intent_affordability`, uses fixed-point token arithmetic for
+MAX and shortfall, and keeps an unknown balance distinct from a known zero.
+Review rows still come only from `preview_intent`; the frontend freezes the
+exact `IntentFields` accepted for preview and confirmation sends that snapshot
+back through `broadcast_intent`, which re-parses it. Escape, mobile back, focus
+return, radiogroup arrow keys, wrapped controls, and 200-percent type scaling
+remain usable. The model still has no state-bearing or execution command.
 
 ## Marketplace
 

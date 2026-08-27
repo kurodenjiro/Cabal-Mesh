@@ -26,8 +26,11 @@ in-memory):**
   Needs a background task and a local/push notification that survive the
   app being closed — real platform integration on iOS/Android that cannot
   be built or verified without a physical device.
-- The **mobile PIN path** (decision 1's other half) — blocked on the native
-  key-store plugin (ticket 21).
+- The **mobile PIN path** (decision 1's other half). The native key-store
+  plugin (ticket 21) is now wired on iOS and Android — see "Decisions" below
+  — but it releases the stored key on request, with no retry counter behind
+  it yet; a PIN is not safe to ship until that counter exists, so passphrase
+  stays the only unlock factor everywhere for now.
 - The **five mock-up screens below are not pixel-matched.** The app has one
   working screen per flow (enroll, approve, restore), not yet the
   `CHOOSE GUARDIANS` / `DISTRIBUTING SHARES` / live per-guardian progress
@@ -107,8 +110,12 @@ Platform constraints that force layer 1 to exist:
 
 | Platform | Hardware-counted retry limit | Consequence |
 |---|---|---|
-| iOS / Android | yes (Secure Enclave / StrongBox) — once wired, see decision 1 below | a 6-digit PIN is sufficient |
-| macOS / Windows / Linux | no key store is currently wired | **passphrase required** — a PIN is brute-forceable once the file is copied |
+| iOS / Android | yes (Secure Enclave / StrongBox) — wired via the native keystore plugin, see decision 1 below | a 6-digit PIN is sufficient once the plugin also enforces a retry counter |
+| macOS / Windows / Linux | no key store is wired for desktop | **passphrase required** — a PIN is brute-forceable once the file is copied |
+
+Note the conditional. This table describes what each platform *offers*, and the
+factor actually shipped is decided by what has been *wired* — see "Decided —
+the layer-1 factor" below. Today that is a passphrase everywhere.
 
 A 6-digit PIN has only 10⁶ combinations. It is safe *only* when a hardware
 counter enforces the retry limit. Counting attempts in software is worthless:
@@ -363,40 +370,109 @@ their first real deposit does not:
 
 ## Decisions
 
-1. **Layer-1 factor: PIN or passphrase?** **Passphrase (Argon2id) on desktop,
-   PIN on mobile — once the mobile key store is wired.** There is no uniform
-   desktop key store to hold a device-side half of the key today: `keyring`
-   was removed with nothing to replace it (`mobile-architecture-plan.md`,
-   ticket B1), which is exactly why `vault_key.rs::FileKeyProvider` is what
-   every platform, including macOS and Windows, actually uses right now. The
-   "partial" Secure Enclave / TPM row in the table above describes hardware
-   that exists, not a path this code reaches. `argon2 = "0.5"` is already a
-   `cabal-vault` dependency for this reason
-   (`src-tauri/crates/cabal-vault/Cargo.toml:15`) and has zero call sites yet
-   — this is the feature that uses it. iOS and Android get the PIN once the
-   native key-store plugin from ticket 21 lands, because only those two
-   platforms have a hardware-enforced retry counter to make a 6-digit PIN
-   safe; `platform_provider` falls back to the same file-backed key on mobile
-   until then, with a startup warning, and offering a PIN ahead of the plugin
-   would be decorative — the counter it depends on would not exist. Ship the
-   passphrase path first; add the mobile PIN once the plugin backs it with a
-   real counter.
+1. **Layer-1 factor: PIN or passphrase?** **A passphrase, on every platform,
+   until a hardware retry counter is actually wired.** Not "PIN where
+   hardware allows": that phrasing describes a capability this build does
+   not have yet, and shipping a PIN whose safety depends on a store nobody
+   has connected would be claiming the protection rather than having it.
 
-   **Demo path — this is also the cheap thing to build first.** Passphrase
-   unlock needs none of the deferred work: no native plugin (ticket 21), no
-   Secure Enclave / StrongBox binding, no device to test on. It is one screen
-   (enter passphrase → Argon2id → `DataKey`) sitting in front of the
-   `KeyProvider` trait that already exists in `cabal-vault`, so it drops in
-   without touching `vault_key.rs`'s platform-selection logic at all. Build
-   and demo it on desktop first — fastest edit-run loop, and it *is* the
-   real, shipping unlock path there, not a stand-in for something else. On
-   mobile it demos identically today, because `platform_provider` already
-   falls back to the same file-backed key with a warning — just say the
-   sentence out loud when demoing on a phone: "the passphrase check is real;
-   what's not real yet is the device binding under it, that's ticket 21."
-   Do **not** mock up a PIN screen for the demo — a PIN with no hardware
-   counter behind it is worse than no demo, because it teaches the audience
-   the wrong threat model (see the 10⁶-combinations note above).
+The rule this follows: *a PIN is a passphrase with 10⁶ of entropy, and only a
+hardware counter makes that survivable.* Counting attempts in software is
+worthless once the file is copied — the attacker counts on their own machine,
+where nothing refuses. So the factor is chosen by what is wired, not by what
+the platform could in principle provide:
+
+| Platform | Hardware retry counter wired today | Layer-1 factor |
+|---|---|---|
+| macOS | no | passphrase |
+| Windows | no | passphrase |
+| Linux | none exists | passphrase |
+| iOS | no | passphrase |
+| Android | no | passphrase |
+
+Note what that column does and does not say. A **key store** is now wired on
+Apple platforms and Android — see layer 2 — but a key store is not a retry
+counter. The stored key is released without asking the user for anything,
+which is what makes it exfiltration resistance rather than access control, and
+therefore what leaves the entropy of layer 1 carrying the whole load. A PIN
+becomes defensible on a platform the day that platform's store is asked for
+*user presence*, not the day it is merely used.
+
+A 6-digit PIN becomes available on a platform the day that platform's store is
+connected with a counter, and not before. That is a per-platform unlock of a
+feature, not a global switch.
+
+### Key derivation
+
+Argon2id, `m = 64 MiB`, `t = 3`, `p = 1`, 32-byte output, 16-byte random salt.
+
+Chosen against this attacker: *someone holding a copy of the key file, running
+offline on rented GPUs.* 64 MiB per guess is the parameter that hurts them —
+memory hardness is what a GPU cannot parallelise cheaply — and it is small
+enough to run on a phone without the OS killing the process.
+
+The parameters live **in the envelope**, not in the binary, so they can be
+raised later without orphaning a vault written under the old ones.
+
+They are measured rather than assumed, and the measurement is a test rather
+than a note in this document: the suite asserts the exact constants (so
+weakening them is a deliberate edit, never a typo) and asserts that one
+derivation completes within a ceiling on whatever platform is running the
+tests. Running that suite on the slowest supported target is what "measured on
+the slowest target" means in practice, and it keeps being true as the code
+moves rather than being true once.
+
+### Retries
+
+Attempts are counted in a file beside the vault, and the count and the
+next-permitted time both survive a process restart and a reboot. Backoff is
+exponential, capped.
+
+This is explicitly **not** a security control — see above, an attacker with the
+file does not ask this app for permission. It exists to make an over-the-
+shoulder or borrowed-device attempt tedious, and nothing more. The document
+should not later be read as if software counting were the defence.
+
+A wrong passphrase never destroys the vault. Wipe-on-failure turns a mistyped
+character into permanent loss, and the threat it defends against — an attacker
+with the file — was never going to type into this app anyway.
+
+### When the passphrase is forgotten
+
+**The wallet is gone, unless it was exported.** There is no reset, no recovery
+question, no support path. Argon2id over a random salt is not reversible by the
+people who wrote it.
+
+This is why the export path is a prerequisite rather than a companion feature:
+encrypting the key without shipping a way to take it off the device converts
+"malware could read this" into "a forgotten word destroys this", which is a
+worse failure because it has no attacker to blame and no one who can help.
+
+### What this does not defend against
+
+- **A device stolen while unlocked.** The secret has already been supplied.
+- **Malware running as the same user while the app is unlocked.** It does not
+  need the key file; it can ask the running process. The passphrase closes the
+  at-rest hole, not the running-process one.
+- **A keylogger.** It captures the passphrase as it is typed.
+- **Screen capture** of the export screen.
+
+Layer 2 is what narrows the first two, which is why it is a separate ticket and
+not a footnote here.
+
+### Rejected
+
+- **PIN everywhere.** 10⁶ offline guesses at 64 MiB each is still a weekend on
+  rented hardware, and it would be sold to the user as equivalent security.
+- **PIN where the hardware exists, passphrase elsewhere** — the original
+  proposal. Right in principle and wrong to implement first: it makes the
+  strength of the product depend on a store that is not yet connected, and it
+  splits the unlock code into two paths before either has run in anger.
+- **No layer 1, hardware only.** On every desktop store that unlocks per
+  session, any process running as the user can ask for the item. That is the
+  hole being fixed, not a fix for it.
+- **Deriving the vault key from the wallet key.** Then the vault protects
+  nothing: whoever reads it already has what it protects.
 
 2. **Default K/N: 3-of-5, not user-configurable in v1.** In plain terms:
    pick 5 guardians up front; any 3 of them, together, can unlock the

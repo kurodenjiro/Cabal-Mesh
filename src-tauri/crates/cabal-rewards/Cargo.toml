@@ -1,0 +1,15 @@
+[package]
+name = "cabal-rewards"
+version = "0.1.0"
+edition = "2021"
+description = "Deterministic relay and gateway reward economics for CabalMesh."
+publish = false
+
+[dependencies]
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = "1"
+
+[lints]
+workspace = true
