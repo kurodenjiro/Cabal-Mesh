@@ -2,8 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Panel, StatBlock, StatusDot, Terminal } from "../ds";
 import { useLogStream } from "../state/useLogStream";
-import type { LogLine, MeshSnapshotView, RelayRewardSummaryView } from "../types/bindings";
-import { NodeDiagnostics } from "./Nodes";
+import type { LogLine, MeshSnapshotView } from "../types/bindings";
 
 /** Visible ticker lines. The rest are retained but scrolled. */
 const VISIBLE = 4;
@@ -24,7 +23,6 @@ const RETAINED = 200;
  */
 export function Home() {
   const [snapshot, setSnapshot] = useState<MeshSnapshotView | null>(null);
-  const [relayReward, setRelayReward] = useState<RelayRewardSummaryView | null>(null);
   const [lines, setLines] = useState<LogLine[]>([]);
 
   useEffect(() => {
@@ -42,29 +40,6 @@ export function Home() {
 
     refresh();
     const timer = window.setInterval(refresh, 5_000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    let inFlight = false;
-    const refresh = () => {
-      if (inFlight) return;
-      inFlight = true;
-      invoke<RelayRewardSummaryView>("relay_reward_summary")
-        .then((next) => {
-          if (!cancelled) setRelayReward(next);
-        })
-        .catch(() => undefined)
-        .finally(() => {
-          inFlight = false;
-        });
-    };
-    refresh();
-    const timer = window.setInterval(refresh, 15_000);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
@@ -121,14 +96,6 @@ export function Home() {
             deltaTone={tile.deltaTone}
           />
         ))}
-        <StatBlock
-          label="SETTLED RELAY AVAX"
-          value={relayReward?.settledEarningsAvax ?? "UNAVAILABLE"}
-        />
-        <StatBlock
-          label="WITHDRAWABLE RELAY CREDIT"
-          value={relayReward?.withdrawableCreditAvax ?? "UNAVAILABLE"}
-        />
       </div>
 
       <Terminal
@@ -137,8 +104,6 @@ export function Home() {
         aria-live="polite"
         lines={lines.slice(-VISIBLE).map((line) => ({ text: line.text, tone: line.tone }))}
       />
-
-      <NodeDiagnostics />
     </div>
   );
 }

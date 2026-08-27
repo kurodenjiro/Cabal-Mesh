@@ -3,99 +3,92 @@ pragma solidity ^0.8.24;
 
 import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 
-/// @notice Redeemable digital vouchers (e.g. AI compute credit, relay bandwidth
-/// credit). Redeeming requires being the current owner and burns the token.
+/// @notice Redeemable digital vouchers (AI compute credit, relay bandwidth
+/// credit) and node modules (RADIO/CRYPTO/POWER items that boost relay
+/// yield). Redeeming requires being the current owner and burns the token.
 ///
-/// # Why minting is no longer open to everyone
-///
-/// The first version let any wallet call `mintVoucher` and mint into its own
-/// name, and documented that as the proof-of-possession check. That is only
-/// sound while a voucher is worth nothing: the moment a token carries a reward
-/// — a relay multiplier, a gateway licence — an open mint is a mint button for
-/// free money, and every downstream check that trusts "this address owns an
-/// authentic module" is checking a claim the holder wrote themselves.
-///
-/// Minting is therefore gated on an issuer-managed minter set. Ownership still
-/// proves possession; it no longer proves authenticity, so authenticity is
-/// established at issue time instead.
-///
-/// Note that this contract still has no on-chain notion of slot, rarity or
-/// effect, and no soulbound tokens. Those belong to the module metadata work
-/// and are deliberately not smuggled in here.
+/// @dev Minting is restricted to `rewardsContract` — see
+/// docs/intent-chat-and-modules-design.md, decision 0. The original version
+/// of this contract let `mintVoucher` be called by anyone, for any
+/// `voucherType`, for free: a module claiming "+18% relay yield" was
+/// indistinguishable from one a caller invented on the spot by calling the
+/// contract directly, no app involved. Restricting minting to a single
+/// contract address — not an admin key — keeps the fix trustless: a module
+/// is minted only as the verified, atomic side effect of something
+/// `rewardsContract` already checked on-chain (see `RelayRewards.sol`),
+/// never by a party's own say-so, off-chain or on.
 contract CabalMeshVoucher is ERC721 {
     struct VoucherData {
         string voucherType;
         string description;
         address mintedBy;
+        /// 0 = RADIO, 1 = CRYPTO, 2 = POWER, 3 = SOULBOUND (Standing Badge —
+        /// earned, not tradable; the marketplace/equip layer enforces the
+        /// non-tradable part, this is just the label).
+        uint8 slot;
+        /// 0 = COMMON, 1 = UNCOMMON, 2 = RARE, 3 = LEGENDARY.
+        uint8 rarity;
+        /// The module's effect in basis points (1800 = +18%). Zero for
+        /// vouchers that aren't modules (AI compute credit, etc.) — those
+        /// redeem for something off-chain and carry no on-chain multiplier.
+        uint16 effectBps;
     }
+
+    /// Who may mint. Immutable and checked in the constructor rather than
+    /// left settable, so the access-control fix cannot itself be
+    /// reintroduced as a mutable, reassignable admin field later.
+    address public immutable rewardsContract;
 
     uint256 public nextTokenId = 1;
     mapping(uint256 => VoucherData) public vouchers;
 
-    /// The address that controls the minter set. Set to the deployer, and
-    /// transferable exactly once per call so a compromised issuer can be
-    /// rotated without redeploying the token.
-    address public issuer;
-
-    /// Addresses allowed to mint. The issuer is one by default; anything else
-    /// is an explicit grant.
-    mapping(address => bool) public minters;
-
-    event VoucherMinted(uint256 indexed tokenId, address indexed owner, string voucherType, string description);
+    event VoucherMinted(
+        uint256 indexed tokenId,
+        address indexed owner,
+        string voucherType,
+        string description,
+        uint8 slot,
+        uint8 rarity,
+        uint16 effectBps
+    );
     event VoucherRedeemed(uint256 indexed tokenId, address indexed redeemer, string voucherType);
-    event MinterSet(address indexed minter, bool allowed);
-    event IssuerTransferred(address indexed previousIssuer, address indexed newIssuer);
 
-    modifier onlyIssuer() {
-        require(msg.sender == issuer, "Not the issuer");
+    constructor(address rewardsContractAddress) ERC721("CabalMesh Voucher", "CMV") {
+        require(rewardsContractAddress != address(0), "Rewards contract required");
+        rewardsContract = rewardsContractAddress;
+    }
+
+    modifier onlyRewardsContract() {
+        require(msg.sender == rewardsContract, "Only the rewards contract may mint");
         _;
     }
 
-    modifier onlyMinter() {
-        require(minters[msg.sender], "Not an authorized minter");
-        _;
-    }
+    /// Mints a voucher or module to `to`. Restricted — see the contract-level
+    /// doc comment for why this is a contract address, not an admin key.
+    function mintVoucher(
+        address to,
+        string calldata voucherType,
+        string calldata description,
+        uint8 slot,
+        uint8 rarity,
+        uint16 effectBps
+    ) external onlyRewardsContract returns (uint256) {
+        require(bytes(voucherType).length > 0, "Voucher type required");
+        require(to != address(0), "Recipient required");
 
-    constructor() ERC721("CabalMesh Voucher", "CMV") {
-        issuer = msg.sender;
-        minters[msg.sender] = true;
-        emit IssuerTransferred(address(0), msg.sender);
-        emit MinterSet(msg.sender, true);
-    }
+        uint256 tokenId = nextTokenId++;
+        _safeMint(to, tokenId);
+        vouchers[tokenId] = VoucherData({
+            voucherType: voucherType,
+            description: description,
+            mintedBy: to,
+            slot: slot,
+            rarity: rarity,
+            effectBps: effectBps
+        });
 
-    /// Mints to the caller. Same signature as before, but now restricted —
-    /// an unauthorized caller reverts instead of minting itself a reward.
-    function mintVoucher(string calldata voucherType, string calldata description)
-        external
-        onlyMinter
-        returns (uint256)
-    {
-        return _mintVoucher(msg.sender, voucherType, description);
-    }
-
-    /// Mints to someone else. This is the shape a milestone reward actually
-    /// needs: the authority issues, the earner receives, and the earner never
-    /// holds mint rights.
-    function mintTo(address to, string calldata voucherType, string calldata description)
-        external
-        onlyMinter
-        returns (uint256)
-    {
-        require(to != address(0), "Zero recipient");
-        return _mintVoucher(to, voucherType, description);
-    }
-
-    function setMinter(address minter, bool allowed) external onlyIssuer {
-        require(minter != address(0), "Zero minter");
-        minters[minter] = allowed;
-        emit MinterSet(minter, allowed);
-    }
-
-    function transferIssuer(address newIssuer) external onlyIssuer {
-        require(newIssuer != address(0), "Zero issuer");
-        address previous = issuer;
-        issuer = newIssuer;
-        emit IssuerTransferred(previous, newIssuer);
+        emit VoucherMinted(tokenId, to, voucherType, description, slot, rarity, effectBps);
+        return tokenId;
     }
 
     function redeemVoucher(uint256 tokenId) external {
@@ -105,23 +98,5 @@ contract CabalMeshVoucher is ERC721 {
         _burn(tokenId);
 
         emit VoucherRedeemed(tokenId, msg.sender, vType);
-    }
-
-    function _mintVoucher(address to, string calldata voucherType, string calldata description)
-        private
-        returns (uint256)
-    {
-        require(bytes(voucherType).length > 0, "Voucher type required");
-
-        uint256 tokenId = nextTokenId++;
-        _safeMint(to, tokenId);
-        vouchers[tokenId] = VoucherData({
-            voucherType: voucherType,
-            description: description,
-            mintedBy: msg.sender
-        });
-
-        emit VoucherMinted(tokenId, to, voucherType, description);
-        return tokenId;
     }
 }

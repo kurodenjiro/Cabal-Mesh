@@ -2,7 +2,7 @@
 
 Follow this guide to verify all 4 layers of the CabalMesh privacy stack (see
 the Privacy Layers table in [README.md](README.md)): mesh networking, AI
-negotiation, ZK verification, and on-chain settlement on Avalanche.
+negotiation and on-chain settlement on Avalanche.
 
 ## 🚀 1. Start the Application
 
@@ -15,12 +15,12 @@ the app then opens on the Home screen.
 
 ---
 
-## 🔒 2. Test Privacy & Zero-Knowledge (ZK) Layer
+## 🔒 2. Test Intent Broadcast
 
 **Action:**
 1. From Home, open **New** and compose an intent, e.g.:
    ```
-   Buy 10 AVAX under $95 using Shark Mode
+   Buy 10 AVAX under $25 using Shark Mode
    ```
 2. Broadcast it. This takes you to the **Detail** screen.
 
@@ -29,8 +29,7 @@ the app then opens on the Home screen.
 - The **VERIFICATION LOG** panel fills in as events arrive.
 
 **Verify in Terminal:**
-- `🔐 Generating Noir ZK-Proof...` followed by the balance / bid / price
-  ceiling lines.
+- The broadcast and match lines for the intent you just composed.
 
 ---
 
@@ -75,8 +74,8 @@ the app then opens on the Home screen.
 
 1. Turn off your Wi-Fi / Internet.
 2. Compose and broadcast a new intent.
-3. **Result:** The app should still generate the ZK proof and attempt to
-   broadcast to the local mesh, even without internet. The transaction is
+3. **Result:** The app should still sign the intent and attempt to broadcast
+   it to the local mesh, even without internet. The transaction is
    signed offline and queued for mesh relay
    (`📡 [Bridge] Signed offline, queued for mesh relay: ...`).
 4. Reconnect — the terminal should log `queued transaction confirmed after
@@ -108,10 +107,6 @@ PORT=1421 npm run tauri dev -- --config src-tauri/tauri.node2.conf.json
 
 ## ❌ Troubleshooting
 
-- **Stuck on "Generating Proof"?**
-  - Restart the app. The background process might have desynced.
-  - ZK proving shells out to the `nargo` binary and is desktop-only — it is
-    not available on iOS/Android builds.
 - **Ollama Error?**
   - Run `ollama serve` manually in a separate terminal to see detailed logs,
     or point the app at a remote instance with `CABALMESH_OLLAMA_URL`.

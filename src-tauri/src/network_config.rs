@@ -32,15 +32,6 @@ pub enum Network {
 }
 
 impl Network {
-    /// Canonical EVM chain identifier.
-    #[must_use]
-    pub const fn chain_id(self) -> u64 {
-        match self {
-            Self::Fuji => 43_113,
-            Self::Mainnet => 43_114,
-        }
-    }
-
     /// Human-readable name for logs and the profile screen.
     #[must_use]
     pub const fn label(self) -> &'static str {
@@ -73,57 +64,22 @@ impl Network {
     /// Empty where nothing is deployed yet. An absent address surfaces as a
     /// clear "not configured" error at the first call rather than a
     /// plausible-looking wrong address, which is why there is no placeholder.
-    ///
-    /// The Fuji voucher and marketplace addresses are the second deployment,
-    /// not the one in the repo's early history. The first pair had an open
-    /// mint on the voucher and a buyer-only escrow on the marketplace, and
-    /// both are fixed in the contract source rather than worked around here.
-    /// The old addresses are deliberately not kept as a fallback: a token from
-    /// the open-mint contract is not an authentic module, and silently
-    /// accepting one would defeat the point of redeploying.
-    /// See `contracts/deployments/fuji.json` for the current record.
     #[must_use]
     pub const fn contracts(self) -> Contracts {
         match self {
             Self::Fuji => Contracts {
-                escrow: Some("0xCaFF53657191d75Aa4f5C2182210302656d8B392"),
-                marketplace: Some("0xb6F2B9415fc599130084b7F20B84738aCBB15930"),
-                voucher: Some("0x3649E46eCD6A0bd187f0046C4C35a7B31C92bA1E"),
-                // No reviewed deployment yet. Never substitute the legacy
-                // voucher: it has no authentic structured module semantics.
-                modules: None,
-                // The address above is the legacy voucher marketplace. A
-                // canonical module collection and its replacement marketplace
-                // must be reviewed and published as one pair before MARKET can
-                // claim that its catalog is authentic.
-                module_marketplace: None,
-                // A reviewed CabalRelaySettlement release, verified against a
-                // real three-identity route on Fuji: one funded route settled
-                // to a distinct relayer, one unfulfilled route reclaimed, and
-                // the contract left holding exactly its outstanding credit.
-                relay_settlement: Some("0x78D714e1b47Bb86FE15788B917C9CC7B77975529"),
+                escrow: None,
+                marketplace: None,
+                voucher: None,
+                relay_rewards: None,
             },
             Self::Mainnet => Contracts {
                 escrow: None,
                 marketplace: None,
                 voucher: None,
-                modules: None,
-                module_marketplace: None,
-                relay_settlement: None,
+                relay_rewards: None,
             },
         }
-    }
-
-    /// Reviewed public-standing release configuration for this chain.
-    ///
-    /// `None` is deliberate until a registry deployment, its SOURCE_ROLE
-    /// grants, and at least two independently operated accepted-state RPCs are
-    /// recorded in the release manifest. A runtime URL or bare address cannot
-    /// manufacture that review decision.
-    #[must_use]
-    pub const fn standing_release(self) -> Option<StandingRelease> {
-        let _ = self;
-        None
     }
 }
 
@@ -134,37 +90,15 @@ pub struct Contracts {
     pub escrow: Option<&'static str>,
     pub marketplace: Option<&'static str>,
     pub voucher: Option<&'static str>,
-    pub modules: Option<&'static str>,
-    /// Marketplace deployed and reviewed together with `modules`.
-    ///
-    /// Kept separate from `marketplace`, which is the legacy voucher market.
-    pub module_marketplace: Option<&'static str>,
-    /// Sender-funded relay settlement for this exact reward/proof policy.
-    pub relay_settlement: Option<&'static str>,
-}
-
-/// One independently operated RPC approved for public-standing verification.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StandingProvider {
-    /// Stable non-zero identity; repeated URLs never count twice.
-    pub id: u16,
-    /// Accepted/final C-Chain endpoint. Never sent across IPC or logged.
-    pub rpc_url: &'static str,
-}
-
-/// Canonical standing source and its verification policy, compiled into a
-/// reviewed release rather than supplied by a seller or mutable profile.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StandingRelease {
-    pub chain_id: u64,
-    pub registry: &'static str,
-    pub maximum_age_ms: u64,
-    pub minimum_provider_quorum: u8,
-    pub providers: &'static [StandingProvider],
+    /// Pays a gateway for relaying, and mints modules at milestones. See
+    /// `docs/intent-chat-and-modules-design.md`, decisions 0 and 3 — `None`
+    /// here until the fixed voucher and this contract are actually
+    /// deployed, which as of this writing they are not.
+    pub relay_rewards: Option<&'static str>,
 }
 
 /// Resolved chain configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NetworkConfig {
     #[serde(default)]
@@ -179,23 +113,7 @@ pub struct NetworkConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub voucher_address: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub modules_address: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub relay_settlement_address: Option<String>,
-}
-
-impl Default for NetworkConfig {
-    fn default() -> Self {
-        Self {
-            network: Network::default(),
-            rpc_url: None,
-            escrow_address: None,
-            marketplace_address: None,
-            voucher_address: None,
-            modules_address: None,
-            relay_settlement_address: None,
-        }
-    }
+    pub relay_rewards_address: Option<String>,
 }
 
 impl NetworkConfig {
@@ -233,11 +151,8 @@ impl NetworkConfig {
         if let Some(address) = var("VOUCHER_CONTRACT_ADDRESS") {
             self.voucher_address = Some(address);
         }
-        if let Some(address) = var("MODULES_CONTRACT_ADDRESS") {
-            self.modules_address = Some(address);
-        }
-        if let Some(address) = var("RELAY_SETTLEMENT_CONTRACT_ADDRESS") {
-            self.relay_settlement_address = Some(address);
+        if let Some(address) = var("RELAY_REWARDS_CONTRACT_ADDRESS") {
+            self.relay_rewards_address = Some(address);
         }
     }
 
@@ -273,58 +188,12 @@ impl NetworkConfig {
             .or_else(|| self.network.contracts().voucher.map(ToOwned::to_owned))
     }
 
-    /// Authentic module address, resolved as [`NetworkConfig::escrow`].
-    ///
-    /// Absence is intentional until a reviewed deployment is published. There
-    /// is no fallback to the legacy voucher collection.
+    /// `RelayRewards` address, resolved as [`NetworkConfig::escrow`].
     #[must_use]
-    pub fn modules(&self) -> Option<String> {
-        self.modules_address
+    pub fn relay_rewards(&self) -> Option<String> {
+        self.relay_rewards_address
             .clone()
-            .or_else(|| self.network.contracts().modules.map(ToOwned::to_owned))
-    }
-
-    /// Module collection reviewed as the canonical MARKET collection.
-    ///
-    /// Unlike [`Self::modules`], this deliberately ignores runtime overrides.
-    /// A development collection can support inventory/equip testing, but it
-    /// cannot become buyer-visible release authority by sharing a marketplace
-    /// address with the reviewed pair.
-    #[must_use]
-    pub fn module_market_modules(&self) -> Option<String> {
-        self.network.contracts().modules.map(ToOwned::to_owned)
-    }
-
-    /// Marketplace reviewed as the canonical partner of [`Self::modules`].
-    ///
-    /// This intentionally has no environment or data-file override. Those are
-    /// useful for development transactions, but they are not release review
-    /// evidence and therefore cannot activate the buyer-facing authentic
-    /// module catalog.
-    #[must_use]
-    pub fn module_marketplace(&self) -> Option<String> {
-        self.network
-            .contracts()
-            .module_marketplace
-            .map(ToOwned::to_owned)
-    }
-
-    /// Relay settlement: a desktop development override may exercise a local
-    /// deployment; mobile uses the reviewed compiled release address.
-    #[must_use]
-    pub fn relay_settlement(&self) -> Option<String> {
-        self.relay_settlement_address.clone().or_else(|| {
-            self.network
-                .contracts()
-                .relay_settlement
-                .map(ToOwned::to_owned)
-        })
-    }
-
-    /// Approved public-standing source for this release, if one exists.
-    #[must_use]
-    pub const fn standing_release(&self) -> Option<StandingRelease> {
-        self.network.standing_release()
+            .or_else(|| self.network.contracts().relay_rewards.map(ToOwned::to_owned))
     }
 }
 
@@ -366,64 +235,12 @@ mod tests {
     #[test]
     fn an_undeployed_contract_is_none_rather_than_a_placeholder() {
         // A plausible-looking wrong address fails as a chain error. None fails
-        // as "not configured", which is the truth and is actionable. Nothing
-        // is deployed to mainnet, so nothing is claimed for it.
-        let mainnet = Network::Mainnet.contracts();
-        assert!(mainnet.escrow.is_none());
-        assert!(mainnet.marketplace.is_none());
-        assert!(mainnet.voucher.is_none());
-        assert!(mainnet.modules.is_none());
-        assert!(mainnet.module_marketplace.is_none());
-        assert!(mainnet.relay_settlement.is_none());
-    }
-
-    #[test]
-    fn the_testnet_deployment_is_compiled_in() {
-        // The addresses live in code rather than in an env var because mobile
-        // has no environment to read one from — that is the whole reason this
-        // table exists, so an empty table for the default network would put
-        // every phone back where it started.
-        let fuji = Network::Fuji.contracts();
-        for address in [fuji.escrow, fuji.marketplace, fuji.voucher] {
-            let address = address.expect("Fuji contracts are deployed");
-            assert!(
-                address.starts_with("0x") && address.len() == 42,
-                "{address} is not an address"
-            );
-        }
-        assert!(
-            fuji.modules.is_none(),
-            "unreviewed legacy voucher must not become a module collection"
-        );
-        assert!(
-            fuji.module_marketplace.is_none(),
-            "legacy voucher marketplace must not become the module market"
-        );
-        // Relay settlement is the one contract in this group that has been
-        // reviewed and exercised end to end on Fuji, so it is the one address
-        // published here. The two above stay closed until theirs is.
-        let relay_settlement = fuji
-            .relay_settlement
-            .expect("the verified relay settlement release is published");
-        assert!(
-            relay_settlement.starts_with("0x") && relay_settlement.len() == 42,
-            "{relay_settlement} is not an address"
-        );
-        assert!(Network::Fuji.standing_release().is_none());
-    }
-
-    #[test]
-    fn runtime_module_override_does_not_activate_an_unreviewed_market_pair() {
-        let config = NetworkConfig {
-            modules_address: Some("0x0000000000000000000000000000000000000001".into()),
-            marketplace_address: Some("0x0000000000000000000000000000000000000002".into()),
-            ..NetworkConfig::default()
-        };
-
-        assert!(config.modules().is_some());
-        assert!(config.marketplace().is_some());
-        assert!(config.module_market_modules().is_none());
-        assert!(config.module_marketplace().is_none());
+        // as "not configured", which is the truth and is actionable.
+        assert!(NetworkConfig::default().escrow().is_none());
+        // relay_rewards specifically: nothing is deployed as of this
+        // writing (docs/intent-chat-and-modules-design.md decisions 0/3),
+        // and this must read as "not configured," not a guessed address.
+        assert!(NetworkConfig::default().relay_rewards().is_none());
     }
 
     #[test]

@@ -4,7 +4,7 @@ import { Panel, StatusDot } from "../ds";
 import type { BleStatusView, NodeSummary } from "../types/bindings";
 
 /**
- * The network map and peer diagnostics now embedded on HOME.
+ * The network map and peer list.
  *
  * **No distances.** The prototype lists `1.2 km`; a libp2p peer has an
  * identifier and an address, not coordinates, and this app requests no location
@@ -15,7 +15,7 @@ import type { BleStatusView, NodeSummary } from "../types/bindings";
  * renders and restarts. That is what makes the map readable as an instrument
  * rather than a lava lamp.
  */
-export function NodeDiagnostics() {
+export function Nodes() {
   const [nodes, setNodes] = useState<NodeSummary[] | null>(null);
   const [ble, setBle] = useState<BleStatusView | null>(null);
   const [denied, setDenied] = useState(false);
@@ -55,7 +55,7 @@ export function NodeDiagnostics() {
   }, []);
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-6)" }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-6)", padding: "var(--space-6)" }}>
       <Panel label="NETWORK MAP">
         <div
           style={{

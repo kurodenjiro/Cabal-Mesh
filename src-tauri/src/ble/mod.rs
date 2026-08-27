@@ -33,11 +33,11 @@ pub mod android;
 use cabal_ble::engine::{Action, Engine, Event, MeshStatus};
 use cabal_ble::peers::{Capabilities, KnownPeer};
 use cabal_ble::wire::PacketKind;
-use cabal_ble::{Ephemeral, LinkId};
+use cabal_ble::{Ephemeral, LinkId, PeerId};
 use link::{BleTransport, LinkEvent};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot};
 
 /// Queue depth for requests to the BLE actor.
 const COMMAND_QUEUE: usize = 32;
@@ -70,6 +70,11 @@ enum Command {
     Submit {
         kind: PacketKind,
         payload: Vec<u8>,
+        /// `None` floods it; `Some` sends it to one peer. See
+        /// `BleHandle::send_to` — the engine has supported this since
+        /// `Event::Submit` was written, but nothing above it could reach the
+        /// capability until guardian shares needed directed delivery.
+        recipient: Option<PeerId>,
         reply: oneshot::Sender<()>,
     },
     SetOffline {
@@ -86,6 +91,7 @@ enum Command {
 #[derive(Clone, Debug)]
 pub struct BleHandle {
     tx: mpsc::Sender<Command>,
+    events: broadcast::Sender<BleEvent>,
 }
 
 impl BleHandle {
@@ -129,6 +135,27 @@ impl BleHandle {
             .send(Command::Submit {
                 kind,
                 payload,
+                recipient: None,
+                reply,
+            })
+            .await
+            .map_err(|_| BleError::NotRunning)?;
+        answer.await.map_err(|_| BleError::NoReply)
+    }
+
+    /// Sends a payload to exactly one peer, routed hop by hop rather than
+    /// flooded.
+    ///
+    /// # Errors
+    ///
+    /// As [`BleHandle::status`].
+    pub async fn send_to(&self, peer: PeerId, kind: PacketKind, payload: Vec<u8>) -> Result<(), BleError> {
+        let (reply, answer) = oneshot::channel();
+        self.tx
+            .send(Command::Submit {
+                kind,
+                payload,
+                recipient: Some(peer),
                 reply,
             })
             .await
@@ -169,7 +196,24 @@ impl BleHandle {
     pub fn is_running(&self) -> bool {
         !self.tx.is_closed()
     }
+
+    /// A fresh stream of events, independent of any other subscriber's.
+    ///
+    /// More than one part of the app needs to watch BLE traffic — the
+    /// frontend forwarder, and anything (like the guardian actor) that reacts
+    /// to a specific packet kind — and an `mpsc` channel can only ever be
+    /// drained by one of them. `broadcast` gives each subscriber its own
+    /// queue instead.
+    #[must_use]
+    pub fn subscribe(&self) -> broadcast::Receiver<BleEvent> {
+        self.events.subscribe()
+    }
 }
+
+/// Queue depth per event subscriber, before a slow one starts missing events
+/// rather than blocking the actor. Generous relative to how bursty BLE
+/// traffic actually gets in a session.
+const EVENT_QUEUE: usize = 256;
 
 /// What the BLE plane hands up to the rest of the app.
 #[derive(Debug, Clone)]
@@ -178,7 +222,7 @@ pub enum BleEvent {
     PeerGone(String),
     /// A payload delivered to this node.
     Received {
-        from: String,
+        from: PeerId,
         kind: PacketKind,
         payload: Vec<u8>,
     },
@@ -189,6 +233,7 @@ pub enum BleEvent {
 /// Starts the BLE plane.
 ///
 /// Returns a handle and the stream of things worth telling the UI about.
+/// Call [`BleHandle::subscribe`] for additional independent streams.
 ///
 /// A radio that will not start is **not** an error here. Bluetooth being off,
 /// or the user declining the permission, must leave the app running with the
@@ -199,13 +244,13 @@ pub fn spawn(
     transport: Arc<dyn BleTransport>,
     identity: Ephemeral,
     capabilities: Capabilities,
-) -> (BleHandle, mpsc::UnboundedReceiver<BleEvent>) {
+) -> (BleHandle, broadcast::Receiver<BleEvent>) {
     let (command_tx, command_rx) = mpsc::channel(COMMAND_QUEUE);
-    let (event_tx, event_rx) = mpsc::unbounded_channel();
+    let (event_tx, event_rx) = broadcast::channel(EVENT_QUEUE);
 
-    tokio::spawn(run(transport, identity, capabilities, command_rx, event_tx));
+    tokio::spawn(run(transport, identity, capabilities, command_rx, event_tx.clone()));
 
-    (BleHandle { tx: command_tx }, event_rx)
+    (BleHandle { tx: command_tx, events: event_tx }, event_rx)
 }
 
 /// The actor loop.
@@ -214,7 +259,7 @@ async fn run(
     identity: Ephemeral,
     capabilities: Capabilities,
     mut commands: mpsc::Receiver<Command>,
-    events: mpsc::UnboundedSender<BleEvent>,
+    events: broadcast::Sender<BleEvent>,
 ) {
     let mut engine = Engine::new(identity, capabilities);
 
@@ -254,9 +299,9 @@ async fn run(
                         let _ = reply.send(engine.peers(now_ms()));
                         continue;
                     }
-                    Command::Submit { kind, payload, reply } => {
+                    Command::Submit { kind, payload, recipient, reply } => {
                         let _ = reply.send(());
-                        Event::Submit { kind, payload, recipient: None }
+                        Event::Submit { kind, payload, recipient }
                     }
                     Command::SetOffline { offline, reply } => {
                         if offline {
@@ -319,7 +364,7 @@ async fn drain_without_radio(engine: &mut Engine, commands: &mut mpsc::Receiver<
 /// Executes what the engine asked for.
 async fn apply(
     transport: &Arc<dyn BleTransport>,
-    events: &mpsc::UnboundedSender<BleEvent>,
+    events: &broadcast::Sender<BleEvent>,
     timers: &mpsc::Sender<Event>,
     actions: Vec<Action>,
 ) {
@@ -346,11 +391,7 @@ async fn apply(
                 kind,
                 payload,
             } => {
-                let _ = events.send(BleEvent::Received {
-                    from: from.to_string(),
-                    kind,
-                    payload,
-                });
+                let _ = events.send(BleEvent::Received { from, kind, payload });
             }
             Action::PeerAppeared(peer) => {
                 let _ = events.send(BleEvent::PeerAppeared(peer.to_string()));

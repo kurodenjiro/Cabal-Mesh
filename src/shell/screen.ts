@@ -13,21 +13,23 @@
 export type IntentId = string;
 
 export type IntentTab = "ACTIVE" | "PENDING" | "HISTORY";
-export type VaultTab = "ASSETS" | "MODULES" | "IDENTITIES" | "KEYS";
+export type VaultTab = "ASSETS" | "IDENTITIES" | "MODULES" | "KEYS";
 
 export type Screen =
   | { name: "splash" }
+  | { name: "unlock" }
   | { name: "home" }
   | { name: "intents"; tab: IntentTab }
   | { name: "new" }
   | { name: "detail"; id: IntentId }
   | { name: "settled"; id: IntentId }
-  | { name: "market" }
+  | { name: "nodes" }
   | { name: "vault"; tab: VaultTab }
+  | { name: "market" }
   | { name: "profile" };
 
 /** The five destinations in the tab bar. */
-export type TabKey = "home" | "intents" | "market" | "vault" | "profile";
+export type TabKey = "home" | "intents" | "nodes" | "vault" | "profile";
 
 /**
  * A glyph from the board's 14-icon plate. Typed as the literal union rather
@@ -41,7 +43,7 @@ export type GlyphName =
 export const TABS: ReadonlyArray<{ key: TabKey; label: string; icon: GlyphName }> = [
   { key: "home", label: "HOME", icon: "mesh" },
   { key: "intents", label: "INTENTS", icon: "intent" },
-  { key: "market", label: "MARKET", icon: "reputation" },
+  { key: "nodes", label: "NODES", icon: "node" },
   { key: "vault", label: "VAULT", icon: "vault" },
   { key: "profile", label: "PROFILE", icon: "identity" },
 ];
@@ -55,10 +57,11 @@ export const TABS: ReadonlyArray<{ key: TabKey; label: string; icon: GlyphName }
 export function back(screen: Screen): Screen {
   switch (screen.name) {
     case "splash":
+    case "unlock":
     case "home":
       return screen;
     case "intents":
-    case "market":
+    case "nodes":
     case "vault":
     case "profile":
       return { name: "home" };
@@ -66,6 +69,8 @@ export function back(screen: Screen): Screen {
     case "detail":
     case "settled":
       return { name: "intents", tab: "ACTIVE" };
+    case "market":
+      return { name: "vault", tab: "MODULES" };
   }
 }
 
@@ -79,20 +84,22 @@ export function activeTab(screen: Screen): TabKey | null {
     case "detail":
     case "settled":
       return "intents";
-    case "market":
-      return "market";
+    case "nodes":
+      return "nodes";
     case "vault":
+    case "market":
       return "vault";
     case "profile":
       return "profile";
     case "splash":
+    case "unlock":
       return null;
   }
 }
 
-/** Splash is full-bleed: no header, no tab bar. */
+/** Splash and unlock are full-bleed: no header, no tab bar. */
 export function hasChrome(screen: Screen): boolean {
-  return screen.name !== "splash";
+  return screen.name !== "splash" && screen.name !== "unlock";
 }
 
 /** Header title per screen, matching the prototype. */
@@ -108,13 +115,16 @@ export function title(screen: Screen): string {
       return "INTENT DETAILS";
     case "settled":
       return "PROOF";
-    case "market":
-      return "MARKET";
+    case "nodes":
+      return "NODES";
     case "vault":
       return "VAULT";
+    case "market":
+      return "MARKET";
     case "profile":
       return "PROFILE";
     case "splash":
+    case "unlock":
       return "";
   }
 }

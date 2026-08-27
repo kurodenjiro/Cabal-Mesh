@@ -38,7 +38,7 @@ Every algorithm is standard and published. Nothing is proprietary, and nothing i
 | Hashing | `sha2` 0.10 / 0.11 | SHA-256 |
 | Memory hygiene | `zeroize` 1.8 | — |
 
-**Zero-knowledge proving is not in the mobile build.** The Noir circuit needs a subprocess, and `platform::CAN_SPAWN_PROCESSES` is false on iOS and Android, so `zk_handler` returns `Unsupported` there. It is desktop-only and outside this determination.
+**There is no zero-knowledge proving in any build.** The Noir circuit and its `nargo` shell-out were removed on 2026-08-27 (nothing called them), so no proving code ships on any platform and none is in scope for this determination.
 
 ## What must happen before the first upload
 

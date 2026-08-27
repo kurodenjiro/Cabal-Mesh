@@ -1,15 +1,32 @@
 # Chat intents, marketplace, and node modules — design
 
-**Status: implementation in progress.** Written 2026-08-10. The always-available
-[local intent inference runtime](intent-inference-runtime.md) was accepted and
-proved on desktop, iOS, and Android on 2026-08-12. Conversational composition
-now produces Rust-validated chips with fail-closed clarification and a manual
-fallback. Parsed chips are now correctable with constrained controls, exact
-balance feedback, and a frozen review/confirmation payload. Authentic milestone
-issuance and canonical confirmed ownership now feed VAULT → MODULES; marketplace
-execution and measured runtime effects remain in progress. NODE LOADOUT now
-reflects accepted on-chain slot bindings and labels offline snapshots as cached,
-never as current eligibility proof.
+**Status: partially built.** Written 2026-08-10; updated 2026-08-27 once
+Marketplace/Modules UI shipped. `intent-inference-runtime.md`'s always-available
+local model was evaluated as an alternative to the path below and not adopted —
+`parse_intent_chat` (the configured LLM, same as everywhere else in the app)
+stayed the one entry point, so intent parsing has a single code path rather
+than two.
+
+**Chat intent is built** — `parse_intent_chat` fills the same form fields
+`New.tsx` already validates through, unchanged; the model proposes, Rust
+still decides.
+
+**Marketplace and modules: deployed, and the UI is real.**
+`CabalMeshVoucher`'s mint access-control gap this doc originally opened with
+is fixed on-chain — minting is now restricted to the `RelayRewards` contract
+address, and a direct call reverts. `contracts/contracts/CabalMeshVoucher.sol`
+and `contracts/contracts/RelayRewards.sol` implement decisions 0–4 below, with
+passing Hardhat tests (`contracts/test/{CabalMeshVoucher,Marketplace,
+RelayRewards}.test.ts`), and the Rust bridge's ABI bindings match them
+(`src-tauri/abi/{CabalMeshVoucher,RelayRewards}.abi.json`). `VAULT → MODULES`
+and the MARKET tab are real screens against real contracts — listing, buying,
+releasing, and refunding a deal all reach the chain
+(`market_listings`/`market_buy`/`market_list_module`/`market_release_deal`/
+`market_refund_deal`/`market_my_deals` in `commands.rs`). **Not yet wired:**
+`BlockchainBridge::record_gateway_relay` exists and is untested against a real
+route, but no command calls it — a real gateway relay does not yet earn a
+module the way this doc describes; that needs the product decisions about fee
+amount and gateway selection this doc doesn't make.
 
 Three connected changes: composing intents by conversation instead of by form,
 a marketplace for NFTs, and NFTs that measurably improve what a node earns.
@@ -34,14 +51,8 @@ for an instrument/terminal aesthetic and a literal fit for a mesh device.
             └──────── mint at milestones ─────────┘
 ```
 
-Modules and Standing Badges are NFTs on the separate canonical
-`CabalMeshModules` ERC-721. Only the issuer-managed `MINTER_ROLE` can call
-`awardMilestone`, and each milestone provenance commitment is consumed once,
-so "mint at milestones" is an authorized verified path rather than something a
-wallet can invoke for itself. Slot, rarity, typed effect, artwork digest, issuer,
-and provenance are immutable structured state; Standing Badges implement
-ERC-5192. Fuji remains unavailable until the reviewed replacement deployment is
-published—legacy `CabalMeshVoucher` tokens are never substitutes. Three slots:
+Modules are NFTs on `CabalMeshVoucher` (ERC721, already deployed to Fuji).
+Three slots:
 
 | Slot | Example modules | Effect |
 |---|---|---|
@@ -139,19 +150,19 @@ remain usable. The model still has no state-bearing or execution command.
 │  ┌─────────────────────────────────────┐ │
 │  │ ▚▚▚  RELAY AMPLIFIER MK-II     RARE │ │
 │  │ ▚▚▚  RADIO · +18% RELAY YIELD       │ │
-│  │      SELLER  0x7F3A…C2  VERIFIED 42 │ │
+│  │      SELLER  NODE-7F3A…C2   ★ 42    │ │
 │  │      2.40 AVAX            [  BUY  ] │ │
 │  └─────────────────────────────────────┘ │
 │  ┌─────────────────────────────────────┐ │
 │  │ ▞▞▞  GHOST CLOAK             COMMON │ │
 │  │ ▞▞▞  CRYPTO · +2 HOPS, NO LATENCY   │ │
-│  │      SELLER  0x91BE…08  VERIFIED 31 │ │
+│  │      SELLER  NODE-91BE…08   ★ 31    │ │
 │  │      0.85 AVAX            [  BUY  ] │ │
 │  └─────────────────────────────────────┘ │
 │  ┌─────────────────────────────────────┐ │
 │  │ ▙▙▙  GATEWAY LICENSE         LEGEND │ │
 │  │ ▙▙▙  POWER · EARN AS GATEWAY        │ │
-│  │      SELLER  0x2C4D…AA  VERIFIED 18 │ │
+│  │      SELLER  NODE-2C4D…AA   ★ 18    │ │
 │  │      11.00 AVAX           [  BUY  ] │ │
 │  └─────────────────────────────────────┘ │
 │                                          │
@@ -160,64 +171,11 @@ remain usable. The model still has no state-bearing or execution command.
 └──────────────────────────────────────────┘
 ```
 
-`VERIFIED 42` is the seller wallet's public standing at an accepted block, not
-an invented score or a value copied from the seller's device. Buyers verify a
-quorum of independent reads from the canonical `CabalStandingRegistry`; any
-missing, stale, unfinalized, or conflicting evidence renders `UNKNOWN`. The
-device-local count in `src/standing.rs` remains self-history only. The complete
-definition and privacy decision are in the
-[standing verification specification](standing-verification.md).
+`★ 42` is the seller's **real** standing — settlement count from
+`src/standing.rs`, not an invented score.
 
-`Marketplace.sol` implements the escrow this promises: `buy()` locks AVAX and
-pulls the NFT into escrow in one transaction, `releaseDeal` / `refundDeal`
-settle it, and `cancelListing` withdraws an unsold listing.
-
-**Resolved for browsing 2026-08-12:** the five-destination shell now replaces
-NODES with MARKET and embeds the former network map, BLE plane figures, and
-nearby-peer rows on HOME alongside node ID, mesh state, and uptime. MARKET
-scans paginated active listings at one accepted C-Chain block, then keeps only
-the reviewed module collection whose token still exists, remains with the
-seller, is eligible, and is still approved for that exact marketplace.
-Identity, slot, rarity, effect, and artwork commitment come only from canonical
-`assetData`; seller descriptions never cross the catalog boundary. Public
-standing is queried at one finalized block through the independently operated
-provider quorum defined below. Missing release configuration, stale evidence,
-or disagreement renders `UNKNOWN`. The current Fuji module/market/registry
-release tuple remains intentionally absent, so production builds fail closed
-rather than treating the deployed legacy voucher marketplace as MARKET.
-
-**Resolved for escrow-backed purchases 2026-08-12:** BUY first re-reads the
-exact canonical listing, seller, token custody, eligibility, wallet balance,
-and an integer-wei network-fee estimate at accepted state. The confirmation
-explains that the module and exact listing value move into escrow atomically,
-that no off-chain delivery remains, and that the three-day period is only a
-mutual-cancellation window. A confirmed buy retires the listing and appears in
-MY MODULE DEALS only after marketplace custody and the deal fields agree. The
-buyer may release at once and still may release after requesting cancellation;
-the seller may refund only after that request, while anyone may release after
-the per-deal deadline. Release and refund claims are shown only after accepted
-custody proves the buyer or seller owns the token respectively. A reviewed
-release pair also becomes VAULT's canonical collection, so final deal state and
-the buyer's MODULES inventory cannot diverge because of a development override.
-
-An earlier version of this paragraph said the contract was already good enough
-to build against. It was not, and the settlement rules changed under it — worth
-reading before designing the deal screens:
-
-- **Release is the default outcome.** The buyer can release at any time; once
-  the deal's three-day window passes, anyone can. A buyer who walks away can no
-  longer strand the seller's module and payment in the contract forever.
-- **Cancelling takes both sides.** The buyer calls `requestRefund`, the seller
-  executes `refundDeal`. Neither can unwind a paid deal alone. The old contract
-  let the buyer refund themselves at will, which made every listing a free
-  option written by the seller.
-- **A module has at most one live listing**, and the seller can cancel and
-  relist it.
-
-The asset leg of this trade is already on-chain and atomic, so the escrow
-window is a *cancellation* window, not a delivery-dispute window. The UI should
-say so: there is nothing for a buyer to inspect before releasing, and nothing a
-seller still owes.
+`Marketplace.sol` already implements the escrow this promises: `buy()` locks
+AVAX and pulls the NFT into escrow, `releaseDeal` / `refundDeal` settle it.
 
 ## Modules — `VAULT → MODULES`
 
@@ -265,9 +223,8 @@ seller still owes.
 │  SLOT          RADIO                     │
 │  EFFECT        +18% RELAY YIELD          │
 │  TOKEN ID      #1204                     │
-│  CONTRACT      0x…CMM                    │
-│  PROVENANCE    0x…A91C                   │
-│  MINTED BY     0x…71E2                   │
+│  CONTRACT      0x…CMV                    │
+│  MINTED        2026-07-14                │
 │                                          │
 │  ─── WHILE EQUIPPED ───────────────────  │
 │  RELAYED TODAY       412 MB              │
@@ -282,44 +239,6 @@ seller still owes.
 
 Showing the bonus this specific module actually produced is what makes owning it
 feel real rather than decorative.
-
-**Resolved for acquisition and inspection 2026-08-12:** the collection exposes
-ERC-721 Enumerable current-owner indexes and atomically rejects reused milestone
-provenance. VAULT → MODULES reads only the configured canonical collection,
-validates every structured v1 slot/effect combination in Rust, and shows token
-ID, contract, current owner, provenance, issuer, slot, rarity, exact effect
-parameters, artwork commitment, soulbound state, and revocation state. It does
-not use listing copy or optimistic mint state. Pending, failed, replaced, and
-reorganized mints cannot appear as confirmed holdings; failed refreshes clear
-the view, and a missing reviewed Fuji address renders the feature unavailable
-without a legacy fallback. Standing Badge transfer and token approval revert,
-and the official marketplace rejects it before a listing or value movement.
-
-**Resolved for verified loadouts 2026-08-12:** RADIO, CRYPTO, and POWER slots
-come from `equippedToken(operator, slot)` on the canonical collection at one
-accepted block. The node operator is the primary wallet that signs relay-proof
-work; arbitrary Bluetooth identifiers are not bindable identities. The V1 rule
-for an occupied slot is explicit refusal, so replacement requires UNEQUIP then
-EQUIP. Every mutation waits for its receipt and re-reads accepted state before
-the UI changes. Transfer, burn, escrow, and revocation clear the contract
-binding; a stale local preference cannot preserve eligibility. If RPC is down,
-the last matching wallet/collection snapshot is visibly `CACHED · DISPLAY
-ONLY`, actions are disabled, and every `activeEffect` remains empty. Nominal
-metadata stays inspectable, but NODE LOADOUT claims no active runtime bonus
-until tickets 14–16 wire the corresponding verifier.
-
-**Resolved for seller listing 2026-08-12:** a current owner can list only an
-unequipped, transferable, unrevoked canonical V1 module through the reviewed
-module/market pair. AVAX input is converted from decimal text to integer wei
-without floating point. Token approval and listing remain separate confirmed
-operations unless a verified blanket approval already exists. Every mutation
-waits for its receipt and then re-reads accepted chain state; rejection,
-replacement, timeout, reorganization, revert, retry, and a duplicate attempt
-cannot manufacture a buyer-visible listing. MARKET rechecks custody and
-eligibility at its accepted head. Cancelling an unsold listing returns the token
-to the seller and makes it equippable again, while marketplace custody without
-an active listing is treated as a paid deal governed by release or mutual-refund
-rules rather than as a cancellable sale.
 
 ### Where earnings are visible — HOME
 
@@ -353,62 +272,98 @@ NODES folds into HOME, which already shows mesh status, node id and uptime.
 Five tabs is already the limit at 390 px with the brand's tracking; a sixth
 would wrap.
 
-**Implemented 2026-08-12:** the tab bar remains exactly five equal-width
-destinations, labels never wrap, and glyph plus `aria-label` keeps each
-destination available when 200-percent type scaling clips the visible label.
-HOME now owns both IP and BLE nearby-node diagnostics; removing the NODES route
-does not remove the measurements.
+## Five things, now settled
 
-## Four things to settle before building
+The doc originally listed four open questions. Answering them honestly
+surfaced a fifth, more urgent one — decision 0 — that the other four
+actually depend on. All five are grounded in the contracts and Rust as they
+exist today (`contracts/contracts/*.sol`, `src-tauri/src/blockchain_bridge.rs`),
+not as the earlier draft assumed.
 
-**1. The old relay boost was a local JSON file.**
-In git history, `apply_relay_boost` simply added a float to `relay_boost.json`
-and saved it. If rewards are real AVAX, the multiplier **must** be derived from
-verified on-chain NFT ownership. A locally editable file is not a game
-mechanic, it is a mint button.
+**0. `CabalMeshVoucher.mintVoucher` has no access control — this blocks
+everything else.** `contracts/contracts/CabalMeshVoucher.sol:25` declares it
+`external` with no modifier: anyone, from any wallet, can call it directly
+against the deployed Fuji contract and mint themselves a token with any
+`voucherType` and `description` string they like, for free, right now — no
+app involved. This is worse than the local-file risk decision 1 below
+worries about: a farming defence built entirely at the app/relay layer
+still means nothing while the mint entry point itself has no gate. Nothing
+in decisions 1, 3 or 4 is meaningful until this is fixed.
 
-**Resolved at the trust boundary 2026-08-12:** authentic effects originate only
-from the canonical `CabalMeshModules` collection, immutable structured token
-data, current ownership, an on-chain one-token/one-slot loadout, and unrevoked
-state. The full authority and failure policy is in the
-[module trust model](module-trust-model.md). Ticket 14 still has to consume that
-state in relay settlement before a RADIO multiplier changes real payment.
+**Decision: redeploy the voucher contract with minting restricted to a
+single on-chain caller — the reward contract from decision 3, not an
+off-chain admin key.** Restricting it to a *contract address* rather than a
+person keeps the reward path trustless: a module is minted only as the
+atomic side effect of a settlement this contract already verified on-chain,
+never by a party's own say-so, off-chain or on. `CabalMeshVoucher` is a
+plain `ERC721` with no `Ownable`, no proxy — not upgradeable — so this is a
+new deployment, not a migration. Low-stakes to do now: Fuji testnet, no
+value locked in the current contract yet.
 
-**2. `CabalMeshVoucher` has no slot, rarity, or effect on-chain.**
-It stores `voucherType` (string) and `description`. Options: encode structure
-into `voucherType`, add ERC721 `tokenURI` metadata, or extend the contract.
-Metadata is the recommended route — standard, and external wallets can read it.
+**1. The old relay boost was a local JSON file, and it is still live dead
+code.** `apply_relay_boost` / `get_relay_boost_multiplier` /
+`relay_boost_path` were not deleted with the old RPG UI (`0a71f59` removed
+only the frontend caller in `src/App.tsx`) — they are still sitting in
+`blockchain_bridge.rs:841-852`, unreachable from any command today, ready
+to be wired back up by exactly the mistake this doc warns against.
 
-**Resolved 2026-08-12:** a separate, non-upgradeable `CabalMeshModules` ERC-721
-returns on-chain standards-compatible JSON metadata, exposes typed slot/rarity/
-effect parameters and provenance, implements ERC-5192 Standing Badges, and owns
-the loadout rules. The deployed voucher remains explicitly legacy and receives
-no module effect; Fuji replacement steps are fixed in the
-[module trust model](module-trust-model.md).
+**Decision: delete them outright**, and compute the relay-yield multiplier
+on demand from verified on-chain module ownership every time it's shown —
+never cache or store it as an editable local value, in a file or anywhere
+else.
 
-**3. Who pays the relay reward?** *(the load-bearing question)*
-If node A relays for node B, where does the AVAX come from — a fee the sender
-attaches to the intent, or emission from a treasury? A sender-paid fee is
-self-sustaining; emission needs funding and inflates.
+**2. `CabalMeshVoucher` has no slot, rarity, or effect on-chain — and no
+metadata hook to add them to.** The contract has no `tokenURI` override, no
+`_baseURI`, no `ERC721URIStorage` — `tokenURI()` returns an empty string for
+every token today. The doc's original "recommended route," off-chain
+`tokenURI` metadata, is not achievable without a contract change either, so
+it is not actually cheaper than the alternative.
 
-**Resolved 2026-08-12:** the sender pre-funds a bounded route escrow; no reward
-emission is used. Fee caps, exact integer arithmetic, refunds, gas handling,
-finality, solvency, and UI language are fixed in the
-[relay reward economics](relay-reward-economics.md). The `0.0096 AVAX` remains
-an estimate until ticket 13 produces an accepted on-chain settlement.
+**Decision: structured on-chain fields instead of a metadata URI** —
+`VoucherData` gains `uint8 slot`, `uint8 rarity`, `uint16 effectBps` (the
+module's effect as basis points, e.g. `1800` = +18%) alongside the existing
+`voucherType`/`description`. Every other contract this app reads
+(`IEscrow`, `IMarketplace`) is already read as typed on-chain calls through
+`sol!` bindings, not as fetched JSON from a URI a host somewhere has to keep
+serving — matching that pattern keeps one read path instead of two, and
+keeps a module's effect something Rust can verify directly rather than
+trust a metadata host to report honestly. `tokenURI` support for external
+wallet/marketplace display is worth adding later; it is not the source of
+truth either way.
 
-**4. Farming defence.**
-Two devices owned by one person can relay junk to each other forever. Rewards
-need evidence that a genuine third party wanted the data — for example, counting
-a relay only when it carries both the sender's signature and the recipient's
-receipt. This is the hardest part technically and should be designed early
-rather than retrofitted.
+**3. Who pays the relay reward, and for which kind of relay specifically?**
+*(the question the rest depended on.)* The app relays two different ways,
+and only one of them is currently attributable to a specific node at all.
+BLE mesh relaying is flood-based — a packet is copied by whichever
+neighbours a thinned fanout selects (`cabal-ble/src/router.rs`), with no
+routing table and no single node identifiable as "the" relay for a given
+hop. **Gateway relaying is different**: a gateway submits an offline node's
+signed transaction to the chain itself, so the submitting address is
+already on-chain and already attributable, no new protocol needed.
 
-**Resolved 2026-08-12:** v1 requires an EIP-712 sender authorization, one signed
-contribution per ordered relay, and an acknowledgement from a distinct recipient
-wallet. Chain/contract domains, payload and route commitments, expiry, exact
-economics, atomic single-use identifiers, complete-intent delivery, and bounded
-gateway windows are fixed in the
-[genuine relay proof protocol](relay-proof-protocol.md). Same-wallet role reuse
-is rejected; distinct wallets controlled by one operator remain an explicit
-Sybil limitation rather than a solved identity problem.
+**Decision: relay rewards apply to gateway relaying only, for now** — a
+sender-paid fee, not treasury emission (self-sustaining, no inflation to
+fund), paid atomically out of the same settlement the relayed transaction
+produces. `RELAYED TODAY` / `relay_bytes` on HOME stays honest in the
+meantime: it is wired to `0` today (`mesh.rs`'s counter is initialized and
+read but never incremented — the `0.0096 AVAX` mock-up was decoration
+against a number that was already always zero), and should keep reading as
+"not tracked yet" rather than fabricate BLE-relay activity a reward can't
+actually attribute. Rewarding BLE flood relay is future work that needs a
+protocol change first (an attributable per-hop receipt), not a reward-layer
+decision.
+
+**4. Farming defence.** With reward scope narrowed to gateway relay
+(decision 3), the sybil case narrows with it: two devices owned by one
+person forwarding junk to each other over BLE earns nothing either way,
+because BLE relay isn't rewarded. What remains is a gateway paying itself
+by fronting its own transactions — defended against by the mechanism
+already required for payment to move at all: **the fee is deducted from a
+real settlement** (`Escrow`/`Marketplace` releasing to a counterparty), so
+"farming" it costs the same real AVAX moving between two real addresses
+that self-dealing already costs anywhere else in this app, gateway or not.
+No new signature/receipt scheme (`IntentAck`, reserved in the wire format
+but never implemented — `cabal-ble/src/wire.rs:143`) is needed for v1. A
+minimum settlement size or a same-address check between gateway and
+counterparty is worth adding if v1 shows it is actually exploited; it is
+not a blocker to start.

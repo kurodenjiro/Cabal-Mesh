@@ -55,6 +55,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "ahash"
+version = "0.4.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0453232ace82dee0dd0b4c87a59bd90f7b53b314f3e0f61fe2ee7c8a16482289"
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1625,6 +1631,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "cabal-guardian"
+version = "0.1.0"
+dependencies = [
+ "cabal-vault",
+ "chacha20poly1305",
+ "rand_core 0.6.4",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sharks",
+ "thiserror 2.0.18",
+ "x25519-dalek",
+ "zeroize",
+]
+
+[[package]]
 name = "cabal-intent-inference"
 version = "0.1.0"
 dependencies = [
@@ -1691,6 +1713,7 @@ dependencies = [
  "aes-gcm",
  "argon2",
  "cabal-store",
+ "hex",
  "serde",
  "serde_json",
  "tempfile",
@@ -1711,8 +1734,7 @@ dependencies = [
  "cabal-ble",
  "cabal-ble-macos",
  "cabal-core",
- "cabal-intent-inference",
- "cabal-relay-proof",
+ "cabal-guardian",
  "cabal-rewards",
  "cabal-standing",
  "cabal-store",
@@ -3666,6 +3688,15 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "hashbrown"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d7afe4a420e3fe79967a00898cc1f4db7c8a49a9333a29f8a4bd76a253d5cd04"
+dependencies = [
+ "ahash",
 ]
 
 [[package]]
@@ -7732,6 +7763,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
 dependencies = [
  "lazy_static",
+]
+
+[[package]]
+name = "sharks"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "902b1e955f8a2e429fb1bad49f83fb952e6195d3c360ac547ff00fb826388753"
+dependencies = [
+ "hashbrown 0.9.1",
+ "rand 0.8.5",
+ "zeroize",
 ]
 
 [[package]]

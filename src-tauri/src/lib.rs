@@ -1,8 +1,8 @@
 mod app_initializer;
 mod app_paths;
+mod platform;
 mod ollama_config;
 mod ollama_manager;
-mod platform;
 
 // Public because their types *are* the IPC contract: everything below
 // serializes across the boundary to the webview, so the shapes are already
@@ -25,15 +25,16 @@ pub mod ble;
 /// Bootstrap peer configuration. See src/bootstrap_config.rs.
 pub mod bootstrap_config;
 
-mod lifecycle;
-mod llm_json;
 /// Chain selection and contract addresses. See src/network_config.rs.
 pub mod network_config;
+mod llm_json;
+mod lifecycle;
 mod telemetry;
-/// The device-bound half of the vault key. See src/device_binding.rs.
-pub mod device_binding;
 mod vault_key;
-pub mod zk_handler;
+mod security_state;
+pub mod guardian;
+pub mod guardian_actor;
+pub mod intent_chat;
 
 /// The Android Wi-Fi multicast lock mDNS needs. See src/multicast.rs.
 pub mod multicast;
@@ -66,16 +67,16 @@ pub mod bindings;
 /// The typed error union that crosses the IPC boundary. See src/error.rs.
 pub mod error;
 
-use agent::SharkAgent;
 use app_initializer::SystemBootstrap;
-use blockchain_bridge::BlockchainBridge;
+use agent::SharkAgent;
 use matcher::MatchAgent;
 use ollama_manager::OllamaManager;
+use blockchain_bridge::BlockchainBridge;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
-use tauri::{Emitter, Manager};
 use tokio::sync::Mutex;
-use zk_handler::ZKHandler;
+use tauri::{Manager, Emitter};
+
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -95,9 +96,6 @@ pub fn run() {
         // The Android BLE radio. Registers a handle on Android and a no-op
         // elsewhere, so the app builds identically on every platform.
         .plugin(tauri_plugin_cabal_ble::init())
-        // The Android Keystore, which holds the device half of the vault key.
-        // Registered before `setup` installs the source that reads it.
-        .plugin(tauri_plugin_cabal_keystore::init())
         .setup(|app| {
             // Synchronously, before the webview exists. Bootstrap fills the
             // services in afterwards; until then commands get NotReady rather
@@ -112,34 +110,6 @@ pub fn run() {
                     "platform gave no app data directory; falling back"
                 ),
             }
-
-            // Before the bridge is built, because the vault key provider it
-            // constructs asks for the device secret the first time it is
-            // unlocked. Installed here rather than passed down: see
-            // `device_binding::install_android_source`.
-            #[cfg(target_os = "android")]
-            {
-                use tauri_plugin_cabal_keystore::CabalKeystoreExt;
-                let keystore_handle = app.handle().clone();
-                device_binding::install_android_source(Box::new(move || {
-                    keystore_handle
-                        .cabal_keystore()
-                        .device_secret()
-                        .map_err(|error| error.to_string())
-                }));
-            }
-
-            // What is actually protecting the vault on this run, said once at
-            // startup. On a device this is the only way to find out without
-            // navigating to a screen, and "which protection am I running"
-            // should not be a question that requires the UI to answer.
-            tracing::info!(
-                target: "cabalmesh::vault",
-                binding = device_binding::platform_store().as_str(),
-                availability = ?device_binding::availability(),
-                "device binding: {}",
-                device_binding::describe()
-            );
 
             let state = state::AppState::new();
             app.manage(state.clone());
@@ -164,10 +134,7 @@ pub fn run() {
                         tracing::info!("✅ Remote Ollama is healthy");
                     } else {
                         tracing::warn!("⚠️  No Ollama at {}", url);
-                        tracing::warn!(
-                            "📝 Set one with the set_ollama_url command or ${}",
-                            ollama_config::ENV_VAR
-                        );
+                        tracing::warn!("📝 Set one with the set_ollama_url command or ${}", ollama_config::ENV_VAR);
                     }
                     return;
                 }
@@ -216,6 +183,8 @@ pub fn run() {
                     .unwrap_or_else(|_| blockchain_bridge::DEFAULT_AVAX_RPC_URL.to_string());
 
                 let bridge = Arc::new(Mutex::new(BlockchainBridge::new(Some(rpc_url))));
+                let guardian_service = Arc::new(Mutex::new(guardian::GuardianService::open(&app_paths::data_dir())));
+                let guardian_approvals = guardian_actor::PendingApprovals::new();
 
                 // 1. Phase 1
                 SystemBootstrap::phase_1_sync(&bridge, &app_handle).await;
@@ -240,10 +209,63 @@ pub fn run() {
                     );
                     let forward = app_handle.clone();
                     tokio::spawn(async move {
-                        while let Some(event) = events.recv().await {
-                            let _ = forward.emit("ble-event", format!("{event:?}"));
+                        loop {
+                            match events.recv().await {
+                                Ok(event) => {
+                                    let _ = forward.emit("ble-event", format!("{event:?}"));
+                                }
+                                // A burst outpaced this consumer; the next
+                                // recv picks up from there rather than
+                                // stalling on events already gone.
+                                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                            }
                         }
                     });
+
+                    // Answers guardian traffic addressed to this device as a
+                    // guardian for someone else, for as long as the app
+                    // runs — a separate subscription from the forwarder
+                    // above, since only one consumer can drain any one of
+                    // them (see `BleHandle::subscribe`'s docs).
+                    let mut guardian_events = handle.subscribe();
+                    let guardian_ble = handle.clone();
+                    let guardian_state = Arc::clone(&guardian_service);
+                    let guardian_approvals_for_task = guardian_approvals.clone();
+                    let guardian_app_handle = app_handle.clone();
+                    tokio::spawn(async move {
+                        loop {
+                            match guardian_events.recv().await {
+                                Ok(ble::BleEvent::Received { from, kind: cabal_ble::wire::PacketKind::Guardian, payload }) => {
+                                    if let Ok(message) = cabal_guardian::protocol::GuardianMessage::from_bytes(&payload) {
+                                        if let Some(id) = guardian_actor::respond_to_guardian_traffic(
+                                            &guardian_state,
+                                            &guardian_ble,
+                                            &guardian_approvals_for_task,
+                                            from,
+                                            message,
+                                        )
+                                        .await
+                                        {
+                                            // A human has to see and act on
+                                            // this — see `PendingApprovals`'s
+                                            // docs for why nothing here sends
+                                            // a reply on its own.
+                                            let prompt = bindings::GuardianUnlockPrompt {
+                                                id,
+                                                from: cabal_core::NodeId::new(from.to_string()).truncated(),
+                                            };
+                                            let _ = guardian_app_handle.emit("guardian-unlock-request", prompt);
+                                        }
+                                    }
+                                }
+                                Ok(_) => {}
+                                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                            }
+                        }
+                    });
+
                     handle
                 });
                 if ble.is_none() {
@@ -276,54 +298,10 @@ pub fn run() {
                         // arriving five seconds after the peer sent it.
                         let handle_clone = app_handle.clone();
                         let ledger = state.intents().clone();
-                        let paid_relay_bridge = bridge.clone();
-                        let paid_relay_mesh = mesh_handle.clone();
                         tokio::spawn(async move {
                             while let Some(event) = event_rx.recv().await {
-                                if matches!(event, mesh::MeshEvent::PaidRelaySettled { .. }) {
-                                    let bridge = paid_relay_bridge.clone();
-                                    let ledger = ledger.clone();
-                                    let forward = handle_clone.clone();
-                                    tokio::spawn(async move {
-                                        match verify_paid_relay_notice(&event, bridge).await {
-                                            Ok(true) => {
-                                                intents::apply_mesh_event(&ledger, &event);
-                                                let _ = forward.emit("mesh-event", event);
-                                            }
-                                            Ok(false) => tracing::warn!(
-                                                target: "cabalmesh::paid_relay",
-                                                "unverified paid relay settlement notice ignored"
-                                            ),
-                                            Err(error) => tracing::warn!(
-                                                target: "cabalmesh::paid_relay",
-                                                %error,
-                                                "paid relay settlement verification failed"
-                                            ),
-                                        }
-                                    });
-                                    continue;
-                                }
                                 intents::apply_mesh_event(&ledger, &event);
-                                let _ = handle_clone.emit("mesh-event", event.clone());
-                                if matches!(
-                                    event,
-                                    mesh::MeshEvent::PaidRelayRequested { .. }
-                                        | mesh::MeshEvent::PaidRelayDelivered { .. }
-                                ) {
-                                    let bridge = paid_relay_bridge.clone();
-                                    let mesh = paid_relay_mesh.clone();
-                                    tokio::spawn(async move {
-                                        if let Err(error) =
-                                            handle_paid_relay_event(event, bridge, mesh).await
-                                        {
-                                            tracing::warn!(
-                                                target: "cabalmesh::paid_relay",
-                                                %error,
-                                                "paid relay event rejected"
-                                            );
-                                        }
-                                    });
-                                }
+                                let _ = handle_clone.emit("mesh-event", event);
                             }
                         });
 
@@ -332,10 +310,12 @@ pub fn run() {
                             ble: ble.clone(),
                             ble_transport: ble_transport.clone(),
                             agent: Arc::new(SharkAgent::new(None)),
+                            intent_chat: Arc::new(intent_chat::IntentChatParser::new(None)),
                             matcher: Arc::new(MatchAgent::new(None)),
-                            zk_handler: Arc::new(ZKHandler::new(None)),
                             ollama: ollama_state,
                             bridge,
+                            guardian: guardian_service.clone(),
+                            guardian_approvals: guardian_approvals.clone(),
                             relay_bytes,
                         });
 
@@ -356,10 +336,12 @@ pub fn run() {
                             ble,
                             ble_transport,
                             agent: Arc::new(SharkAgent::new(None)),
+                            intent_chat: Arc::new(intent_chat::IntentChatParser::new(None)),
                             matcher: Arc::new(MatchAgent::new(None)),
-                            zk_handler: Arc::new(ZKHandler::new(None)),
                             ollama: ollama_state,
                             bridge,
+                            guardian: guardian_service,
+                            guardian_approvals,
                             relay_bytes: Arc::new(AtomicU64::new(0)),
                         });
                     }
@@ -378,25 +360,12 @@ pub fn run() {
             commands::session_status,
             commands::enter_mesh,
             commands::mesh_snapshot,
-            commands::relay_reward_summary,
             commands::subscribe_mesh_log,
             commands::list_nearby_nodes,
             commands::ble_status,
-            commands::market_modules,
-            commands::module_purchase_quote,
-            commands::module_deals,
-            commands::buy_module_listing,
-            commands::release_module_deal,
-            commands::request_module_refund,
-            commands::refund_module_deal,
-            commands::module_listing_status,
-            commands::approve_module_listing,
-            commands::create_module_listing,
-            commands::cancel_module_listing,
             commands::list_intents,
             commands::intent_form_options,
-            commands::intent_affordability,
-            commands::propose_intent,
+            commands::parse_intent_chat,
             commands::preview_intent,
             commands::broadcast_intent,
             commands::intent_detail,
@@ -405,18 +374,31 @@ pub fn run() {
             commands::cancel_intent,
             commands::intent_proof,
             commands::vault_assets,
-            commands::vault_modules,
-            commands::module_loadout,
-            commands::equip_module,
-            commands::unequip_module,
             commands::vault_identities,
             commands::vault_keys,
-            commands::vault_status,
-            commands::unlock_vault,
-            commands::lock_vault,
-            commands::wallet_backup_status,
-            commands::reveal_wallet_key,
-            commands::restore_wallet_key,
+            commands::security_status,
+            commands::security_unlock,
+            commands::security_enable_passphrase,
+            commands::security_disable_passphrase,
+            commands::vault_export_key,
+            commands::vault_import_key,
+            commands::guardian_candidates,
+            commands::guardian_status,
+            commands::guardian_enroll,
+            commands::guardian_request_unlock,
+            commands::guardian_approve_unlock,
+            commands::guardian_deny_unlock,
+            commands::market_listings,
+            commands::market_buy,
+            commands::market_list_module,
+            commands::market_release_deal,
+            commands::market_refund_deal,
+            commands::market_my_deals,
+            commands::vault_modules,
+            commands::vault_loadout,
+            commands::vault_equip_module,
+            commands::vault_unequip_module,
+            commands::vault_redeem_module,
             commands::profile_summary,
             commands::set_offline_mode,
         ])
@@ -436,99 +418,4 @@ pub fn run() {
             }
             let _ = (app, event);
         });
-}
-
-async fn verify_paid_relay_notice(
-    event: &mesh::MeshEvent,
-    bridge: Arc<Mutex<BlockchainBridge>>,
-) -> Result<bool, Box<dyn std::error::Error>> {
-    let mesh::MeshEvent::PaidRelaySettled { settlement } = event else {
-        return Ok(false);
-    };
-    let writer = {
-        let bridge = bridge.lock().await;
-        bridge.relay_settlement_writer()?
-    };
-    let Some(writer) = writer else {
-        return Ok(false);
-    };
-    writer.verify_settlement_notice(settlement).await
-}
-
-/// Runs the one-relay protocol without holding the wallet mutex over RPC I/O.
-/// Every topic subscriber sees each envelope, but only the wallet named for
-/// that role can sign or submit the next step.
-async fn handle_paid_relay_event(
-    event: mesh::MeshEvent,
-    bridge: Arc<Mutex<BlockchainBridge>>,
-    mesh: mesh_handle::MeshHandle,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let writer = {
-        let bridge = bridge.lock().await;
-        bridge.relay_settlement_writer()?
-    };
-    let Some(writer) = writer else {
-        return Ok(());
-    };
-
-    match event {
-        mesh::MeshEvent::PaidRelayRequested { request } => {
-            let named_relayer = request
-                .relayers
-                .first()
-                .and_then(|address| address.parse::<alloy::primitives::Address>().ok());
-            if named_relayer != Some(writer.operator()) {
-                return Ok(());
-            }
-            let maximum = request.authorization.maximum_charge_navax;
-            let route = vec![
-                request.authorization.sender.clone(),
-                request.relayers[0].clone(),
-                request.authorization.recipient.clone(),
-            ];
-            let delivery = writer.sign_relay_delivery(request).await?;
-            mesh.publish(mesh::PrivacyIntent {
-                intent_type: "paid_relay_delivery".into(),
-                payload: serde_json::to_string(&delivery)?,
-                encrypted: false,
-                relay_path: route,
-                relay_fee: Some(format!("{maximum} nAVAX MAX")),
-            })
-            .await?;
-        }
-        mesh::MeshEvent::PaidRelayDelivered { delivery } => {
-            let recipient = delivery
-                .request
-                .authorization
-                .recipient
-                .parse::<alloy::primitives::Address>()
-                .ok();
-            if recipient != Some(writer.operator()) {
-                return Ok(());
-            }
-            let relayer = delivery
-                .request
-                .relayers
-                .first()
-                .cloned()
-                .ok_or("paid relay delivery has no relay")?;
-            let route = vec![
-                delivery.request.authorization.sender.clone(),
-                relayer,
-                delivery.request.authorization.recipient.clone(),
-            ];
-            let maximum = delivery.request.authorization.maximum_charge_navax;
-            let (settlement, _) = writer.acknowledge_and_settle(delivery).await?;
-            mesh.publish(mesh::PrivacyIntent {
-                intent_type: "paid_relay_settled".into(),
-                payload: serde_json::to_string(&settlement)?,
-                encrypted: false,
-                relay_path: route,
-                relay_fee: Some(format!("{maximum} nAVAX MAX")),
-            })
-            .await?;
-        }
-        _ => {}
-    }
-    Ok(())
 }

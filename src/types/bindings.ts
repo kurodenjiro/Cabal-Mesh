@@ -9,6 +9,12 @@
  */
 export type AppError = { "kind": "not_ready", "detail": { subsystem: string, } } | { "kind": "unsupported", "detail": { feature: string, } } | { "kind": "mesh_offline" } | { "kind": "invalid_intent", "detail": { field: string, reason: InvalidReason, } } | { "kind": "chain", "detail": { retryable: boolean, } } | { "kind": "vault_locked" } | { "kind": "too_many_subscriptions", "detail": { limit: number, } } | { "kind": "internal" };
 
+/**
+ * A Marketplace listing, always backed by a real CabalMeshVoucher tokenId
+ * the seller owns on-chain (enforced by the contract itself at list time).
+ */
+export type AssetListingView = { id: number, seller: string, description: string, priceWei: string, priceAvax: string, tokenId: number, };
+
 export type AssetOption = { name: string, 
 /**
  * Three-letter tag the board shows beside the name.
@@ -25,7 +31,7 @@ tag: string, decimals: number,
 available: string | null, };
 
 /**
- * What HOME diagnostics show about the offline plane.
+ * What the nodes screen shows about the offline plane.
  *
  * Every field is a measurement. There is no "signal strength" and no
  * "distance": the radio reports neither, and the app requests no location
@@ -79,9 +85,24 @@ relayed: bigint,
 suppressed: bigint, offline: boolean, };
 
 /**
+ * A Marketplace deal (real on-chain state: Active/Released/Refunded) —
+ * the real "someone is transacting on this listing" signal.
+ */
+export type DealView = { 
+/**
+ * u32 — see [`AssetListingView::id`]'s comment for why.
+ */
+dealId: number, buyer: string, seller: string, tokenId: number, amountAvax: string, status: string, role: string, };
+
+/**
  * Delta direction. Domain matches `StatBlock`'s `deltaTone`.
  */
 export type DeltaTone = "up" | "down" | "neutral";
+
+/**
+ * One slot's currently equipped module.
+ */
+export type EquippedSlot = { slot: number, tokenId: number, };
 
 /**
  * Why an intent failed. A variant rather than a message, so the UI can render
@@ -95,50 +116,44 @@ export type FailureReason = "no_route" | "node_failure" | "condition_unmet" | "s
 export type FormOptions = { actions: Array<string>, assets: Array<AssetOption>, conditions: Array<string>, modes: Array<ModeOption>, privacyLevels: Array<string>, };
 
 /**
- * Exact fixed-point affordability feedback for the compose screen.
+ * A nearby node the user could pick as a guardian.
  */
-export type IntentAffordability = { status: IntentAffordabilityStatus, 
+export type GuardianCandidate = { 
 /**
- * Canonical known balance. Absent means unknown, never zero-by-default.
+ * Full peer id — opaque to the UI, round-tripped back verbatim to
+ * `guardian_enroll`. Never shown; `label` is what renders.
  */
-available: string | null, 
+peerId: string, 
 /**
- * Exact amount missing when `status` is `shortfall`.
+ * Truncated for display, e.g. `7F3A…C2E1`.
  */
-shortfall: string | null, };
+label: string, hops: number, };
 
 /**
- * Whether the selected amount fits inside the latest known balance.
+ * Who accepted an enrollment invitation, and who did not answer.
  */
-export type IntentAffordabilityStatus = "unknown" | "invalid_amount" | "affordable" | "shortfall";
+export type GuardianEnrollResult = { enrolled: Array<string>, noReply: Array<string>, };
 
 /**
- * One model proposal rendered without carrying the original intent text.
+ * What `SECURITY` shows about the guardian scheme, in both roles this
+ * device can play.
  */
-export type IntentChip = { field: IntentFieldView, 
+export type GuardianStatus = { enrolled: boolean, guardianCount: number, threshold: number, 
 /**
- * Absent means the model did not infer this field. It is not a default.
+ * How many other owners this device holds a share for.
  */
-value: string | null, };
+holdingFor: number, };
 
 /**
- * Buyer-independent result shown by the conversational compose screen.
+ * Payload for the `guardian-unlock-request` event: this device's own tag
+ * matched someone's unlock broadcast and a human needs to decide.
  *
- * The original phrase is deliberately absent: IPC returns only structured
- * candidate fields, and neither this value nor its errors can leak financial
- * text into logs.
+ * `from` is a truncated peer id for display only — never the durable
+ * identity of whoever is asking, because there is no durable identity to
+ * show. It is exactly as anonymous to this screen as the mesh itself keeps
+ * everyone by default.
  */
-export type IntentComposition = { status: IntentCompositionStatus, modelVersion: string, 
-/**
- * Canonical fields for a validated result, partial fields for a safe
- * clarification result, and absent for runtime/refusal failures.
- */
-fields: IntentFields | null, chips: Array<IntentChip>, missing: Array<IntentFieldView>, };
-
-/**
- * Outcome of one bounded local-model invocation.
- */
-export type IntentCompositionStatus = "validated" | "needs_clarification" | "unavailable" | "timed_out" | "malformed_output" | "refused";
+export type GuardianUnlockPrompt = { id: number, from: string, };
 
 /**
  * Everything the detail screen renders.
@@ -166,11 +181,6 @@ settleBlocked: string | null,
 canCancel: boolean, };
 
 /**
- * Stable names for the six conversational intent chips.
- */
-export type IntentFieldView = "action" | "asset" | "condition" | "amount" | "mode" | "privacy";
-
-/**
  * The compose form's fields, exactly as the screen holds them.
  *
  * One type rather than seven parameters on two commands. That is what makes
@@ -192,11 +202,6 @@ export type IntentFilter = "ACTIVE" | "PENDING" | "HISTORY";
  * What the confirm dialog renders.
  */
 export type IntentPreview = { rows: Array<ReviewRow>, 
-/**
- * Present only when the sender explicitly selected and funded-route
- * capable three-wallet path. Estimated/pending rewards never appear here.
- */
-relayCharge: RelayChargePreview | null, 
 /**
  * The dialog's closing line, chosen by whether this will broadcast now.
  */
@@ -248,18 +253,6 @@ elapsed: string, };
  */
 export type InvalidReason = "missing" | "malformed" | "out_of_range" | "too_precise" | "insufficient_funds";
 
-export type LoadoutSlotView = { slot: ModuleSlot, module: ModuleView | null, 
-/**
- * Present only after a downstream verifier actually honors the effect.
- * Tickets 14–16 will populate this; ticket 09 deliberately returns none.
- */
-activeEffect: string | null, };
-
-/**
- * Whether a node loadout is live chain evidence or display-only history.
- */
-export type LoadoutVerificationStatus = "verified" | "cached" | "chain_unavailable" | "collection_unavailable";
-
 /**
  * One rendered terminal line.
  *
@@ -288,103 +281,20 @@ uptime: string, connected: boolean, stats: Array<StatTile>, };
 
 export type ModeOption = { label: string, description: string, };
 
-export type ModuleAssetClass = "MODULE" | "STANDING_BADGE";
-
-export type ModuleDealActionView = { operation: ModuleDealOperationView, txHash: string | null, deal: ModuleDealView, };
-
-export type ModuleDealCatalog = { status: ModuleDealCatalogStatus, verifiedBlock: string | null, observedAt: string | null, deals: Array<ModuleDealView>, };
-
-export type ModuleDealCatalogStatus = "available" | "deployment_unavailable" | "chain_unavailable";
-
-export type ModuleDealOperationView = "purchase_confirmed" | "release_confirmed" | "refund_requested" | "refund_confirmed";
-
-export type ModuleDealReleaseAuthorityView = "buyer_now" | "anyone_after_deadline" | "anyone_now" | "settled";
-
-export type ModuleDealRoleView = "buyer" | "seller";
-
-export type ModuleDealStatusView = "active" | "released" | "refunded";
-
-export type ModuleDealView = { verifiedBlock: string, observedAt: string, dealId: string, buyer: string, seller: string, role: ModuleDealRoleView, amountWei: string, amountAvax: string, status: ModuleDealStatusView, autoReleaseAt: string, refundRequested: boolean, currentOwner: string, releaseAuthority: ModuleDealReleaseAuthorityView, canRelease: boolean, canRequestRefund: boolean, canRefund: boolean, module: ModuleView, };
-
-export type ModuleEffectType = "NONE" | "RELAY_REWARD_BPS" | "PRIVACY_HOP_INCREASE" | "GATEWAY_LICENSE";
-
-export type ModuleInventory = { status: ModuleInventoryStatus, modules: Array<ModuleView>, };
-
 /**
- * Whether the canonical module collection can be queried by this build.
+ * The `NODE LOADOUT` panel's data: what's equipped, and the multiplier it
+ * actually produces right now.
  */
-export type ModuleInventoryStatus = "available" | "unavailable";
-
-export type ModuleListingActionView = { state: ModuleListingStateView, operation: ModuleListingOperationView, txHash: string | null, };
-
+export type ModuleLoadout = { equipped: Array<EquippedSlot>, 
 /**
- * Approval already accepted by the canonical module collection.
+ * Computed fresh from on-chain ownership on every call — see
+ * `BlockchainBridge::get_relay_multiplier`'s docs for why this is
+ * never cached.
  */
-export type ModuleListingApprovalView = "token" | "blanket";
+multiplier: number, };
 
 /**
- * Why an owned token cannot enter the canonical module market.
- */
-export type ModuleListingIneligibleReason = "soulbound" | "revoked" | "incompatible" | "marketplace_disabled";
-
-/**
- * Mutation claim whose effect was observed again at an accepted chain head.
- */
-export type ModuleListingOperationView = "none" | "approval_confirmed" | "listing_confirmed" | "listing_cancelled" | "deal_rules_active";
-
-/**
- * Accepted state that controls every listing affordance in module detail.
- */
-export type ModuleListingStateView = { "status": "deployment_unavailable" } | { "status": "chain_unavailable" } | { "status": "missing_or_burned", verifiedBlock: string, } | { "status": "not_owner", verifiedBlock: string, owner: string, } | { "status": "equipped", verifiedBlock: string, slot: ModuleSlot, } | { "status": "ineligible", verifiedBlock: string, reason: ModuleListingIneligibleReason, } | { "status": "approval_required", verifiedBlock: string, } | { "status": "ready", verifiedBlock: string, approval: ModuleListingApprovalView, } | { "status": "listed", verifiedBlock: string, listing: OwnedModuleListingView, } | { "status": "stale_listing", verifiedBlock: string, listing: OwnedModuleListingView, } | { "status": "deal_rules_active", verifiedBlock: string, };
-
-/**
- * Accepted-head module catalog and the entries deliberately omitted from it.
- */
-export type ModuleMarketCatalog = { status: ModuleMarketStatus, verifiedBlock: string | null, listings: Array<ModuleMarketListing>, staleListings: number, malformedMetadata: number, };
-
-/**
- * One currently buyable canonical module listing.
- */
-export type ModuleMarketListing = { listingId: string, seller: string, priceWei: string, priceAvax: string, module: ModuleView, standing: SellerStandingView, };
-
-/**
- * Buyer-visible state of the canonical module catalog.
- */
-export type ModuleMarketStatus = "available" | "deployment_unavailable" | "rpc_failure";
-
-/**
- * Exact accepted-state purchase confirmation. Network fee is an estimate at
- * the quoted block; listing value, balance, and required total remain integer
- * wei text across IPC.
- */
-export type ModulePurchaseQuoteView = { verifiedBlock: string, buyer: string, listingId: string, seller: string, priceWei: string, priceAvax: string, estimatedNetworkFeeWei: string | null, estimatedNetworkFeeAvax: string | null, estimatedTotalWei: string | null, estimatedTotalAvax: string | null, balanceWei: string, module: ModuleView, };
-
-export type ModulePurchaseStateView = { "status": "deployment_unavailable" } | { "status": "chain_unavailable" } | { "status": "inactive", verifiedBlock: string, } | { "status": "self_purchase", verifiedBlock: string, } | { "status": "stale_listing", verifiedBlock: string, } | { "status": "insufficient_funds", quote: ModulePurchaseQuoteView, shortfallWei: string, shortfallAvax: string, } | { "status": "ready", quote: ModulePurchaseQuoteView, };
-
-export type ModuleRarity = "COMMON" | "RARE" | "EPIC" | "LEGENDARY";
-
-export type ModuleSlot = "NONE" | "RADIO" | "CRYPTO" | "POWER";
-
-/**
- * One authentic token, rendered only from canonical on-chain structured data.
- */
-export type ModuleView = { tokenId: string, contract: string, owner: string, moduleId: string, provenanceHash: string, displayName: string, assetClass: ModuleAssetClass, slot: ModuleSlot, rarity: ModuleRarity, effectType: ModuleEffectType, primaryEffectValue: number, secondaryEffectValue: number, effect: string, artworkUri: string, artworkDigest: string, schemaVersion: number, mintedBy: string, soulbound: boolean, revoked: boolean, };
-
-/**
- * On-chain node loadout plus an explicit freshness classification.
- */
-export type NodeLoadout = { status: LoadoutVerificationStatus, operator: string | null, contract: string | null, 
-/**
- * Decimal string so block heights never cross IPC as lossy JS numbers.
- */
-verifiedBlock: string | null, verifiedAt: string | null, slots: Array<LoadoutSlotView>, 
-/**
- * A receipt hash is present only on the response to a confirmed mutation.
- */
-mutationTxHash: string | null, };
-
-/**
- * A peer, as HOME diagnostics show it.
+ * A peer, as the nodes screen shows it.
  *
  * **No distance.** A libp2p peer has an identifier and an address, not
  * coordinates, and this app requests no location permission — asking for one
@@ -412,17 +322,6 @@ x: number, y: number,
  * Milliseconds, also seeded, so the field does not pulse in unison.
  */
 pulseMs: number, };
-
-/**
- * One seller-owned listing, preserving identifiers and price as decimal text.
- */
-export type OwnedModuleListingView = { listingId: string, tokenId: string, collection: string, seller: string, priceWei: string, priceAvax: string, };
-
-/**
- * The two remote operator wallets for the narrow paid route. The sender is
- * always the current vault wallet and cannot be supplied over IPC.
- */
-export type PaidRelayRouteFields = { relayer: string, recipient: string, };
 
 /**
  * What the profile screen shows.
@@ -473,38 +372,23 @@ route: Array<string>,
 filledAt: string | null, };
 
 /**
- * Exact sender-facing authorization. `maximum_charge_navax` is sent back on
- * confirm and recomputed before funding, so a stale dialog cannot authorize a
- * different debit.
- */
-export type RelayChargePreview = { rows: Array<ReviewRow>, maximumChargeNavax: string, maximumChargeAvax: string, fundingTransactionGasEstimateAvax: string, chainId: string, contract: string, };
-
-export type RelayRewardStatusView = "available" | "deployment_unavailable" | "chain_unavailable";
-
-/**
- * Accepted contract accounting for the current wallet. Pending routes and the
- * legacy byte-rate estimate have no route into either amount.
- */
-export type RelayRewardSummaryView = { status: RelayRewardStatusView, settledEarningsAvax: string | null, withdrawableCreditAvax: string | null, verifiedBlock: string | null, };
-
-/**
  * One row of the confirm dialog.
  */
 export type ReviewRow = { key: string, value: string, };
 
 /**
- * Exact reason a public standing value cannot be claimed.
+ * Current state of the vault's unlock method, for the startup gate and the
+ * `SECURITY` screen.
  */
-export type SellerStandingUnknownReason = "unconfigured" | "unavailable" | "identity_mismatch" | "stale" | "unfinalized" | "conflicting_providers" | "malformed";
-
+export type SecurityStatus = { 
 /**
- * Independently verified public seller standing or an explicit absence.
+ * True only while the vault is passphrase-protected and no correct
+ * passphrase has been supplied yet this session. The frontend gates
+ * entry to the app on this field, not on `passphraseEnabled` alone —
+ * `passphraseEnabled` stays true even seconds after a successful
+ * unlock, when `locked` has already gone false.
  */
-export type SellerStandingView = { "status": "verified", 
-/**
- * Decimal text keeps the public count exact across IPC.
- */
-value: string, verifiedBlock: string, providerCount: number, evidenceAtMs: string, } | { "status": "unknown", reason: SellerStandingUnknownReason, };
+locked: boolean, passphraseEnabled: boolean, };
 
 /**
  * What the splash screen needs to decide what it is offering.
@@ -579,34 +463,32 @@ tag: string, name: string, amount: string,
 detail: string | null, };
 
 /**
- * Whether the vault can be opened yet, and whether one exists at all.
+ * A voucher NFT owned by a given wallet (used by the Redeem page, and by
+ * `VAULT → MODULES`).
  */
-export type VaultStatusView = { "status": "uninitialized" } | { "status": "locked" } | { "status": "unlocked" };
-
+export type VoucherView = { 
 /**
- * What supplying a passphrase did.
+ * u32 — see [`AssetListingView::id`]'s comment for why.
  */
-export type VaultUnlockView = { "status": "unlocked" } | { "status": "wrong_secret" } | { "status": "rate_limited", retryInSeconds: bigint, } | { "status": "unusable" } | { "status": "device_binding_unavailable" };
-
+tokenId: number, voucherType: string, description: string, owner: string, 
 /**
- * Whether this device can still get back into the current wallet.
+ * The address that originally minted this voucher (proof-of-possession at
+ * listing time) — lets the UI distinguish "I bought this from someone"
+ * from "I minted this myself to sell and still hold it unsold".
  */
-export type WalletBackupView = { "status": "never_exported" } | { "status": "exported", exportedAt: string, };
-
+mintedBy: string, 
 /**
- * The current wallet's key, revealed on request.
- *
- * The only shape in the IPC contract that carries key material. It exists
- * because the alternative — a wallet nobody can ever copy — is not privacy,
- * it is a wallet with a built-in expiry date.
+ * 0 = RADIO, 1 = CRYPTO, 2 = POWER, 3 = SOULBOUND. Meaningless — always
+ * `0` — on a non-module voucher (AI compute credit, etc.); `effect_bps`
+ * being `0` is what actually says "nothing to equip here."
  */
-export type WalletKeyRevealView = { address: string, 
+slot: number, 
 /**
- * 0x-prefixed secp256k1 private key.
+ * 0 = COMMON, 1 = UNCOMMON, 2 = RARE, 3 = LEGENDARY.
  */
-privateKeyHex: string, exportedAt: string, };
-
+rarity: number, 
 /**
- * What a restore attempt did.
+ * The module's effect in basis points (1800 = +18%). Zero for
+ * non-module vouchers.
  */
-export type WalletRestoreView = { "status": "replaced", address: string, } | { "status": "backup_required", address: string, } | { "status": "invalid_key" };
+effectBps: number, };

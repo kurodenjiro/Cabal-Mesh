@@ -56,7 +56,7 @@ That's it! No need to run `ollama serve` separately.
 
 Enter an intent in the command bar:
 ```
-Buy 10 SOL under $95 using Shark Mode
+Buy 10 AVAX under $25 using Shark Mode
 ```
 
 The app will automatically:

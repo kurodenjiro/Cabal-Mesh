@@ -1,37 +1,39 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Badge, Button, IconButton, Panel } from "../ds";
-import { ModalDialog } from "../shell/ModalDialog";
+import { Button, Checkbox, Field, IconButton, Input, Panel } from "../ds";
+import { errorCopy } from "../state/errorCopy";
 import type { VaultTab } from "../shell/screen";
 import type {
-  ModuleInventory,
-  ModuleListingActionView,
-  ModuleListingIneligibleReason,
-  ModuleListingStateView,
-  ModuleView,
-  NodeLoadout,
+  GuardianCandidate,
+  GuardianEnrollResult,
+  GuardianStatus,
+  ModuleLoadout,
+  SecurityStatus,
   VaultRow,
-  WalletBackupView,
-  WalletKeyRevealView,
-  WalletRestoreView,
+  VoucherView,
 } from "../types/bindings";
 
-const TABS: VaultTab[] = ["ASSETS", "MODULES", "IDENTITIES", "KEYS"];
+const SLOT_NAMES = ["RADIO", "CRYPTO", "POWER", "SOULBOUND"] as const;
+const RARITY_NAMES = ["COMMON", "UNCOMMON", "RARE", "LEGENDARY"] as const;
+/** Soulbound items (slot 3) are earned, not equipped — see the design doc's
+ * `Standing Badge` entry. */
+const EQUIPPABLE_SLOTS = [0, 1, 2] as const;
 
-const ROW_COMMAND: Record<Exclude<VaultTab, "MODULES">, string> = {
+const MIN_PASSPHRASE_LEN = 8;
+
+const TABS: VaultTab[] = ["ASSETS", "IDENTITIES", "MODULES", "KEYS"];
+
+// MODULES renders its own panel (ModulesPanel) instead of the generic
+// VaultRow list every other tab uses — its data (loadout, equip state) does
+// not fit that shape, so it has no entry here.
+const COMMAND: Partial<Record<VaultTab, string>> = {
   ASSETS: "vault_assets",
   IDENTITIES: "vault_identities",
   KEYS: "vault_keys",
 };
 
 /**
- * Assets, authentic modules, identities and key metadata.
- *
- * MODULES is deliberately a different data path from ordinary vault rows. It
- * is rebuilt from the configured canonical ERC-721 collection every time and
- * never from a pending receipt, marketplace description, legacy voucher, or
- * optimistic cache. A failed refresh therefore clears the inventory instead
- * of leaving stale ownership on screen as if the chain still confirmed it.
+ * Assets, identities and key metadata.
  *
  * **The total is masked by default and only fetched on reveal.** Sending the
  * value and hiding it in CSS would put the balance in the DOM of a screen the
@@ -42,27 +44,27 @@ const ROW_COMMAND: Record<Exclude<VaultTab, "MODULES">, string> = {
  * the values stay in the encrypted vault. That is the promise the screen's own
  * copy makes, and the command keeps it too.
  */
-export function Vault({ tab, onTabChange }: { tab: VaultTab; onTabChange: (tab: VaultTab) => void }) {
+export function Vault({
+  tab,
+  onTabChange,
+  onOpenMarket,
+}: {
+  tab: VaultTab;
+  onTabChange: (tab: VaultTab) => void;
+  onOpenMarket: () => void;
+}) {
   const [rows, setRows] = useState<VaultRow[] | null>(null);
-  const [modules, setModules] = useState<ModuleInventory | null>(null);
-  const [loadout, setLoadout] = useState<NodeLoadout | null>(null);
-  const [moduleError, setModuleError] = useState(false);
-  const [moduleBusy, setModuleBusy] = useState(false);
-  const [moduleActionBusy, setModuleActionBusy] = useState(false);
-  const [moduleActionError, setModuleActionError] = useState(false);
-  const [moduleRefresh, setModuleRefresh] = useState(0);
-  const [selectedModule, setSelectedModule] = useState<ModuleView | null>(null);
   const [revealed, setRevealed] = useState(false);
-  const [rowRefresh, setRowRefresh] = useState(0);
-
-  const refreshModules = useCallback(() => setModuleRefresh((value) => value + 1), []);
+  const [security, setSecurity] = useState<SecurityStatus | null>(null);
 
   useEffect(() => {
-    if (tab === "MODULES") return;
-
+    const command = COMMAND[tab];
+    if (!command) {
+      setRows(null);
+      return;
+    }
     let cancelled = false;
-    setRows(null);
-    invoke<VaultRow[]>(ROW_COMMAND[tab])
+    invoke<VaultRow[]>(command)
       .then((next) => {
         if (!cancelled) setRows(next);
       })
@@ -72,80 +74,21 @@ export function Vault({ tab, onTabChange }: { tab: VaultTab; onTabChange: (tab: 
     return () => {
       cancelled = true;
     };
-  }, [rowRefresh, tab]);
+  }, [tab]);
 
-  useEffect(() => {
-    if (tab !== "MODULES") return;
-
-    let cancelled = false;
-    setModuleBusy(true);
-    setModuleError(false);
-    invoke<ModuleInventory>("vault_modules")
-      .then((next) => {
-        if (cancelled) return;
-        setModules(next);
-        setSelectedModule((selected) =>
-          selected && next.modules.some((candidate) => moduleKey(candidate) === moduleKey(selected))
-            ? next.modules.find((candidate) => moduleKey(candidate) === moduleKey(selected)) ?? null
-            : null,
-        );
-      })
-      .catch(() => {
-        if (cancelled) return;
-        // The previous response is not evidence of current ownership after a
-        // failed refresh. Blank it rather than presenting a stale assertion.
-        setModules(null);
-        setSelectedModule(null);
-        setModuleError(true);
-      })
-      .finally(() => {
-        if (!cancelled) setModuleBusy(false);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [moduleRefresh, tab]);
-
-  useEffect(() => {
-    if (tab !== "MODULES") return;
-
-    let cancelled = false;
-    setLoadout(null);
-    invoke<NodeLoadout>("module_loadout")
-      .then((next) => {
-        if (!cancelled) setLoadout(next);
-      })
-      .catch(() => {
-        if (!cancelled) setLoadout(null);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [moduleRefresh, tab]);
-
-  const mutateLoadout = useCallback(async (command: "equip_module" | "unequip_module", module: ModuleView) => {
-    setModuleActionBusy(true);
-    setModuleActionError(false);
-    try {
-      const next = await invoke<NodeLoadout>(command, { tokenId: module.tokenId });
-      setLoadout(next);
-    } catch {
-      setModuleActionError(true);
-      setModuleRefresh((value) => value + 1);
-    } finally {
-      setModuleActionBusy(false);
-    }
-  }, []);
+  // Only needed on KEYS, where SECURITY lives — cheap enough not to bother
+  // gating the fetch on the tab, and it keeps the panel's state correct if
+  // the user switches to KEYS after the screen already mounted.
+  const refreshSecurity = () => {
+    invoke<SecurityStatus>("security_status")
+      .then(setSecurity)
+      .catch(() => setSecurity(null));
+  };
+  useEffect(refreshSecurity, []);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-6)", padding: "var(--space-6)" }}>
-      <div
-        role="tablist"
-        aria-label="Vault section"
-        style={{ display: "flex", flexWrap: "wrap", columnGap: "var(--space-7)", rowGap: "var(--space-2)" }}
-      >
+      <div role="tablist" aria-label="Vault section" style={{ display: "flex", gap: "var(--space-7)" }}>
         {TABS.map((name) => (
           <button
             key={name}
@@ -174,7 +117,7 @@ export function Vault({ tab, onTabChange }: { tab: VaultTab; onTabChange: (tab: 
         ))}
       </div>
 
-      {tab === "ASSETS" ? (
+      {tab === "ASSETS" && (
         <Panel label="TOTAL VALUE (PRIVATE)">
           <div
             className="cm-row"
@@ -209,21 +152,9 @@ export function Vault({ tab, onTabChange }: { tab: VaultTab; onTabChange: (tab: 
             </IconButton>
           </div>
         </Panel>
-      ) : null}
+      )}
 
-      {tab === "MODULES" ? (
-        <>
-          <NodeLoadoutPanel loadout={loadout} actionFailed={moduleActionError} />
-          <ModuleInventoryPanel
-            inventory={modules}
-            loadout={loadout}
-            busy={moduleBusy || moduleActionBusy}
-            failed={moduleError}
-            onRefresh={refreshModules}
-            onSelect={setSelectedModule}
-          />
-        </>
-      ) : (
+      {tab !== "MODULES" && (
         <Panel label={tab}>
           {rows === null ? null : rows.length === 0 ? (
             <Empty tab={tab} />
@@ -233,317 +164,93 @@ export function Vault({ tab, onTabChange }: { tab: VaultTab; onTabChange: (tab: 
         </Panel>
       )}
 
-      {tab === "KEYS" ? <KeyCustodyPanel onWalletChanged={() => setRowRefresh((value) => value + 1)} /> : null}
+      {tab === "MODULES" && <ModulesPanel onOpenMarket={onOpenMarket} />}
 
-      <ModuleDetails
-        module={selectedModule}
-        loadout={loadout}
-        busy={moduleActionBusy}
-        onMutate={mutateLoadout}
-        onClose={() => setSelectedModule(null)}
-      />
+      {tab === "KEYS" && (
+        <SecurityPanel
+          status={security}
+          onChanged={() => {
+            refreshSecurity();
+            invoke<VaultRow[]>("vault_keys").then(setRows).catch(() => {});
+          }}
+        />
+      )}
+
+      {tab === "KEYS" && <GuardianPanel />}
+
+      {tab === "KEYS" && <AdvancedPanel />}
     </div>
   );
 }
 
 /**
- * Getting the key out, and putting one back.
- *
- * Without this the wallet has a built-in expiry date: it is generated on first
- * run, never leaves the device, and a lost phone is a lost balance with no one
- * to ask. Both directions are deliberate two-step flows — the key is the
- * wallet, so neither revealing it nor overwriting it should be reachable by a
- * single mis-tap.
- *
- * **The revealed key lives in component state and nowhere else.** It is
- * dropped when the dialog closes and must be requested again, so it is not
- * sitting in a mounted component while the app is backgrounded and the OS
- * photographs the screen for its app switcher.
+ * Turns passphrase protection on or off. Lives on KEYS because that is where
+ * the `VAULT KEY` row already lives — see `docs/identity-design.md`'s
+ * `SECURITY` mock-up, which this is a first, unstyled pass at rather than a
+ * literal implementation of every row it draws (mesh unlock, guardians).
  */
-function KeyCustodyPanel({ onWalletChanged }: { onWalletChanged: () => void }) {
-  const [backup, setBackup] = useState<WalletBackupView | null>(null);
-  const [dialog, setDialog] = useState<"none" | "confirm-export" | "reveal" | "restore">("none");
-  const [revealedKey, setRevealedKey] = useState<WalletKeyRevealView | null>(null);
-  const [copied, setCopied] = useState(false);
-  const [candidate, setCandidate] = useState("");
+function SecurityPanel({ status, onChanged }: { status: SecurityStatus | null; onChanged: () => void }) {
+  const [mode, setMode] = useState<"idle" | "enabling" | "confirming-disable">("idle");
+  const [passphrase, setPassphrase] = useState("");
+  const [confirm, setConfirm] = useState("");
   const [busy, setBusy] = useState(false);
-  const [failed, setFailed] = useState(false);
-  const [restoreOutcome, setRestoreOutcome] = useState<WalletRestoreView | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  const refreshBackup = useCallback(() => {
-    invoke<WalletBackupView>("wallet_backup_status")
-      .then(setBackup)
-      .catch(() => setBackup(null));
-  }, []);
+  if (status === null) return null;
 
-  useEffect(refreshBackup, [refreshBackup]);
+  function reset() {
+    setMode("idle");
+    setPassphrase("");
+    setConfirm("");
+    setError(null);
+  }
 
-  const closeDialog = useCallback(() => {
-    setDialog("none");
-    // Not merely hidden — removed. A key held in state is a key in the DOM
-    // tree's memory for as long as this screen stays mounted.
-    setRevealedKey(null);
-    setCopied(false);
-    setCandidate("");
-    setFailed(false);
-    setRestoreOutcome(null);
-  }, []);
-
-  const reveal = useCallback(async () => {
+  async function enable() {
     setBusy(true);
-    setFailed(false);
+    setError(null);
     try {
-      setRevealedKey(await invoke<WalletKeyRevealView>("reveal_wallet_key"));
-      setDialog("reveal");
-      refreshBackup();
-    } catch {
-      setFailed(true);
+      await invoke("security_enable_passphrase", { passphrase });
+      reset();
+      onChanged();
+    } catch (failure) {
+      setError(errorCopy(failure));
     } finally {
       setBusy(false);
     }
-  }, [refreshBackup]);
+  }
 
-  const restore = useCallback(async () => {
+  async function disable() {
     setBusy(true);
-    setFailed(false);
+    setError(null);
     try {
-      const outcome = await invoke<WalletRestoreView>("restore_wallet_key", {
-        privateKeyHex: candidate,
-      });
-      setRestoreOutcome(outcome);
-      if (outcome.status === "replaced") {
-        setCandidate("");
-        refreshBackup();
-        onWalletChanged();
-      }
-    } catch {
-      setFailed(true);
-    } finally {
+      await invoke("security_disable_passphrase");
+      reset();
+      onChanged();
+    } catch (failure) {
+      setError(errorCopy(failure));
       setBusy(false);
     }
-  }, [candidate, onWalletChanged, refreshBackup]);
-
-  const copy = useCallback(async () => {
-    if (!revealedKey) return;
-    try {
-      await navigator.clipboard.writeText(revealedKey.privateKeyHex);
-      setCopied(true);
-    } catch {
-      // Clipboard access can be refused. The key is on screen either way, so
-      // this is a convenience failing, not the export failing.
-      setCopied(false);
-    }
-  }, [revealedKey]);
+  }
 
   return (
-    <>
-      <Panel
-        label="KEY CUSTODY"
-        action={
-          <Badge tone={backup?.status === "exported" ? "info" : "alert"} size="sm">
-            {backup === null ? "CHECKING" : backup.status === "exported" ? "EXPORTED" : "NEVER EXPORTED"}
-          </Badge>
-        }
-      >
-        <div style={{ padding: "var(--space-5) var(--space-6)", display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
-          <p style={{ margin: 0, fontSize: "var(--text-sm)", color: "var(--text-muted)" }}>
-            {backup?.status === "exported"
-              ? `This key was shown on ${new Date(backup.exportedAt).toLocaleDateString()}. If you kept it, this wallet survives losing this device. If you did not, it does not.`
-              : "This key has never left this device. There is no seed phrase and no reset: lose the device and the wallet goes with it."}
-          </p>
-
-          {failed && dialog === "none" ? (
-            <ListingCopy title="KEY UNAVAILABLE" body="The vault would not open. Nothing was revealed or changed." alert />
-          ) : null}
-
-          <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--space-3)" }}>
-            <Button
-              type="button"
-              tone="primary"
-              size="md"
-              className="cm-touch"
-              disabled={busy}
-              onClick={() => setDialog("confirm-export")}
-            >
-              EXPORT KEY
-            </Button>
-            <Button
-              type="button"
-              tone="ghost"
-              size="md"
-              className="cm-touch"
-              disabled={busy}
-              onClick={() => setDialog("restore")}
-            >
-              RESTORE FROM KEY
-            </Button>
-          </div>
-        </div>
-      </Panel>
-
-      <ModalDialog
-        open={dialog === "confirm-export"}
-        title="SHOW THE PRIVATE KEY?"
-        onClose={busy ? () => undefined : closeDialog}
-        footer={
-          <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "flex-end", gap: "var(--space-3)" }}>
-            <Button type="button" tone="ghost" size="md" className="cm-touch" disabled={busy} onClick={closeDialog}>
-              CANCEL
-            </Button>
-            <Button type="button" tone="primary" size="md" className="cm-touch" disabled={busy} onClick={reveal}>
-              {busy ? "READING VAULT" : "SHOW IT"}
-            </Button>
-          </div>
-        }
-      >
-        <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
-          <ListingCopy
-            title="ANYONE HOLDING THIS KEY HOLDS THIS WALLET"
-            body="It is not a password and it cannot be changed. Whoever reads it can spend every asset in this wallet, on any device, forever."
-            alert
-          />
-          <ListingCopy
-            title="BEFORE YOU CONTINUE"
-            body="Make sure nobody can see this screen and nothing is recording it. Keep the key somewhere only you can reach — not a chat, not a photo library, not a note that syncs."
-          />
-        </div>
-      </ModalDialog>
-
-      <ModalDialog
-        open={dialog === "reveal"}
-        title="PRIVATE KEY"
-        onClose={closeDialog}
-        footer={
-          <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "flex-end", gap: "var(--space-3)" }}>
-            <Button type="button" tone="ghost" size="md" className="cm-touch" onClick={copy}>
-              {copied ? "COPIED" : "COPY"}
-            </Button>
-            <Button type="button" tone="primary" size="md" className="cm-touch" onClick={closeDialog}>
-              DONE
-            </Button>
-          </div>
-        }
-      >
-        {revealedKey ? (
-          <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-5)" }}>
-            <DetailField label="ADDRESS" value={revealedKey.address} />
-            <DetailField label="PRIVATE KEY" value={revealedKey.privateKeyHex} />
-            <ListingCopy
-              title="THIS IS THE ONLY BACKUP"
-              body="Storing it is the whole point; storing it somewhere readable by anything else defeats it. This app will not show a reminder and cannot recover it for you."
-              alert
-            />
-          </div>
-        ) : null}
-      </ModalDialog>
-
-      <ModalDialog
-        open={dialog === "restore"}
-        title="RESTORE FROM A KEY"
-        onClose={busy ? () => undefined : closeDialog}
-        footer={
-          <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "flex-end", gap: "var(--space-3)" }}>
-            <Button type="button" tone="ghost" size="md" className="cm-touch" disabled={busy} onClick={closeDialog}>
-              CLOSE
-            </Button>
-            <Button
-              type="button"
-              tone="primary"
-              size="md"
-              className="cm-touch"
-              disabled={busy || candidate.trim().length === 0}
-              onClick={restore}
-            >
-              {busy ? "RESTORING" : "REPLACE THIS WALLET"}
-            </Button>
-          </div>
-        }
-      >
-        <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-5)" }}>
-          <ListingCopy
-            title="THIS REPLACES THE WALLET ON THIS DEVICE"
-            body="The current wallet is removed from this device. If you have not exported its key first, whatever it holds becomes unreachable."
-            alert
-          />
-
-          <label style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
-            <span style={listingLabelStyle}>PRIVATE KEY</span>
-            <input
-              type="password"
-              autoComplete="off"
-              spellCheck={false}
-              autoCapitalize="none"
-              value={candidate}
-              disabled={busy}
-              placeholder="0x…"
-              onChange={(event) => setCandidate(event.currentTarget.value)}
+    <Panel label="SECURITY">
+      <div style={{ padding: "var(--space-6)", display: "flex", flexDirection: "column", gap: "var(--space-6)" }}>
+        <div
+          className="cm-row"
+          style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "var(--space-5)" }}
+        >
+          <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
+            <span
               style={{
-                minHeight: "var(--control-min-height)",
-                border: "var(--border-hairline-style)",
-                background: "var(--surface-sunken)",
+                fontFamily: "var(--type-heading-family)",
+                fontSize: "var(--text-sm)",
+                letterSpacing: "var(--type-heading-tracking)",
                 color: "var(--text-primary)",
-                fontFamily: "var(--type-data-family)",
-                fontSize: "var(--text-base)",
-                padding: "var(--space-3) var(--space-4)",
               }}
-            />
-            <span style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)" }}>
-              A 64-character hexadecimal key, with or without its 0x prefix.
+            >
+              PASSPHRASE UNLOCK
             </span>
-          </label>
-
-          {failed ? (
-            <ListingCopy title="RESTORE NOT COMPLETED" body="The vault could not be written. The current wallet is unchanged." alert />
-          ) : null}
-
-          {restoreOutcome?.status === "invalid_key" ? (
-            <ListingCopy title="NOT A PRIVATE KEY" body="Nothing was changed. Check for a missing character or a copied address in place of a key." alert />
-          ) : restoreOutcome?.status === "backup_required" ? (
-            <ListingCopy
-              title="EXPORT THE CURRENT WALLET FIRST"
-              body={`${restoreOutcome.address} has never been shown to anyone. Replacing it now would destroy it. Close this, export it, then come back.`}
-              alert
-            />
-          ) : restoreOutcome?.status === "replaced" ? (
-            <ListingCopy title="WALLET RESTORED" body={`This device now holds ${restoreOutcome.address}. Export it to make it recoverable from here too.`} />
-          ) : null}
-        </div>
-      </ModalDialog>
-    </>
-  );
-}
-
-function NodeLoadoutPanel({ loadout, actionFailed }: { loadout: NodeLoadout | null; actionFailed: boolean }) {
-  const state = loadoutStatus(loadout);
-
-  return (
-    <Panel
-      label="NODE LOADOUT"
-      action={<Badge tone={state.tone} size="sm">{state.label}</Badge>}
-    >
-      {actionFailed ? (
-        <ModuleNotice
-          title="LOADOUT CHANGE NOT CONFIRMED"
-          body="Accepted chain state did not confirm that change. The loadout was refreshed without optimistic state."
-        />
-      ) : null}
-
-      {loadout === null ? (
-        <ModuleNotice title="VERIFYING NODE LOADOUT" body="Reading ownership and slot bindings from one chain head." />
-      ) : loadout.status === "collection_unavailable" ? (
-        <ModuleNotice
-          title="CANONICAL COLLECTION UNAVAILABLE"
-          body="No reviewed module collection is configured, so this node has no authentic loadout."
-        />
-      ) : loadout.status === "chain_unavailable" ? (
-        <ModuleNotice
-          title="CHAIN AND CACHE UNAVAILABLE"
-          body="No currently verified loadout or matching prior snapshot can be shown."
-        />
-      ) : (
-        <div>
-          <div style={{ padding: "var(--space-4) var(--space-6)", borderTop: "var(--border-hairline-style)" }}>
-            <div
+            <span
               style={{
                 fontFamily: "var(--type-label-family)",
                 fontSize: "var(--text-2xs)",
@@ -551,673 +258,97 @@ function NodeLoadoutPanel({ loadout, actionFailed }: { loadout: NodeLoadout | nu
                 color: "var(--text-muted)",
               }}
             >
-              NODE OPERATOR
-            </div>
-            <div
-              style={{
-                marginTop: "var(--space-2)",
-                fontFamily: "var(--type-data-family)",
-                fontSize: "var(--text-xs)",
-                color: "var(--text-primary)",
-                overflowWrap: "anywhere",
-              }}
-            >
-              {loadout.operator}
-            </div>
+              {status.passphraseEnabled ? "ENABLED — REQUIRED EVERY LAUNCH" : "OFF — DEFAULT"}
+            </span>
           </div>
 
-          {loadout.slots.map((slot) => (
-            <div
-              key={slot.slot}
-              className="cm-row"
-              style={{
-                display: "grid",
-                gridTemplateColumns: "minmax(4.5rem, 0.4fr) minmax(0, 1fr)",
-                gap: "var(--space-5)",
-                alignItems: "center",
-              }}
-            >
-              <span
-                style={{
-                  fontFamily: "var(--type-label-family)",
-                  fontSize: "var(--text-xs)",
-                  letterSpacing: "var(--tracking-widest)",
-                  color: "var(--text-secondary)",
-                }}
+          {status.passphraseEnabled ? (
+            mode === "confirming-disable" ? (
+              <div style={{ display: "flex", gap: "var(--space-4)" }}>
+                <Button tone="ghost" size="sm" className="cm-touch" disabled={busy} onClick={reset}>
+                  CANCEL
+                </Button>
+                <Button tone="danger" size="sm" className="cm-touch" disabled={busy} onClick={() => void disable()}>
+                  {busy ? "REMOVING…" : "CONFIRM"}
+                </Button>
+              </div>
+            ) : (
+              <Button
+                tone="ghost"
+                size="sm"
+                className="cm-touch"
+                onClick={() => setMode("confirming-disable")}
               >
-                {slot.slot}
-              </span>
-              <span style={{ minWidth: 0 }}>
-                <span
-                  style={{
-                    display: "block",
-                    fontFamily: "var(--type-heading-family)",
-                    fontSize: "var(--text-sm)",
-                    color: slot.module ? "var(--text-primary)" : "var(--text-muted)",
-                    overflowWrap: "anywhere",
-                  }}
-                >
-                  {slot.module?.displayName ?? "EMPTY"}
-                </span>
-                <span
-                  style={{
-                    display: "block",
-                    marginTop: "var(--space-1)",
-                    fontFamily: "var(--type-label-family)",
-                    fontSize: "var(--text-2xs)",
-                    letterSpacing: "var(--tracking-wider)",
-                    color: "var(--text-muted)",
-                  }}
-                >
-                  {slot.activeEffect ?? "NO ACTIVE VERIFIED EFFECT"}
-                </span>
-              </span>
-            </div>
-          ))}
-
-          <div
-            style={{
-              padding: "var(--space-4) var(--space-6)",
-              borderTop: "var(--border-hairline-style)",
-              fontSize: "var(--text-sm)",
-              color: "var(--text-muted)",
-            }}
-          >
-            {loadout.status === "cached"
-              ? `Cached from accepted block ${loadout.verifiedBlock ?? "unknown"}. Display only — not effect eligibility proof.`
-              : `Verified at accepted block ${loadout.verifiedBlock ?? "unknown"}. Runtime effects remain inactive until their verifier is implemented.`}
-            {loadout.mutationTxHash ? ` Confirmed transaction ${loadout.mutationTxHash}.` : ""}
-          </div>
-        </div>
-      )}
-    </Panel>
-  );
-}
-
-function ModuleInventoryPanel({
-  inventory,
-  loadout,
-  busy,
-  failed,
-  onRefresh,
-  onSelect,
-}: {
-  inventory: ModuleInventory | null;
-  loadout: NodeLoadout | null;
-  busy: boolean;
-  failed: boolean;
-  onRefresh: () => void;
-  onSelect: (module: ModuleView) => void;
-}) {
-  return (
-    <Panel
-      label="MODULES"
-      action={
-        <Button
-          type="button"
-          tone="ghost"
-          size="sm"
-          className="cm-touch"
-          disabled={busy}
-          aria-label="Refresh confirmed module ownership"
-          onClick={onRefresh}
-        >
-          {busy ? "READING CHAIN" : "REFRESH"}
-        </Button>
-      }
-    >
-      {failed ? (
-        <ModuleNotice
-          title="OWNERSHIP UNCONFIRMED"
-          body="The canonical chain read failed. No cached modules are shown. Retry when the network is reachable."
-        />
-      ) : inventory === null ? (
-        <ModuleNotice title="READING CANONICAL OWNERSHIP" body="Only confirmed tokens will appear here." />
-      ) : inventory.status === "unavailable" ? (
-        <ModuleNotice
-          title="CANONICAL COLLECTION UNAVAILABLE"
-          body="This network has no reviewed CabalMeshModules deployment. Legacy vouchers are never treated as authentic modules."
-        />
-      ) : inventory.modules.length === 0 ? (
-        <ModuleNotice
-          title="NO CONFIRMED MODULES"
-          body="Current on-chain ownership is empty. Pending, failed, replaced, or reorganized mints are not holdings."
-        />
-      ) : (
-        inventory.modules.map((module) => (
-          <ModuleRow
-            key={moduleKey(module)}
-            module={module}
-            equipped={isEquipped(loadout, module)}
-            onSelect={() => onSelect(module)}
-          />
-        ))
-      )}
-    </Panel>
-  );
-}
-
-function ModuleRow({ module, equipped, onSelect }: { module: ModuleView; equipped: boolean; onSelect: () => void }) {
-  return (
-    <button
-      type="button"
-      className="cm-touch cm-row"
-      onClick={onSelect}
-      aria-label={`Inspect ${module.displayName}, token ${module.tokenId}`}
-      style={{
-        width: "100%",
-        display: "flex",
-        alignItems: "center",
-        gap: "var(--space-5)",
-        padding: "var(--space-5) var(--space-6)",
-        border: "none",
-        borderTop: "var(--border-hairline-style)",
-        background: "none",
-        color: "inherit",
-        cursor: "pointer",
-        textAlign: "left",
-      }}
-    >
-      <span
-        aria-hidden="true"
-        style={{
-          fontFamily: "var(--type-label-family)",
-          fontSize: "var(--text-2xs)",
-          letterSpacing: "var(--tracking-wider)",
-          color: "var(--text-muted)",
-          border: "var(--border-hairline-style)",
-          padding: "var(--space-2) var(--space-3)",
-        }}
-      >
-        {module.assetClass === "STANDING_BADGE" ? "BADGE" : module.slot}
-      </span>
-
-      <div style={{ minWidth: 0, flex: 1, display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
-        <span
-          style={{
-            fontFamily: "var(--type-heading-family)",
-            fontSize: "var(--text-sm)",
-            letterSpacing: "var(--type-heading-tracking)",
-            color: "var(--text-primary)",
-            overflowWrap: "anywhere",
-          }}
-        >
-          {module.displayName}
-        </span>
-        <span
-          style={{
-            fontFamily: "var(--type-label-family)",
-            fontSize: "var(--text-2xs)",
-            letterSpacing: "var(--tracking-widest)",
-            color: module.revoked ? "var(--accent-blood-red)" : "var(--text-muted)",
-            overflowWrap: "anywhere",
-          }}
-        >
-          {module.effect}
-        </span>
-      </div>
-
-      <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "var(--space-2)" }}>
-        {equipped ? <Badge tone="info" size="sm">EQUIPPED</Badge> : null}
-        {module.soulbound ? <Badge tone="alert" size="sm">SOULBOUND</Badge> : null}
-        <span
-          style={{
-            fontFamily: "var(--type-data-family)",
-            fontSize: "var(--text-2xs)",
-            letterSpacing: "var(--type-data-tracking)",
-            color: "var(--text-secondary)",
-          }}
-        >
-          #{module.tokenId}
-        </span>
-      </div>
-    </button>
-  );
-}
-
-function ModuleDetails({
-  module,
-  loadout,
-  busy,
-  onMutate,
-  onClose,
-}: {
-  module: ModuleView | null;
-  loadout: NodeLoadout | null;
-  busy: boolean;
-  onMutate: (command: "equip_module" | "unequip_module", module: ModuleView) => void;
-  onClose: () => void;
-}) {
-  const [listing, setListing] = useState<ModuleListingActionView | null>(null);
-  const [listingBusy, setListingBusy] = useState<"status" | "approval" | "listing" | "cancel" | null>(null);
-  const [listingFailed, setListingFailed] = useState(false);
-  const [priceAvax, setPriceAvax] = useState("");
-  const action = module ? loadoutAction(loadout, module) : null;
-  const selectedKey = module ? moduleKey(module) : null;
-
-  useEffect(() => {
-    if (!module || !selectedKey) {
-      setListing(null);
-      setListingBusy(null);
-      setListingFailed(false);
-      setPriceAvax("");
-      return;
-    }
-
-    let cancelled = false;
-    setListing(null);
-    setListingBusy("status");
-    setListingFailed(false);
-    setPriceAvax("");
-    invoke<ModuleListingActionView>("module_listing_status", { tokenId: module.tokenId })
-      .then((next) => {
-        if (!cancelled) setListing(next);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setListing({ state: { status: "chain_unavailable" }, operation: "none", txHash: null });
-        setListingFailed(true);
-      })
-      .finally(() => {
-        if (!cancelled) setListingBusy(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [loadout?.mutationTxHash, selectedKey]);
-
-  const refreshListingAfterFailure = useCallback(async (tokenId: string) => {
-    try {
-      const current = await invoke<ModuleListingActionView>("module_listing_status", { tokenId });
-      setListing(current);
-    } catch {
-      setListing({ state: { status: "chain_unavailable" }, operation: "none", txHash: null });
-    }
-  }, []);
-
-  const mutateListing = useCallback(async (
-    command: "approve_module_listing" | "create_module_listing" | "cancel_module_listing",
-    pending: "approval" | "listing" | "cancel",
-    args: Record<string, string>,
-  ) => {
-    if (!module || listingBusy !== null) return;
-    setListingBusy(pending);
-    setListingFailed(false);
-    try {
-      const next = await invoke<ModuleListingActionView>(command, args);
-      setListing(next);
-    } catch {
-      // Never retain a pre-submit state as evidence after a rejection,
-      // replacement, timeout, reorg, or revert. Re-read accepted state.
-      setListingFailed(true);
-      await refreshListingAfterFailure(module.tokenId);
-    } finally {
-      setListingBusy(null);
-    }
-  }, [listingBusy, module, refreshListingAfterFailure]);
-
-  const listingBlocksEquip =
-    listing === null ||
-    listing.state.status === "chain_unavailable" ||
-    listing.state.status === "listed" ||
-    listing.state.status === "stale_listing" ||
-    listing.state.status === "deal_rules_active";
-  const loadoutDisabled = busy || Boolean(action?.disabled) ||
-    (action?.command === "equip_module" && listingBlocksEquip);
-  const loadoutLabel = action?.command === "equip_module"
-    ? listing === null
-      ? "VERIFY MARKET STATE"
-      : listing.state.status === "chain_unavailable"
-        ? "MARKET STATE UNAVAILABLE"
-        : listing.state.status === "listed" || listing.state.status === "stale_listing"
-          ? "CANCEL LISTING FIRST"
-          : listing.state.status === "deal_rules_active"
-            ? "DEAL RULES ACTIVE"
-            : action.label
-    : action?.label;
-
-  return (
-    <ModalDialog
-      open={module !== null}
-      title={module?.displayName ?? "MODULE DETAILS"}
-      onClose={listingBusy !== null && listingBusy !== "status" ? () => undefined : onClose}
-      footer={
-        <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "flex-end", gap: "var(--space-3)" }}>
-          {module && action ? (
-            <Button
-              type="button"
-              tone="ghost"
-              size="md"
-              className="cm-touch"
-              disabled={loadoutDisabled || listingBusy !== null}
-              onClick={() => onMutate(action.command, module)}
-            >
-              {busy ? "CONFIRMING CHAIN" : loadoutLabel}
+                REMOVE
+              </Button>
+            )
+          ) : mode === "enabling" ? null : (
+            <Button tone="secondary" size="sm" className="cm-touch" onClick={() => setMode("enabling")}>
+              SET UP
             </Button>
-          ) : null}
-          <Button
-            type="button"
-            tone="primary"
-            size="md"
-            className="cm-touch"
-            disabled={listingBusy !== null && listingBusy !== "status"}
-            onClick={onClose}
-          >
-            CLOSE
-          </Button>
+          )}
         </div>
-      }
-    >
-      {module ? (
-        <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-5)" }}>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--space-3)" }}>
-            <Badge tone="loud" size="sm">{moduleAssetClassLabel(module)}</Badge>
-            <Badge tone="info" size="sm">{module.rarity}</Badge>
-            {module.soulbound ? <Badge tone="alert" size="sm">SOULBOUND · NON-TRANSFERABLE</Badge> : null}
-            {module.revoked ? <Badge tone="alert" size="sm">REVOKED</Badge> : null}
-          </div>
 
-          <DetailField label="TOKEN ID" value={`#${module.tokenId}`} />
-          <DetailField label="CONTRACT" value={module.contract} />
-          <DetailField label="CURRENT OWNER" value={module.owner} />
-          <DetailField label="MINT PROVENANCE" value={module.provenanceHash} />
-          <DetailField label="MODULE ID" value={module.moduleId} />
-          <DetailField label="MINTED BY" value={module.mintedBy} />
-          <DetailField label="SLOT" value={module.slot} />
-          <DetailField label="RARITY" value={module.rarity} />
-          <DetailField label="EFFECT TYPE" value={module.effectType.replace(/_/g, " ")} />
-          <DetailField label="EFFECT" value={module.effect} />
-          <DetailField
-            label="NODE LOADOUT"
-            value={
-              isEquipped(loadout, module)
-                ? loadout?.status === "verified"
-                  ? "ON-CHAIN EQUIPPED"
-                  : "CACHED EQUIPPED · NOT CURRENT PROOF"
-                : "NOT EQUIPPED"
-            }
-          />
-          <DetailField label="ACTIVE VERIFIED EFFECT" value="NONE IN THIS BUILD" />
-          <DetailField
-            label="EFFECT PARAMETERS"
-            value={`PRIMARY ${module.primaryEffectValue} · SECONDARY ${module.secondaryEffectValue}`}
-          />
-          <DetailField label="ARTWORK URI" value={module.artworkUri} />
-          <DetailField label="ARTWORK DIGEST" value={module.artworkDigest} />
-          <DetailField label="SCHEMA" value={`CABALMESH V${module.schemaVersion}`} />
-          <ModuleListingControls
-            listing={listing}
-            busy={listingBusy}
-            failed={listingFailed}
-            priceAvax={priceAvax}
-            onPriceChange={setPriceAvax}
-            onApprove={() => mutateListing(
-              "approve_module_listing",
-              "approval",
-              { tokenId: module.tokenId },
-            )}
-            onList={() => mutateListing(
-              "create_module_listing",
-              "listing",
-              { tokenId: module.tokenId, priceAvax },
-            )}
-            onCancel={(listingId) => mutateListing(
-              "cancel_module_listing",
-              "cancel",
-              { tokenId: module.tokenId, listingId },
-            )}
-          />
-        </div>
-      ) : null}
-    </ModalDialog>
-  );
-}
-
-function ModuleListingControls({
-  listing,
-  busy,
-  failed,
-  priceAvax,
-  onPriceChange,
-  onApprove,
-  onList,
-  onCancel,
-}: {
-  listing: ModuleListingActionView | null;
-  busy: "status" | "approval" | "listing" | "cancel" | null;
-  failed: boolean;
-  priceAvax: string;
-  onPriceChange: (value: string) => void;
-  onApprove: () => void;
-  onList: () => void;
-  onCancel: (listingId: string) => void;
-}) {
-  const state = listing?.state ?? null;
-  const canPrice = state?.status === "approval_required" || state?.status === "ready";
-  const validPrice = isExactPositiveAvax(priceAvax);
-  const confirmed = listingOperationCopy(listing);
-
-  return (
-    <section
-      aria-label="Module marketplace listing"
-      style={{
-        border: "var(--border-hairline-style)",
-        padding: "var(--space-5)",
-        display: "flex",
-        flexDirection: "column",
-        gap: "var(--space-4)",
-      }}
-    >
-      <div style={{ display: "flex", justifyContent: "space-between", gap: "var(--space-4)", flexWrap: "wrap" }}>
-        <span style={listingLabelStyle}>SELL THIS MODULE</span>
-        <Badge tone={state?.status === "listed" ? "success" : "quiet"} size="sm">
-          {listingStateLabel(state)}
-        </Badge>
-      </div>
-
-      {busy === "status" || state === null ? (
-        <ListingCopy title="VERIFYING MARKET STATE" body="Reading owner, loadout, approval, and duplicate guard from one accepted chain head." />
-      ) : null}
-
-      {failed ? (
-        <ListingCopy title="OPERATION NOT CONFIRMED" body="The transaction was rejected, replaced, timed out, reorganized, or reverted. Accepted state was refreshed; no optimistic listing is shown." alert />
-      ) : null}
-
-      {confirmed ? <ListingCopy title={confirmed.title} body={confirmed.body} /> : null}
-
-      {state?.status === "deployment_unavailable" ? (
-        <ListingCopy title="CANONICAL MARKET UNAVAILABLE" body="This release has no reviewed CabalMeshModules and Marketplace deployment pair. Legacy voucher listings are not accepted." />
-      ) : state?.status === "chain_unavailable" ? (
-        <ListingCopy title="MARKET STATE UNAVAILABLE" body="Ownership and listing state could not be verified. Selling and equipping are paused until accepted state is readable." alert />
-      ) : state?.status === "missing_or_burned" ? (
-        <ListingCopy title="TOKEN DOES NOT EXIST" body="The canonical collection no longer reports this token. Burned and nonexistent tokens cannot be listed." alert />
-      ) : state?.status === "not_owner" ? (
-        <ListingCopy title="NOT CURRENT OWNER" body={`Current owner is ${state.owner}. Only that address can list this token.`} alert />
-      ) : state?.status === "equipped" ? (
-        <ListingCopy title={`UNEQUIP ${state.slot} FIRST`} body="Listing is disabled while the module is bound to the verified node loadout. Confirm the unequip transaction, then reopen this detail." />
-      ) : state?.status === "ineligible" ? (
-        <ListingCopy title="MODULE IS NOT LISTABLE" body={listingIneligibleCopy(state.reason)} alert />
-      ) : state?.status === "deal_rules_active" ? (
-        <ListingCopy title="BUYER HAS PAID" body="The listing cannot be cancelled because the token and payment are now in escrow. Release or mutually agreed refund rules govern the active deal." alert />
-      ) : state?.status === "listed" || state?.status === "stale_listing" ? (
-        <>
-          <ListingCopy
-            title={state.status === "listed" ? "ACTIVE LISTING VERIFIED" : "LISTING NO LONGER BUYABLE"}
-            body={state.status === "listed"
-              ? `Listing #${state.listing.listingId} offers token #${state.listing.tokenId} for exactly ${state.listing.priceAvax} AVAX (${state.listing.priceWei} wei).`
-              : "The duplicate guard still references this listing, but current ownership, eligibility, loadout, or approval no longer backs a purchase. Withdraw it before trying again."}
-          />
-          <Button
-            type="button"
-            tone="ghost"
-            size="md"
-            className="cm-touch"
-            disabled={busy !== null}
-            onClick={() => onCancel(state.listing.listingId)}
-          >
-            {busy === "cancel" ? "CANCELLATION PENDING" : "CANCEL UNSOLD LISTING"}
-          </Button>
-        </>
-      ) : null}
-
-      {canPrice ? (
-        <label style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
-          <span style={listingLabelStyle}>EXACT PRICE · AVAX</span>
-          <input
-            type="text"
-            inputMode="decimal"
-            autoComplete="off"
-            spellCheck={false}
-            value={priceAvax}
-            disabled={busy !== null}
-            aria-invalid={priceAvax.length > 0 && !validPrice}
-            placeholder="2.40"
-            onChange={(event) => onPriceChange(event.currentTarget.value)}
-            style={{
-              minHeight: "var(--control-min-height)",
-              border: "var(--border-hairline-style)",
-              borderColor: priceAvax.length > 0 && !validPrice ? "var(--accent-blood-red)" : undefined,
-              background: "var(--surface-sunken)",
-              color: "var(--text-primary)",
-              fontFamily: "var(--type-data-family)",
-              fontSize: "var(--text-base)",
-              padding: "var(--space-3) var(--space-4)",
+        {!status.passphraseEnabled && mode === "enabling" && (
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              void enable();
             }}
-          />
-          <span style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)" }}>
-            Decimal text only, up to 18 places. The value is never converted through JavaScript floating point.
+            style={{ display: "flex", flexDirection: "column", gap: "var(--space-5)" }}
+          >
+            <Field label="NEW PASSPHRASE" htmlFor="security-passphrase" hint={`AT LEAST ${MIN_PASSPHRASE_LEN} CHARACTERS`}>
+              <Input
+                id="security-passphrase"
+                type="password"
+                autoComplete="new-password"
+                autoFocus
+                value={passphrase}
+                onChange={(event) => setPassphrase((event.target as HTMLInputElement).value)}
+              />
+            </Field>
+            <Field label="CONFIRM PASSPHRASE" htmlFor="security-passphrase-confirm" error={error ?? undefined}>
+              <Input
+                id="security-passphrase-confirm"
+                type="password"
+                autoComplete="new-password"
+                invalid={!!error}
+                value={confirm}
+                onChange={(event) => setConfirm((event.target as HTMLInputElement).value)}
+              />
+            </Field>
+            <div style={{ display: "flex", gap: "var(--space-4)" }}>
+              <Button tone="ghost" size="md" className="cm-touch" disabled={busy} onClick={reset}>
+                CANCEL
+              </Button>
+              <Button
+                tone="primary"
+                size="md"
+                className="cm-touch"
+                type="submit"
+                disabled={busy || passphrase.length < MIN_PASSPHRASE_LEN || passphrase !== confirm}
+              >
+                {busy ? "SETTING UP…" : "CONFIRM"}
+              </Button>
+            </div>
+          </form>
+        )}
+
+        {error && mode !== "enabling" && (
+          <span
+            style={{
+              fontFamily: "var(--type-label-family)",
+              fontSize: "var(--text-2xs)",
+              letterSpacing: "var(--tracking-wide)",
+              color: "var(--accent-blood-red)",
+              textTransform: "uppercase",
+            }}
+          >
+            {error}
           </span>
-        </label>
-      ) : null}
-
-      {state?.status === "approval_required" ? (
-        <Button type="button" tone="ghost" size="md" className="cm-touch" disabled={busy !== null} onClick={onApprove}>
-          {busy === "approval" ? "APPROVAL PENDING" : "1 · APPROVE MARKETPLACE"}
-        </Button>
-      ) : state?.status === "ready" ? (
-        <>
-          <ListingCopy
-            title={state.approval === "blanket" ? "BLANKET APPROVAL CONFIRMED" : "TOKEN APPROVAL CONFIRMED"}
-            body={state.approval === "blanket"
-              ? "The existing operator approval is accepted; no redundant approval transaction will be sent."
-              : "Approval is accepted. Listing remains a separate transaction."}
-          />
-          <Button type="button" tone="primary" size="md" className="cm-touch" disabled={busy !== null || !validPrice} onClick={onList}>
-            {busy === "listing" ? "LISTING PENDING" : "2 · LIST FOR EXACT PRICE"}
-          </Button>
-        </>
-      ) : null}
-    </section>
-  );
-}
-
-const listingLabelStyle = {
-  fontFamily: "var(--type-label-family)",
-  fontSize: "var(--text-2xs)",
-  letterSpacing: "var(--tracking-widest)",
-  color: "var(--text-secondary)",
-} as const;
-
-function ListingCopy({ title, body, alert = false }: { title: string; body: string; alert?: boolean }) {
-  return (
-    <div role={alert ? "alert" : undefined} style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
-      <span style={{ ...listingLabelStyle, color: alert ? "var(--accent-blood-red)" : "var(--text-primary)" }}>{title}</span>
-      <span style={{ fontSize: "var(--text-sm)", color: "var(--text-muted)", overflowWrap: "anywhere" }}>{body}</span>
-    </div>
-  );
-}
-
-function listingStateLabel(state: ModuleListingStateView | null): string {
-  switch (state?.status) {
-    case "approval_required": return "APPROVAL REQUIRED";
-    case "ready": return "READY TO LIST";
-    case "listed": return "LISTED";
-    case "stale_listing": return "STALE LISTING";
-    case "equipped": return "EQUIPPED";
-    case "deal_rules_active": return "IN DEAL";
-    case "deployment_unavailable": return "NO DEPLOYMENT";
-    case "chain_unavailable": return "CHAIN UNAVAILABLE";
-    case "missing_or_burned": return "MISSING";
-    case "not_owner": return "NOT OWNER";
-    case "ineligible": return "INELIGIBLE";
-    default: return "VERIFYING";
-  }
-}
-
-function listingIneligibleCopy(reason: ModuleListingIneligibleReason): string {
-  switch (reason) {
-    case "soulbound": return "Soulbound standing badges are non-transferable and cannot enter the market.";
-    case "revoked": return "The issuer revoked this module, so it cannot enter a new official marketplace sale.";
-    case "incompatible": return "This token does not match the reviewed CabalMesh module schema, slot, and effect rules.";
-    case "marketplace_disabled": return "The canonical collection currently marks this token as marketplace-ineligible.";
-  }
-}
-
-function listingOperationCopy(action: ModuleListingActionView | null): { title: string; body: string } | null {
-  switch (action?.operation) {
-    case "approval_confirmed":
-      return { title: "APPROVAL CONFIRMED", body: `Accepted chain state confirmed marketplace approval${action.txHash ? ` in ${action.txHash}` : ""}.` };
-    case "listing_confirmed":
-      return { title: "LISTING CONFIRMED", body: `Accepted chain state confirmed the exact token and price${action.txHash ? ` in ${action.txHash}` : ""}.` };
-    case "listing_cancelled":
-      return { title: "CANCELLATION CONFIRMED", body: `The active listing is gone from accepted state${action.txHash ? ` after ${action.txHash}` : ""}. This module can be equipped or listed again.` };
-    case "deal_rules_active":
-      return { title: "DEAL RULES TOOK OVER", body: "A buyer paid before cancellation confirmed. The listing was not cancelled." };
-    default:
-      return null;
-  }
-}
-
-export function isExactPositiveAvax(value: string): boolean {
-  if (!/^[0-9]+(?:\.[0-9]{1,18})?$/.test(value)) return false;
-  return value.replace(".", "").split("").some((digit) => digit !== "0");
-}
-
-function DetailField({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="cm-row" style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
-      <span
-        style={{
-          fontFamily: "var(--type-label-family)",
-          fontSize: "var(--text-2xs)",
-          letterSpacing: "var(--tracking-widest)",
-          color: "var(--text-muted)",
-        }}
-      >
-        {label}
-      </span>
-      <span
-        style={{
-          fontFamily: "var(--type-data-family)",
-          fontSize: "var(--text-sm)",
-          letterSpacing: "var(--type-data-tracking)",
-          color: "var(--text-primary)",
-          overflowWrap: "anywhere",
-        }}
-      >
-        {value}
-      </span>
-    </div>
-  );
-}
-
-function ModuleNotice({ title, body }: { title: string; body: string }) {
-  return (
-    <div style={{ padding: "var(--space-9) var(--space-6)", textAlign: "center" }}>
-      <div
-        style={{
-          fontFamily: "var(--type-label-family)",
-          fontSize: "var(--text-2xs)",
-          letterSpacing: "var(--tracking-widest)",
-          color: "var(--text-primary)",
-        }}
-      >
-        {title}
+        )}
       </div>
-      <p style={{ margin: "var(--space-4) 0 0", fontSize: "var(--text-base)", color: "var(--text-muted)" }}>
-        {body}
-      </p>
-    </div>
+    </Panel>
   );
 }
 
@@ -1286,7 +417,7 @@ function Row({ row }: { row: VaultRow }) {
   );
 }
 
-function Empty({ tab }: { tab: Exclude<VaultTab, "MODULES"> }) {
+function Empty({ tab }: { tab: VaultTab }) {
   const body =
     tab === "ASSETS"
       ? "Nothing is held. Nothing is stored."
@@ -1301,58 +432,672 @@ function Empty({ tab }: { tab: Exclude<VaultTab, "MODULES"> }) {
   );
 }
 
-function moduleKey(module: ModuleView): string {
-  return `${module.contract}:${module.tokenId}`;
-}
+/**
+ * Export the current wallet's raw key, or replace the wallet with one
+ * derived from a supplied key. See `docs/identity-design.md`, "Where things
+ * stand": until this existed, losing the device meant losing the wallet with
+ * no recourse — `get_primary_private_key` / `import_identity` already lived
+ * in the bridge but nothing on the command surface reached them.
+ */
+function AdvancedPanel() {
+  const [open, setOpen] = useState(false);
 
-function moduleAssetClassLabel(module: ModuleView): string {
-  return module.assetClass.replace(/_/g, " ");
-}
-
-function loadoutStatus(loadout: NodeLoadout | null): {
-  label: string;
-  tone: "quiet" | "info" | "alert";
-} {
-  switch (loadout?.status) {
-    case "verified":
-      return { label: `VERIFIED · #${loadout.verifiedBlock ?? "?"}`, tone: "info" };
-    case "cached":
-      return { label: "CACHED · DISPLAY ONLY", tone: "alert" };
-    case "chain_unavailable":
-      return { label: "CHAIN UNAVAILABLE", tone: "alert" };
-    case "collection_unavailable":
-      return { label: "COLLECTION UNAVAILABLE", tone: "alert" };
-    default:
-      return { label: "READING CHAIN", tone: "quiet" };
-  }
-}
-
-function isEquipped(loadout: NodeLoadout | null, module: ModuleView): boolean {
-  return Boolean(
-    loadout?.slots.some(
-      (slot) => slot.module !== null && moduleKey(slot.module) === moduleKey(module),
-    ),
+  return (
+    <Panel label="ADVANCED">
+      <div style={{ padding: "var(--space-6)", display: "flex", flexDirection: "column", gap: "var(--space-6)" }}>
+        {!open ? (
+          <Button tone="ghost" size="sm" className="cm-touch" onClick={() => setOpen(true)}>
+            EXPORT · IMPORT · RESTORE
+          </Button>
+        ) : (
+          <>
+            <ExportKey />
+            <ImportKey />
+            <RestoreFromGuardians />
+          </>
+        )}
+      </div>
+    </Panel>
   );
 }
 
-type LoadoutAction = {
-  command: "equip_module" | "unequip_module";
-  label: string;
-  disabled: boolean;
-};
+function ExportKey() {
+  const [key, setKey] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
-function loadoutAction(loadout: NodeLoadout | null, module: ModuleView): LoadoutAction | null {
-  if (module.assetClass !== "MODULE" || module.revoked || module.slot === "NONE") return null;
-  if (loadout?.status !== "verified") {
-    return { command: "equip_module", label: "VERIFY CHAIN TO CHANGE", disabled: true };
+  async function reveal() {
+    setBusy(true);
+    setError(null);
+    try {
+      setKey(await invoke<string>("vault_export_key"));
+    } catch (failure) {
+      setError(errorCopy(failure));
+    } finally {
+      setBusy(false);
+    }
   }
 
-  const slot = loadout.slots.find((candidate) => candidate.slot === module.slot);
-  if (slot?.module && moduleKey(slot.module) === moduleKey(module)) {
-    return { command: "unequip_module", label: `UNEQUIP ${module.slot}`, disabled: false };
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
+      <span
+        style={{
+          fontFamily: "var(--type-heading-family)",
+          fontSize: "var(--text-sm)",
+          letterSpacing: "var(--type-heading-tracking)",
+          color: "var(--text-primary)",
+        }}
+      >
+        EXPORT KEY
+      </span>
+
+      {key === null ? (
+        <>
+          <span
+            style={{
+              fontFamily: "var(--type-label-family)",
+              fontSize: "var(--text-2xs)",
+              letterSpacing: "var(--tracking-wide)",
+              color: "var(--text-muted)",
+            }}
+          >
+            Anyone holding this key spends everything it controls.
+          </span>
+          <Button tone="secondary" size="sm" className="cm-touch" disabled={busy} onClick={() => void reveal()}>
+            {busy ? "REVEALING…" : "REVEAL"}
+          </Button>
+        </>
+      ) : (
+        <div
+          className="cm-row"
+          style={{
+            padding: "var(--space-4)",
+            fontFamily: "var(--type-data-family)",
+            fontSize: "var(--text-2xs)",
+            letterSpacing: "var(--type-data-tracking)",
+            color: "var(--text-primary)",
+            wordBreak: "break-all",
+          }}
+        >
+          {key}
+        </div>
+      )}
+
+      {error && (
+        <span
+          style={{
+            fontFamily: "var(--type-label-family)",
+            fontSize: "var(--text-2xs)",
+            letterSpacing: "var(--tracking-wide)",
+            color: "var(--accent-blood-red)",
+            textTransform: "uppercase",
+          }}
+        >
+          {error}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function ImportKey() {
+  const [confirming, setConfirming] = useState(false);
+  const [privateKey, setPrivateKey] = useState("");
+  const [alias, setAlias] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState(false);
+
+  async function submit() {
+    setBusy(true);
+    setError(null);
+    try {
+      await invoke("vault_import_key", { privateKeyHex: privateKey, alias: alias || "Imported Fox", emoji: "🦊" });
+      setPrivateKey("");
+      setAlias("");
+      setConfirming(false);
+      setDone(true);
+    } catch (failure) {
+      setError(errorCopy(failure));
+    } finally {
+      setBusy(false);
+    }
   }
-  if (slot?.module) {
-    return { command: "equip_module", label: `UNEQUIP ${module.slot} FIRST`, disabled: true };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
+      <span
+        style={{
+          fontFamily: "var(--type-heading-family)",
+          fontSize: "var(--text-sm)",
+          letterSpacing: "var(--type-heading-tracking)",
+          color: "var(--text-primary)",
+        }}
+      >
+        IMPORT KEY
+      </span>
+      <span
+        style={{
+          fontFamily: "var(--type-label-family)",
+          fontSize: "var(--text-2xs)",
+          letterSpacing: "var(--tracking-wide)",
+          color: "var(--text-muted)",
+        }}
+      >
+        This replaces the current vault. Export its key first if it holds anything.
+      </span>
+
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (confirming) void submit();
+          else setConfirming(true);
+        }}
+        style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}
+      >
+        <Field label="PRIVATE KEY" htmlFor="import-private-key">
+          <Input
+            id="import-private-key"
+            type="password"
+            autoComplete="off"
+            value={privateKey}
+            onChange={(event) => {
+              setPrivateKey((event.target as HTMLInputElement).value);
+              setConfirming(false);
+            }}
+          />
+        </Field>
+        <Field label="ALIAS (OPTIONAL)" htmlFor="import-alias" error={error ?? undefined}>
+          <Input
+            id="import-alias"
+            autoComplete="off"
+            value={alias}
+            onChange={(event) => {
+              setAlias((event.target as HTMLInputElement).value);
+              setConfirming(false);
+            }}
+          />
+        </Field>
+
+        <Button
+          tone={confirming ? "danger" : "primary"}
+          size="md"
+          className="cm-touch"
+          type="submit"
+          disabled={busy || !privateKey}
+        >
+          {busy ? "IMPORTING…" : confirming ? "CONFIRM — REPLACE VAULT" : "IMPORT"}
+        </Button>
+      </form>
+
+      {done && (
+        <span
+          style={{
+            fontFamily: "var(--type-label-family)",
+            fontSize: "var(--text-2xs)",
+            letterSpacing: "var(--tracking-widest)",
+            color: "var(--text-muted)",
+            textTransform: "uppercase",
+          }}
+        >
+          Imported. Reopen VAULT to see it reflected everywhere.
+        </span>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Recovers a wallet from enrolled guardians — only meaningful on the device
+ * that originally set them up (guardian identity isn't portable across a
+ * fresh install yet, since it lives in this device's own local store rather
+ * than anywhere recoverable). Confirmed like IMPORT, for the same reason:
+ * it replaces the vault this device currently holds.
+ */
+function RestoreFromGuardians() {
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState(false);
+
+  async function restore() {
+    setBusy(true);
+    setError(null);
+    try {
+      await invoke("guardian_request_unlock");
+      setConfirming(false);
+      setDone(true);
+    } catch (failure) {
+      setError(errorCopy(failure));
+    } finally {
+      setBusy(false);
+    }
   }
-  return { command: "equip_module", label: `EQUIP ${module.slot}`, disabled: false };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
+      <span
+        style={{
+          fontFamily: "var(--type-heading-family)",
+          fontSize: "var(--text-sm)",
+          letterSpacing: "var(--type-heading-tracking)",
+          color: "var(--text-primary)",
+        }}
+      >
+        RESTORE FROM GUARDIANS
+      </span>
+      <span
+        style={{
+          fontFamily: "var(--type-label-family)",
+          fontSize: "var(--text-2xs)",
+          letterSpacing: "var(--tracking-wide)",
+          color: "var(--text-muted)",
+        }}
+      >
+        This replaces the current vault. Stand near enough of your guardians and ask them to open CabalMesh first.
+      </span>
+
+      <Button
+        tone={confirming ? "danger" : "secondary"}
+        size="md"
+        className="cm-touch"
+        disabled={busy}
+        onClick={() => (confirming ? void restore() : setConfirming(true))}
+      >
+        {busy ? "WAITING FOR GUARDIANS…" : confirming ? "CONFIRM — REPLACE VAULT" : "RESTORE"}
+      </Button>
+
+      {error && (
+        <span
+          style={{
+            fontFamily: "var(--type-label-family)",
+            fontSize: "var(--text-2xs)",
+            letterSpacing: "var(--tracking-wide)",
+            color: "var(--accent-blood-red)",
+            textTransform: "uppercase",
+          }}
+        >
+          {error}
+        </span>
+      )}
+
+      {done && (
+        <span
+          style={{
+            fontFamily: "var(--type-label-family)",
+            fontSize: "var(--text-2xs)",
+            letterSpacing: "var(--tracking-widest)",
+            color: "var(--text-muted)",
+            textTransform: "uppercase",
+          }}
+        >
+          Restored. Reopen VAULT to see it reflected everywhere.
+        </span>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Enroll guardians for mesh unlock (decision 2 in `docs/identity-design.md`)
+ * and show whether this device is currently holding a share for anyone
+ * else. Backend-complete, live over real BLE — see `guardian_loopback.rs` —
+ * but this is a first, unstyled pass at the doc's own `CHOOSE GUARDIANS`
+ * mock-up rather than a pixel match of it.
+ */
+function GuardianPanel() {
+  const [status, setStatus] = useState<GuardianStatus | null>(null);
+  const [mode, setMode] = useState<"idle" | "picking">("idle");
+  const [candidates, setCandidates] = useState<GuardianCandidate[]>([]);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [threshold, setThreshold] = useState(3);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<GuardianEnrollResult | null>(null);
+
+  const refresh = () => {
+    invoke<GuardianStatus>("guardian_status").then(setStatus).catch(() => setStatus(null));
+  };
+  useEffect(refresh, []);
+
+  async function openPicker() {
+    setMode("picking");
+    setResult(null);
+    setError(null);
+    setSelected(new Set());
+    try {
+      setCandidates(await invoke<GuardianCandidate[]>("guardian_candidates"));
+    } catch {
+      setCandidates([]);
+    }
+  }
+
+  function toggle(peerId: string) {
+    setSelected((previous) => {
+      const next = new Set(previous);
+      if (next.has(peerId)) next.delete(peerId);
+      else next.add(peerId);
+      return next;
+    });
+  }
+
+  async function confirm() {
+    setBusy(true);
+    setError(null);
+    try {
+      const outcome = await invoke<GuardianEnrollResult>("guardian_enroll", {
+        peerIds: Array.from(selected),
+        threshold,
+      });
+      setResult(outcome);
+      setMode("idle");
+      refresh();
+    } catch (failure) {
+      setError(errorCopy(failure));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (status === null) return null;
+
+  const label: CSSProperties = {
+    fontFamily: "var(--type-label-family)",
+    fontSize: "var(--text-2xs)",
+    letterSpacing: "var(--tracking-widest)",
+    color: "var(--text-muted)",
+  };
+
+  return (
+    <Panel label="GUARDIANS">
+      <div style={{ padding: "var(--space-6)", display: "flex", flexDirection: "column", gap: "var(--space-6)" }}>
+        <div
+          className="cm-row"
+          style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "var(--space-5)" }}
+        >
+          <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
+            <span
+              style={{
+                fontFamily: "var(--type-heading-family)",
+                fontSize: "var(--text-sm)",
+                letterSpacing: "var(--type-heading-tracking)",
+                color: "var(--text-primary)",
+              }}
+            >
+              MESH UNLOCK
+            </span>
+            <span style={label}>
+              {status.enrolled ? `${status.guardianCount} ENROLLED · NEED ${status.threshold}` : "OFF — NOT SET UP"}
+            </span>
+            {status.holdingFor > 0 && (
+              <span style={label}>
+                HOLDING A SHARE FOR {status.holdingFor} OTHER{status.holdingFor === 1 ? "" : "S"}
+              </span>
+            )}
+          </div>
+          {mode === "idle" && (
+            <Button tone="secondary" size="sm" className="cm-touch" onClick={() => void openPicker()}>
+              {status.enrolled ? "RE-ENROLL" : "SET UP"}
+            </Button>
+          )}
+        </div>
+
+        {mode === "picking" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-5)" }}>
+            {candidates.length === 0 ? (
+              <span style={label}>NO NODES NEARBY. MOVE CLOSER AND TRY AGAIN.</span>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
+                {candidates.map((candidate) => (
+                  <Checkbox
+                    key={candidate.peerId}
+                    label={`NODE-${candidate.label}`}
+                    description={`${candidate.hops} HOP${candidate.hops === 1 ? "" : "S"} AWAY`}
+                    checked={selected.has(candidate.peerId)}
+                    onChange={() => toggle(candidate.peerId)}
+                  />
+                ))}
+              </div>
+            )}
+
+            <Field
+              label="THRESHOLD"
+              htmlFor="guardian-threshold"
+              hint={`OF ${selected.size} SELECTED`}
+              error={error ?? undefined}
+            >
+              <Input
+                id="guardian-threshold"
+                type="number"
+                inputMode="numeric"
+                value={threshold}
+                onChange={(event) => {
+                  const next = Number((event.target as HTMLInputElement).value);
+                  if (Number.isFinite(next)) setThreshold(next);
+                }}
+              />
+            </Field>
+
+            <div style={{ display: "flex", gap: "var(--space-4)" }}>
+              <Button tone="ghost" size="md" className="cm-touch" disabled={busy} onClick={() => setMode("idle")}>
+                CANCEL
+              </Button>
+              <Button
+                tone="primary"
+                size="md"
+                className="cm-touch"
+                disabled={busy || selected.size < 2 || threshold < 2 || threshold > selected.size}
+                onClick={() => void confirm()}
+              >
+                {busy ? "SENDING…" : "INVITE"}
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {result && (
+          <span style={label}>
+            {result.enrolled.length} ACCEPTED
+            {result.noReply.length > 0 ? ` · ${result.noReply.length} DID NOT REPLY` : ""}
+          </span>
+        )}
+      </div>
+    </Panel>
+  );
+}
+
+/**
+ * `VAULT → MODULES`: the node loadout and owned modules, backed by real
+ * on-chain ownership — see `docs/intent-chat-and-modules-design.md`,
+ * decisions 0-2. The multiplier shown is computed fresh on every fetch
+ * (`BlockchainBridge::get_relay_multiplier`), never a cached local number —
+ * that is the whole fix for the vulnerability decision 0 found.
+ */
+function ModulesPanel({ onOpenMarket }: { onOpenMarket: () => void }) {
+  const [loadout, setLoadout] = useState<ModuleLoadout | null>(null);
+  const [owned, setOwned] = useState<VoucherView[] | null>(null);
+  const [busy, setBusy] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = () => {
+    invoke<ModuleLoadout>("vault_loadout").then(setLoadout).catch(() => setLoadout(null));
+    invoke<VoucherView[]>("vault_modules").then(setOwned).catch(() => setOwned([]));
+  };
+  useEffect(refresh, []);
+
+  async function equip(slot: number, tokenId: number) {
+    setBusy(tokenId);
+    setError(null);
+    try {
+      await invoke("vault_equip_module", { slot, tokenId });
+      refresh();
+    } catch (failure) {
+      setError(errorCopy(failure));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function unequip(slot: number) {
+    setBusy(-1);
+    setError(null);
+    try {
+      await invoke("vault_unequip_module", { slot });
+      refresh();
+    } catch (failure) {
+      setError(errorCopy(failure));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const label: CSSProperties = {
+    fontFamily: "var(--type-label-family)",
+    fontSize: "var(--text-2xs)",
+    letterSpacing: "var(--tracking-widest)",
+    color: "var(--text-muted)",
+  };
+
+  const equippedBySlot = new Map((loadout?.equipped ?? []).map((e) => [e.slot, e.tokenId]));
+  // Shown as-is, not filtered to "real modules": `slot`/`effectBps` of 0 is
+  // indistinguishable between an actual COMMON RADIO module worth nothing
+  // and an older non-module voucher (AI compute credit, etc.) — guessing
+  // which is which would be exactly the kind of invented distinction this
+  // screen should not make.
+  const modules = owned ?? [];
+
+  return (
+    <>
+      <Panel label="NODE LOADOUT">
+        <div style={{ padding: "var(--space-6)", display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
+          {EQUIPPABLE_SLOTS.map((slot) => {
+            const tokenId = equippedBySlot.get(slot);
+            const item = tokenId !== undefined ? (owned ?? []).find((v) => v.tokenId === tokenId) : undefined;
+            return (
+              <div
+                key={slot}
+                className="cm-row"
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: "var(--space-5)",
+                  padding: "var(--space-4) var(--space-5)",
+                }}
+              >
+                <span style={label}>{SLOT_NAMES[slot]}</span>
+                <span
+                  style={{
+                    fontFamily: "var(--type-data-family)",
+                    fontSize: "var(--text-sm)",
+                    color: item ? "var(--text-primary)" : "var(--text-disabled)",
+                  }}
+                >
+                  {item ? item.voucherType.toUpperCase() : "EMPTY"}
+                </span>
+              </div>
+            );
+          })}
+
+          <div
+            className="cm-row"
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              padding: "var(--space-4) var(--space-5)",
+              borderTop: "var(--border-hairline-style)",
+            }}
+          >
+            <span style={label}>EFFECTIVE</span>
+            <span style={{ fontFamily: "var(--type-data-family)", color: "var(--text-primary)" }}>
+              ×{(loadout?.multiplier ?? 1).toFixed(2)}
+            </span>
+          </div>
+        </div>
+      </Panel>
+
+      <Panel label={`OWNED · ${modules.length}`}>
+        <div style={{ padding: "var(--space-6)" }}>
+          <Button tone="secondary" size="sm" className="cm-touch" onClick={onOpenMarket}>
+            MARKET
+          </Button>
+        </div>
+
+        {owned === null ? null : modules.length === 0 ? (
+          <div style={{ padding: "var(--space-9) var(--space-6)", textAlign: "center" }}>
+            <span style={{ fontSize: "var(--text-base)", color: "var(--text-muted)" }}>No modules owned yet.</span>
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column" }}>
+            {modules.map((module) => {
+              const isEquipped = equippedBySlot.get(module.slot) === module.tokenId;
+              const canEquip = (EQUIPPABLE_SLOTS as readonly number[]).includes(module.slot);
+              return (
+                <div
+                  key={module.tokenId}
+                  className="cm-row"
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: "var(--space-5)",
+                    padding: "var(--space-5) var(--space-6)",
+                    borderTop: "var(--border-hairline-style)",
+                  }}
+                >
+                  <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
+                    <span style={{ fontFamily: "var(--type-heading-family)", color: "var(--text-primary)" }}>
+                      {module.voucherType}
+                    </span>
+                    <span style={label}>
+                      {SLOT_NAMES[module.slot] ?? "—"} · {RARITY_NAMES[module.rarity] ?? "—"}
+                      {module.effectBps > 0 ? ` · +${(module.effectBps / 100).toFixed(0)}%` : ""}
+                    </span>
+                  </div>
+                  {canEquip &&
+                    (isEquipped ? (
+                      <Button
+                        tone="ghost"
+                        size="sm"
+                        className="cm-touch"
+                        disabled={busy !== null}
+                        onClick={() => void unequip(module.slot)}
+                      >
+                        ● EQUIPPED
+                      </Button>
+                    ) : (
+                      <Button
+                        tone="secondary"
+                        size="sm"
+                        className="cm-touch"
+                        disabled={busy !== null}
+                        onClick={() => void equip(module.slot, module.tokenId)}
+                      >
+                        {busy === module.tokenId ? "…" : "EQUIP"}
+                      </Button>
+                    ))}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {error && (
+          <div style={{ padding: "0 var(--space-6) var(--space-6)" }}>
+            <span
+              style={{
+                fontFamily: "var(--type-label-family)",
+                fontSize: "var(--text-2xs)",
+                letterSpacing: "var(--tracking-wide)",
+                color: "var(--accent-blood-red)",
+                textTransform: "uppercase",
+              }}
+            >
+              {error}
+            </span>
+          </div>
+        )}
+      </Panel>
+    </>
+  );
 }

@@ -32,45 +32,51 @@ use std::collections::BTreeSet;
 /// The legacy desktop commands are deliberately absent: they exist only on
 /// desktop, which is the whole point of the split.
 const SHARED: &[&str] = &[
-    "unsubscribe",
-    "session_status",
-    "enter_mesh",
-    "mesh_snapshot",
-    "relay_reward_summary",
-    "subscribe_mesh_log",
-    "list_nearby_nodes",
     "ble_status",
-    "market_modules",
-    "module_purchase_quote",
-    "module_deals",
-    "buy_module_listing",
-    "release_module_deal",
-    "request_module_refund",
-    "refund_module_deal",
-    "module_listing_status",
-    "approve_module_listing",
-    "create_module_listing",
-    "cancel_module_listing",
-    "list_intents",
-    "intent_form_options",
-    "intent_affordability",
-    "propose_intent",
-    "preview_intent",
     "broadcast_intent",
-    "intent_detail",
-    "subscribe_settlement_log",
-    "settle_intent",
     "cancel_intent",
+    "enter_mesh",
+    "guardian_approve_unlock",
+    "guardian_candidates",
+    "guardian_deny_unlock",
+    "guardian_enroll",
+    "guardian_request_unlock",
+    "guardian_status",
+    "intent_detail",
+    "intent_form_options",
     "intent_proof",
-    "vault_assets",
-    "vault_modules",
-    "module_loadout",
-    "equip_module",
-    "unequip_module",
-    "vault_identities",
-    "vault_keys",
+    "list_intents",
+    "list_nearby_nodes",
+    "market_buy",
+    "market_list_module",
+    "market_listings",
+    "market_my_deals",
+    "market_refund_deal",
+    "market_release_deal",
+    "mesh_snapshot",
+    "parse_intent_chat",
+    "preview_intent",
     "profile_summary",
+    "security_disable_passphrase",
+    "security_enable_passphrase",
+    "security_status",
+    "security_unlock",
+    "session_status",
     "set_offline_mode",
+    "settle_intent",
+    "subscribe_mesh_log",
+    "subscribe_settlement_log",
+    "unsubscribe",
+    "vault_assets",
+    "vault_equip_module",
+    "vault_export_key",
+    "vault_identities",
+    "vault_import_key",
+    "vault_keys",
+    "vault_loadout",
+    "vault_modules",
+    "vault_redeem_module",
+    "vault_unequip_module",
 ];
 
 fn source() -> String {
@@ -121,9 +127,7 @@ fn there_is_exactly_one_handler_arm() {
 #[test]
 fn the_handler_registers_every_shared_command() {
     let arms = handler_arms(&source());
-    let arm = arms
-        .first()
-        .expect("there_is_exactly_one_handler_arm covers absence");
+    let arm = arms.first().expect("there_is_exactly_one_handler_arm covers absence");
 
     let missing: Vec<&str> = SHARED
         .iter()
@@ -159,11 +163,9 @@ fn the_shared_list_matches_the_acl_manifest() {
 fn the_mobile_capability_grants_every_shared_command() {
     // The third place the same name has to appear. Granting is separate from
     // registering, and missing either one fails only on a device.
-    let capability = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/capabilities/mobile.json"
-    ))
-    .expect("mobile.json is readable");
+    let capability =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/capabilities/mobile.json"))
+            .expect("mobile.json is readable");
 
     for command in SHARED {
         let permission = format!("allow-{}", command.replace('_', "-"));
@@ -181,11 +183,9 @@ fn the_desktop_capability_grants_every_shared_command() {
     // which hid drift between the two capability files behind a superset.
     // Now the grants are meant to be identical, so check desktop directly
     // rather than relying on "wider than mobile" to happen to still cover it.
-    let capability = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/capabilities/desktop.json"
-    ))
-    .expect("desktop.json is readable");
+    let capability =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/capabilities/desktop.json"))
+            .expect("desktop.json is readable");
 
     for command in SHARED {
         let permission = format!("allow-{}", command.replace('_', "-"));

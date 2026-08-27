@@ -6,21 +6,25 @@
  * raw px and hex values the adherence lint bans, and the brand forbids spring
  * physics outright.
  */
-import React, { useCallback, useState } from "react";
+import React, { useState } from "react";
 import ReactDOM from "react-dom/client";
+import { invoke } from "@tauri-apps/api/core";
 import "../ds/index";
 import { AppShell } from "../shell/AppShell";
 import { Splash } from "../screens/Splash";
 import { Unlock } from "../screens/Unlock";
 import { Home } from "../screens/Home";
-import { Market } from "../screens/Market";
+import { Nodes } from "../screens/Nodes";
 import { Intents } from "../screens/Intents";
 import { New } from "../screens/New";
 import { Detail } from "../screens/Detail";
 import { Settled } from "../screens/Settled";
 import { Vault } from "../screens/Vault";
+import { Market } from "../screens/Market";
 import { Profile } from "../screens/Profile";
+import { GuardianApproval } from "../screens/GuardianApproval";
 import type { Screen } from "../shell/screen";
+import type { SecurityStatus } from "../types/bindings";
 
 function App() {
   // Starts at splash: the app has no session until the user asks for one.
@@ -28,26 +32,52 @@ function App() {
   // does that at process startup, not on a user action — so there is nothing
   // to wait for between splash and home.
   const [screen, setScreen] = useState<Screen>({ name: "splash" });
-  // The vault gate. Every screen past this point reads keys, so none of them
-  // can render until one has been supplied — a locked vault is not a state the
-  // rest of the app has a sensible rendering for.
-  const [unlocked, setUnlocked] = useState(false);
-  const onUnlocked = useCallback(() => setUnlocked(true), []);
 
-  if (screen.name === "splash") {
-    return <Splash onEnter={() => setScreen({ name: "home" })} />;
+  // Every install defaults to passphrase protection being off, so this check
+  // is a no-op for almost everyone — see docs/identity-design.md, decision 1.
+  // It only routes to Unlock when SECURITY has actually been turned on; any
+  // failure (bootstrap still running, command unavailable) falls through to
+  // Home rather than blocking entry, matching the zero-friction default.
+  async function enter() {
+    try {
+      const status = await invoke<SecurityStatus>("security_status");
+      if (status.locked) {
+        setScreen({ name: "unlock" });
+        return;
+      }
+    } catch {
+      // Fall through to Home.
+    }
+    setScreen({ name: "home" });
   }
 
-  if (!unlocked) {
-    return <Unlock onUnlocked={onUnlocked} />;
+  // Mounted regardless of screen: a guardian approval is driven by someone
+  // else's action, not by where this device's own owner happens to be
+  // navigating.
+  if (screen.name === "splash") {
+    return (
+      <>
+        <Splash onEnter={() => void enter()} />
+        <GuardianApproval />
+      </>
+    );
+  }
+
+  if (screen.name === "unlock") {
+    return (
+      <>
+        <Unlock onUnlocked={() => setScreen({ name: "home" })} />
+        <GuardianApproval />
+      </>
+    );
   }
 
   return (
     <AppShell screen={screen} onNavigate={setScreen}>
       {screen.name === "home" ? (
         <Home />
-      ) : screen.name === "market" ? (
-        <Market />
+      ) : screen.name === "nodes" ? (
+        <Nodes />
       ) : screen.name === "intents" ? (
         <Intents
           tab={screen.tab}
@@ -64,10 +94,17 @@ function App() {
       ) : screen.name === "settled" ? (
         <Settled id={screen.id} onDone={() => setScreen({ name: "intents", tab: "HISTORY" })} />
       ) : screen.name === "vault" ? (
-        <Vault tab={screen.tab} onTabChange={(tab) => setScreen({ name: "vault", tab })} />
+        <Vault
+          tab={screen.tab}
+          onTabChange={(tab) => setScreen({ name: "vault", tab })}
+          onOpenMarket={() => setScreen({ name: "market" })}
+        />
+      ) : screen.name === "market" ? (
+        <Market />
       ) : screen.name === "profile" ? (
         <Profile onLeave={() => setScreen({ name: "splash" })} />
       ) : null}
+      <GuardianApproval />
     </AppShell>
   );
 }

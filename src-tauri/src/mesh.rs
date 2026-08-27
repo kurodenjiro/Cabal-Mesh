@@ -175,8 +175,10 @@ impl MeshNetwork {
             }
         };
 
-        let identify_config =
-            identify::Config::new("/cabalmesh/1.0.0".to_string(), local_key.public());
+        let identify_config = identify::Config::new(
+            "/cabalmesh/1.0.0".to_string(),
+            local_key.public(),
+        );
 
         let (resolver_config, resolver_opts) = resolver_settings();
 
@@ -208,11 +210,7 @@ impl MeshNetwork {
             .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(60)))
             .build();
 
-        Ok(MeshNetwork {
-            swarm,
-            topic,
-            relay_bytes: Arc::new(AtomicU64::new(0)),
-        })
+        Ok(MeshNetwork { swarm, topic, relay_bytes: Arc::new(AtomicU64::new(0)) })
     }
 
     /// The swarm event loop. Everything the mesh logs happens inside this span,
@@ -247,7 +245,9 @@ impl MeshNetwork {
                 }
             }
         } else {
-            tracing::info!("no bootstrap relays configured — discovery is limited to this network");
+            tracing::info!(
+                "no bootstrap relays configured — discovery is limited to this network"
+            );
         }
 
         // Answered from the loop rather than tracked elsewhere, so a snapshot
@@ -341,37 +341,6 @@ impl MeshNetwork {
                                                 });
                                             }
                                         }
-                                    } else if intent.intent_type == "paid_relay_request" {
-                                        if let Ok(request) = serde_json::from_str::<
-                                            crate::blockchain_bridge::PaidRelayRequestWire,
-                                        >(&intent.payload) {
-                                            tracing::info!(
-                                                route_id = %request.route_id,
-                                                "paid relay request received"
-                                            );
-                                            let _ = tx.send(MeshEvent::PaidRelayRequested { request });
-                                        }
-                                    } else if intent.intent_type == "paid_relay_delivery" {
-                                        if let Ok(delivery) = serde_json::from_str::<
-                                            crate::blockchain_bridge::PaidRelayDeliveryWire,
-                                        >(&intent.payload) {
-                                            tracing::info!(
-                                                route_id = %delivery.request.route_id,
-                                                "paid relay delivery received"
-                                            );
-                                            let _ = tx.send(MeshEvent::PaidRelayDelivered { delivery });
-                                        }
-                                    } else if intent.intent_type == "paid_relay_settled" {
-                                        if let Ok(settlement) = serde_json::from_str::<
-                                            crate::blockchain_bridge::PaidRelaySettlementWire,
-                                        >(&intent.payload) {
-                                            tracing::info!(
-                                                route_id = %settlement.route_id,
-                                                tx_hash = %settlement.settlement_tx_hash,
-                                                "paid relay settlement accepted"
-                                            );
-                                            let _ = tx.send(MeshEvent::PaidRelaySettled { settlement });
-                                        }
                                     } else if intent.intent_type == "relay_tx" {
                                         // A peer offline-signed a transaction and needs someone with
                                         // connectivity to broadcast it — never contains a private key,
@@ -463,8 +432,7 @@ impl MeshNetwork {
         }
 
         let payload = serde_json::to_vec(&intent)?;
-        match self
-            .swarm
+        match self.swarm
             .behaviour_mut()
             .gossipsub
             .publish(self.topic.clone(), payload)
@@ -474,22 +442,19 @@ impl MeshNetwork {
                 Ok(())
             }
             Err(gossipsub::PublishError::InsufficientPeers) => {
-                tracing::warn!(
-                    "⚠️  Note: No peers connected (Single-Node Mode). Intent processed locally."
-                );
+                tracing::warn!("⚠️  Note: No peers connected (Single-Node Mode). Intent processed locally.");
                 Ok(())
             }
-            Err(e) => Err(Box::new(e)),
+            Err(e) => Err(Box::new(e))
         }
     }
 
     pub fn broadcast_raw(&mut self, message: String) -> Result<(), Box<dyn Error>> {
         let payload = message.as_bytes().to_vec();
-        match self
-            .swarm
+        match self.swarm
             .behaviour_mut()
             .gossipsub
-            .publish(self.topic.clone(), payload)
+            .publish(self.topic.clone(), payload) 
         {
             Ok(_) => {
                 tracing::info!("📤 Raw message broadcasted to mesh");
@@ -499,116 +464,44 @@ impl MeshNetwork {
                 tracing::warn!("⚠️  Note: No peers connected (Single-Node Mode).");
                 Ok(())
             }
-            Err(e) => Err(Box::new(e)),
+            Err(e) => Err(Box::new(e))
         }
     }
     pub fn verify_relay_integrity(intent: &PrivacyIntent) -> bool {
-        let paid = matches!(
-            intent.intent_type.as_str(),
-            "paid_relay_request" | "paid_relay_delivery" | "paid_relay_settled"
-        );
-        if paid {
-            return intent.relay_path.len() == 3
-                && intent
-                    .relay_path
-                    .iter()
-                    .all(|participant| !participant.is_empty())
-                && intent
-                    .relay_fee
-                    .as_deref()
-                    .is_some_and(|fee| fee.ends_with(" nAVAX MAX"));
+        // Basic integrity check:
+        // 1. Relay path should not be empty (should contain at least sender)
+        // 2. Relay fee should be formatted correctly (simple check for now)
+        
+        if intent.relay_path.is_empty() {
+            tracing::error!("❌ Integrity Check Failed: Empty relay path");
+            return false;
         }
-        // Ordinary best-effort gossipsub messages have no paid route and must
-        // not invent one merely to pass a transport check.
-        intent.relay_path.is_empty() && intent.relay_fee.is_none()
+
+        if let Some(fee) = &intent.relay_fee {
+            if !fee.contains("AVAX") {
+                 tracing::warn!("⚠️  Warning: Unknown fee format: {}", fee);
+                 // We don't fail validation here for now, just warn
+            }
+        }
+
+        // In a real implementation, we would verify signatures of each hop
+        true
     }
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
 pub enum MeshEvent {
-    ListeningStarted {
-        address: String,
-    },
-    PeerDiscovered {
-        peer_id: String,
-        address: String,
-    },
-    IntentReceived {
-        intent: PrivacyIntent,
-    },
-    DealAccepted {
-        details: String,
-    },
-    SettlementComplete {
-        details: String,
-    },
-    RelayTxReceived {
-        queue_id: String,
-        raw_tx_hex: String,
-        summary: String,
-    },
-    RelayConfirmed {
-        queue_id: String,
-        status: String,
-        tx_hash: Option<String>,
-    },
-    PaidRelayRequested {
-        request: crate::blockchain_bridge::PaidRelayRequestWire,
-    },
-    PaidRelayDelivered {
-        delivery: crate::blockchain_bridge::PaidRelayDeliveryWire,
-    },
-    PaidRelaySettled {
-        settlement: crate::blockchain_bridge::PaidRelaySettlementWire,
-    },
-    ContentRequested {
-        token_id: u64,
-    },
-    ContentDelivered {
-        token_id: u64,
-        text: String,
-        signature: String,
-        signer_address: String,
-    },
+    ListeningStarted { address: String },
+    PeerDiscovered { peer_id: String, address: String },
+    IntentReceived { intent: PrivacyIntent },
+    DealAccepted { details: String },
+    SettlementComplete { details: String },
+    RelayTxReceived { queue_id: String, raw_tx_hex: String, summary: String },
+    RelayConfirmed { queue_id: String, status: String, tx_hash: Option<String> },
+    ContentRequested { token_id: u64 },
+    ContentDelivered { token_id: u64, text: String, signature: String, signer_address: String },
     /// A peer's real AVAX wallet address, learned from its "presence" broadcast
     /// (not from mDNS discovery, which only knows the ephemeral libp2p PeerID).
-    PeerIdentity {
-        peer_id: String,
-        address: String,
-    },
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn message(intent_type: &str) -> PrivacyIntent {
-        PrivacyIntent {
-            intent_type: intent_type.into(),
-            payload: "{}".into(),
-            encrypted: false,
-            relay_path: Vec::new(),
-            relay_fee: None,
-        }
-    }
-
-    #[test]
-    fn unpaid_messages_cannot_claim_a_paid_path_or_fee() {
-        let mut intent = message("intent");
-        assert!(MeshNetwork::verify_relay_integrity(&intent));
-        intent.relay_path.push("invented-hop".into());
-        assert!(!MeshNetwork::verify_relay_integrity(&intent));
-    }
-
-    #[test]
-    fn paid_messages_require_exactly_three_named_roles_and_an_explicit_maximum() {
-        let mut intent = message("paid_relay_request");
-        intent.relay_path = vec!["sender".into(), "relay".into(), "recipient".into()];
-        assert!(!MeshNetwork::verify_relay_integrity(&intent));
-        intent.relay_fee = Some("2200000 nAVAX MAX".into());
-        assert!(MeshNetwork::verify_relay_integrity(&intent));
-        intent.relay_path[1].clear();
-        assert!(!MeshNetwork::verify_relay_integrity(&intent));
-    }
+    PeerIdentity { peer_id: String, address: String },
 }

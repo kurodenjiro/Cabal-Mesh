@@ -26,23 +26,16 @@
 //! Run `cargo insta review` to inspect diffs.
 
 use cabalmesh_lib::agent::ContentAnalysis;
+use cabalmesh_lib::bindings::GuardianUnlockPrompt;
 use cabalmesh_lib::blockchain_bridge::{
     AssetListingView, CompressedAsset, ContentRecord, DealView, IdentityView, InstantSession,
-    PaidRelayDeliveryWire, PaidRelayRequestWire, PaidRelaySettlementWire, QueuedTx,
-    RelayAuthorizationWire, RelayContributionWire, RelayedTxRecord, Snapshot, TxResult,
-    VoucherView,
+    QueuedTx, RelayedTxRecord, Snapshot, TxResult, VoucherView,
 };
 use cabalmesh_lib::commands::{
-    ModuleAssetClass, ModuleDealActionView, ModuleDealOperationView,
-    ModuleDealReleaseAuthorityView, ModuleDealRoleView, ModuleDealStatusView, ModuleDealView,
-    ModuleEffectType, ModuleListingActionView, ModuleListingOperationView, ModuleListingStateView,
-    ModuleMarketCatalog, ModuleMarketListing, ModuleMarketStatus, ModulePurchaseQuoteView,
-    ModulePurchaseStateView, ModuleRarity, ModuleSlot, ModuleView, OwnedModuleListingView,
-    RelayRewardStatusView, RelayRewardSummaryView, SellerStandingView,
+    EquippedSlot, GuardianCandidate, GuardianEnrollResult, GuardianStatus, ModuleLoadout, SecurityStatus,
 };
 use cabalmesh_lib::matcher::MatchResult;
 use cabalmesh_lib::mesh::{MeshEvent, PrivacyIntent};
-use cabalmesh_lib::zk_handler::{ProofRequest, ZKProof};
 use chrono::{TimeZone, Utc};
 use serde::Serialize;
 
@@ -54,30 +47,6 @@ fn fixed_time() -> chrono::DateTime<Utc> {
 /// Serializes to pretty JSON — the shape the webview receives.
 fn shape<T: Serialize>(value: &T) -> String {
     serde_json::to_string_pretty(value).expect("boundary type must serialize")
-}
-
-fn module_fixture(owner: &str) -> ModuleView {
-    ModuleView {
-        token_id: "900719925474099312345".into(),
-        contract: "0x00000000000000000000000000000000000000a7".into(),
-        owner: owner.into(),
-        module_id: format!("0x{}", "11".repeat(32)),
-        provenance_hash: format!("0x{}", "22".repeat(32)),
-        display_name: "Relay Amplifier MK-II".into(),
-        asset_class: ModuleAssetClass::Module,
-        slot: ModuleSlot::Radio,
-        rarity: ModuleRarity::Rare,
-        effect_type: ModuleEffectType::RelayRewardBps,
-        primary_effect_value: 1_850,
-        secondary_effect_value: 0,
-        effect: "+18.50% RELAY REWARD".into(),
-        artwork_uri: "ipfs://bafybeiradioamplifiermk2".into(),
-        artwork_digest: format!("0x{}", "33".repeat(32)),
-        schema_version: 1,
-        minted_by: "0x00000000000000000000000000000000000000c9".into(),
-        soulbound: false,
-        revoked: false,
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -156,7 +125,6 @@ fn asset_listing_view_shape() {
         price_wei: "50000000000000000".into(),
         price_avax: "0.05".into(),
         token_id: 42,
-        collection: "0x3649E46eCD6A0bd187f0046C4C35a7B31C92bA1E".into(),
     }));
 }
 
@@ -168,6 +136,26 @@ fn voucher_view_shape() {
         description: "AI compute credit".into(),
         owner: "0xfF8dd6dbB7B97b44044573cFE843dE1F463637a9".into(),
         minted_by: "0xfF8dd6dbB7B97b44044573cFE843dE1F463637a9".into(),
+        slot: 0,
+        rarity: 0,
+        effect_bps: 0,
+    }));
+}
+
+#[test]
+fn voucher_view_shape_as_a_module() {
+    // A module's slot/rarity/effect are what `VAULT → MODULES` reads to
+    // build the loadout — see docs/intent-chat-and-modules-design.md,
+    // decision 2.
+    insta::assert_snapshot!(shape(&VoucherView {
+        token_id: 7,
+        voucher_type: "Gateway License".into(),
+        description: "Earned by relaying settled transactions as a gateway".into(),
+        owner: "0xfF8dd6dbB7B97b44044573cFE843dE1F463637a9".into(),
+        minted_by: "0xfF8dd6dbB7B97b44044573cFE843dE1F463637a9".into(),
+        slot: 2,
+        rarity: 1,
+        effect_bps: 500,
     }));
 }
 
@@ -181,157 +169,56 @@ fn deal_view_shape() {
         amount_avax: "0.05".into(),
         status: "active".into(),
         role: "buyer".into(),
-        collection: "0x3649E46eCD6A0bd187f0046C4C35a7B31C92bA1E".into(),
-        auto_release_at: 1_775_000_000,
-        refund_requested: false,
     }));
 }
 
 #[test]
-fn module_market_catalog_shape() {
-    insta::assert_snapshot!(shape(&ModuleMarketCatalog {
-        status: ModuleMarketStatus::Available,
-        verified_block: Some("42113009".into()),
-        listings: vec![ModuleMarketListing {
-            listing_id: "900719925474099312346".into(),
-            seller: "0x00000000000000000000000000000000000000b8".into(),
-            price_wei: "2400000000000000000".into(),
-            price_avax: "2.40".into(),
-            module: ModuleView {
-                token_id: "900719925474099312345".into(),
-                contract: "0x00000000000000000000000000000000000000a7".into(),
-                owner: "0x00000000000000000000000000000000000000b8".into(),
-                module_id: format!("0x{}", "11".repeat(32)),
-                provenance_hash: format!("0x{}", "22".repeat(32)),
-                display_name: "Relay Amplifier MK-II".into(),
-                asset_class: ModuleAssetClass::Module,
-                slot: ModuleSlot::Radio,
-                rarity: ModuleRarity::Rare,
-                effect_type: ModuleEffectType::RelayRewardBps,
-                primary_effect_value: 1_850,
-                secondary_effect_value: 0,
-                effect: "+18.50% RELAY REWARD".into(),
-                artwork_uri: "ipfs://bafybeiradioamplifiermk2".into(),
-                artwork_digest: format!("0x{}", "33".repeat(32)),
-                schema_version: 1,
-                minted_by: "0x00000000000000000000000000000000000000c9".into(),
-                soulbound: false,
-                revoked: false,
-            },
-            standing: SellerStandingView::Verified {
-                value: "42".into(),
-                verified_block: "42113009".into(),
-                provider_count: 2,
-                evidence_at_ms: "1786500000000".into(),
-            },
-        }],
-        stale_listings: 2,
-        malformed_metadata: 1,
+fn module_loadout_shape() {
+    insta::assert_snapshot!(shape(&ModuleLoadout {
+        equipped: vec![EquippedSlot { slot: 2, token_id: 7 }],
+        multiplier: 1.05,
+    }));
+}
+
+// ---------------------------------------------------------------------------
+// Guardian mesh unlock
+// ---------------------------------------------------------------------------
+
+#[test]
+fn guardian_candidate_shape() {
+    insta::assert_snapshot!(shape(&GuardianCandidate {
+        peer_id: "7f3a1209c2e100aa".into(),
+        label: "7F3A…00AA".into(),
+        hops: 1,
     }));
 }
 
 #[test]
-fn module_listing_action_shape() {
-    insta::assert_snapshot!(shape(&vec![
-        ModuleListingActionView {
-            state: ModuleListingStateView::Listed {
-                verified_block: "42113010".into(),
-                listing: OwnedModuleListingView {
-                    listing_id: "900719925474099312346".into(),
-                    token_id: "900719925474099312345".into(),
-                    collection: "0x00000000000000000000000000000000000000a7".into(),
-                    seller: "0x00000000000000000000000000000000000000b8".into(),
-                    price_wei: "2400000000000000000".into(),
-                    price_avax: "2.40".into(),
-                },
-            },
-            operation: ModuleListingOperationView::ListingConfirmed,
-            tx_hash: Some(format!("0x{}", "ab".repeat(32))),
-        },
-        ModuleListingActionView {
-            state: ModuleListingStateView::DealRulesActive {
-                verified_block: "42113011".into(),
-            },
-            operation: ModuleListingOperationView::DealRulesActive,
-            tx_hash: None,
-        },
-    ]));
-}
-
-#[test]
-fn relay_reward_summary_keeps_settled_and_withdrawable_amounts_explicit() {
-    assert_eq!(
-        shape(&RelayRewardSummaryView {
-            status: RelayRewardStatusView::Available,
-            settled_earnings_avax: Some("0.0001".into()),
-            withdrawable_credit_avax: Some("0.0022".into()),
-            verified_block: Some("42113009".into()),
-        }),
-        r#"{
-  "status": "available",
-  "settledEarningsAvax": "0.0001",
-  "withdrawableCreditAvax": "0.0022",
-  "verifiedBlock": "42113009"
-}"#
-    );
-}
-
-#[test]
-fn module_purchase_state_shape() {
-    let quote = ModulePurchaseQuoteView {
-        verified_block: "42113010".into(),
-        buyer: "0x00000000000000000000000000000000000000e1".into(),
-        listing_id: "900719925474099312346".into(),
-        seller: "0x00000000000000000000000000000000000000b8".into(),
-        price_wei: "2400000000000000000".into(),
-        price_avax: "2.40".into(),
-        estimated_network_fee_wei: Some("1250000000000000".into()),
-        estimated_network_fee_avax: Some("0.00125".into()),
-        estimated_total_wei: Some("2401250000000000000".into()),
-        estimated_total_avax: Some("2.40125".into()),
-        balance_wei: "5000000000000000000".into(),
-        module: module_fixture("0x00000000000000000000000000000000000000b8"),
-    };
-    insta::assert_snapshot!(shape(&vec![
-        ModulePurchaseStateView::Ready {
-            quote: quote.clone()
-        },
-        ModulePurchaseStateView::InsufficientFunds {
-            quote,
-            shortfall_wei: "1401250000000000000".into(),
-            shortfall_avax: "1.40125".into(),
-        },
-        ModulePurchaseStateView::StaleListing {
-            verified_block: "42113011".into(),
-        },
-    ]));
-}
-
-#[test]
-fn module_deal_action_shape() {
-    insta::assert_snapshot!(shape(&ModuleDealActionView {
-        operation: ModuleDealOperationView::RefundRequested,
-        tx_hash: Some(format!("0x{}", "ab".repeat(32))),
-        deal: ModuleDealView {
-            verified_block: "42113011".into(),
-            observed_at: "1786500000".into(),
-            deal_id: "900719925474099312347".into(),
-            buyer: "0x00000000000000000000000000000000000000e1".into(),
-            seller: "0x00000000000000000000000000000000000000b8".into(),
-            role: ModuleDealRoleView::Buyer,
-            amount_wei: "2400000000000000000".into(),
-            amount_avax: "2.40".into(),
-            status: ModuleDealStatusView::Active,
-            auto_release_at: "1786759200".into(),
-            refund_requested: true,
-            current_owner: "0x00000000000000000000000000000000000000d0".into(),
-            release_authority: ModuleDealReleaseAuthorityView::BuyerNow,
-            can_release: true,
-            can_request_refund: false,
-            can_refund: false,
-            module: module_fixture("0x00000000000000000000000000000000000000d0"),
-        },
+fn guardian_status_shape() {
+    insta::assert_snapshot!(shape(&GuardianStatus {
+        enrolled: true,
+        guardian_count: 5,
+        threshold: 3,
+        holding_for: 0,
     }));
+}
+
+#[test]
+fn guardian_enroll_result_shape() {
+    insta::assert_snapshot!(shape(&GuardianEnrollResult {
+        enrolled: vec!["7f3a1209c2e100aa".into()],
+        no_reply: vec!["91bec2e10800aabb".into()],
+    }));
+}
+
+#[test]
+fn guardian_unlock_prompt_shape() {
+    insta::assert_snapshot!(shape(&GuardianUnlockPrompt { id: 42, from: "4B12…9F00".into() }));
+}
+
+#[test]
+fn security_status_shape() {
+    insta::assert_snapshot!(shape(&SecurityStatus { locked: false, passphrase_enabled: true }));
 }
 
 // ---------------------------------------------------------------------------
@@ -435,24 +322,6 @@ fn match_result_shape() {
     }));
 }
 
-#[test]
-fn proof_request_shape() {
-    insta::assert_snapshot!(shape(&ProofRequest {
-        balance: 1000,
-        bid_amount: 95,
-        price_ceiling: 100,
-    }));
-}
-
-#[test]
-fn zk_proof_shape() {
-    insta::assert_snapshot!(shape(&ZKProof {
-        proof: "0xa4f2c9e1b70d5533".into(),
-        public_inputs: vec!["95".into()],
-        encrypted_intent: "{\"bid\":95,\"verified\":true}".into(),
-    }));
-}
-
 // ---------------------------------------------------------------------------
 // Mesh
 // ---------------------------------------------------------------------------
@@ -475,43 +344,6 @@ fn privacy_intent_shape() {
 /// is a breaking change even though nothing in Rust would complain.
 #[test]
 fn mesh_event_variants_shape() {
-    let request = PaidRelayRequestWire {
-        intent_id: "intent-paid-13".into(),
-        authorization: RelayAuthorizationWire {
-            policy_hash: format!("0x{}", "11".repeat(32)),
-            route_nonce: format!("0x{}", "22".repeat(32)),
-            payload_commitment: format!("0x{}", "33".repeat(32)),
-            delivery_mode: 0,
-            relay_route_hash: format!("0x{}", "44".repeat(32)),
-            sender: "0x0000000000000000000000000000000000000001".into(),
-            recipient: "0x000000000000000000000000000000000000000a".into(),
-            authorized_bytes: 4_096,
-            relay_count: 1,
-            maximum_charge_navax: 2_200_000,
-            issued_at: 1_800_000_000,
-            expires_at: 1_800_000_600,
-        },
-        relayers: vec!["0x0000000000000000000000000000000000000002".into()],
-        sender_signature: format!("0x{}", "55".repeat(65)),
-        route_id: format!("0x{}", "66".repeat(32)),
-        funding_tx_hash: format!("0x{}", "77".repeat(32)),
-        payload: r#"{"action":"buy"}"#.into(),
-    };
-    let delivery = PaidRelayDeliveryWire {
-        request: request.clone(),
-        contribution: RelayContributionWire {
-            authorization_hash: request.route_id.clone(),
-            hop_index: 0,
-            relayer: request.relayers[0].clone(),
-            ingress: request.authorization.sender.clone(),
-            egress: request.authorization.recipient.clone(),
-            payload_commitment: request.authorization.payload_commitment.clone(),
-            delivered_bytes: 4_096,
-            forwarded_at: 1_800_000_060,
-        },
-        contribution_signature: format!("0x{}", "88".repeat(65)),
-        contribution_id: format!("0x{}", "99".repeat(32)),
-    };
     let events = vec![
         MeshEvent::ListeningStarted {
             address: "/ip4/127.0.0.1/tcp/61854".into(),
@@ -544,24 +376,6 @@ fn mesh_event_variants_shape() {
             queue_id: "q-8a3f".into(),
             status: "confirmed".into(),
             tx_hash: Some("0xc70d".into()),
-        },
-        MeshEvent::PaidRelayRequested {
-            request: request.clone(),
-        },
-        MeshEvent::PaidRelayDelivered {
-            delivery: delivery.clone(),
-        },
-        MeshEvent::PaidRelaySettled {
-            settlement: PaidRelaySettlementWire {
-                intent_id: request.intent_id.clone(),
-                route_id: request.route_id.clone(),
-                settlement_tx_hash: format!("0x{}", "aa".repeat(32)),
-                funding_tx_hash: request.funding_tx_hash.clone(),
-                sender: request.authorization.sender.clone(),
-                relayer: request.relayers[0].clone(),
-                recipient: request.authorization.recipient.clone(),
-                settled_reward_navax: 100_000,
-            },
         },
         MeshEvent::ContentRequested { token_id: 42 },
         MeshEvent::ContentDelivered {
@@ -624,31 +438,34 @@ fn bootstrap_status_shape() {
 fn command_inventory() {
     let mut commands = vec![
         "ble_status",
-        "approve_module_listing",
         "broadcast_intent",
-        "buy_module_listing",
-        "cancel_module_listing",
         "cancel_intent",
-        "create_module_listing",
         "enter_mesh",
+        "guardian_approve_unlock",
+        "guardian_candidates",
+        "guardian_deny_unlock",
+        "guardian_enroll",
+        "guardian_request_unlock",
+        "guardian_status",
         "intent_detail",
         "intent_form_options",
         "intent_proof",
         "list_intents",
         "list_nearby_nodes",
-        "market_modules",
+        "market_buy",
+        "market_list_module",
+        "market_listings",
+        "market_my_deals",
+        "market_refund_deal",
+        "market_release_deal",
         "mesh_snapshot",
-        "relay_reward_summary",
-        "module_deals",
-        "module_listing_status",
-        "module_loadout",
-        "module_purchase_quote",
+        "parse_intent_chat",
         "preview_intent",
         "profile_summary",
-        "propose_intent",
-        "refund_module_deal",
-        "release_module_deal",
-        "request_module_refund",
+        "security_disable_passphrase",
+        "security_enable_passphrase",
+        "security_status",
+        "security_unlock",
         "session_status",
         "set_offline_mode",
         "settle_intent",
@@ -656,14 +473,17 @@ fn command_inventory() {
         "subscribe_settlement_log",
         "unsubscribe",
         "vault_assets",
+        "vault_equip_module",
+        "vault_export_key",
         "vault_identities",
+        "vault_import_key",
         "vault_keys",
+        "vault_loadout",
         "vault_modules",
-        "equip_module",
-        "intent_affordability",
-        "unequip_module",
+        "vault_redeem_module",
+        "vault_unequip_module",
     ];
     commands.sort_unstable();
-    assert_eq!(commands.len(), 39, "command count changed");
+    assert_eq!(commands.len(), 45, "command count changed");
     insta::assert_snapshot!(commands.join("\n"));
 }
