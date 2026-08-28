@@ -376,22 +376,26 @@ impl ReceivedLog {
         }
     }
 
-    /// Records a sighting, deduped by id.
+    /// Records a sighting, deduped by id. Returns whether this id was new —
+    /// callers that trigger one-shot work off a sighting (negotiation, in
+    /// particular) use this instead of a second dedup set of their own, so a
+    /// BLE resend of the same intent can never fire that work twice.
     ///
     /// A blank id — an old build's payload, or a malformed one — is never
     /// recorded: an empty string would dedupe every such intent into one slot
     /// instead of counting none of them.
-    pub fn record(&self, id: &str) {
+    pub fn record(&self, id: &str) -> bool {
         if id.is_empty() {
-            return;
+            return false;
         }
         let mut seen = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         if !seen.insert(id.to_string()) {
-            return;
+            return false;
         }
         if let Err(error) = self.store.save(&*seen) {
             tracing::error!(target: "cabalmesh::intents", %error, "could not persist the received log");
         }
+        true
     }
 
     /// Distinct intents seen from other peers, ever.

@@ -3,6 +3,7 @@ mod app_paths;
 mod platform;
 mod ollama_config;
 mod ollama_manager;
+mod negotiation;
 
 // Public because their types *are* the IPC contract: everything below
 // serializes across the boundary to the webview, so the shapes are already
@@ -296,8 +297,18 @@ pub fn run() {
                                     // that only incremented when this device
                                     // happened to have a gateway to bridge
                                     // onto would undercount the very radio
-                                    // traffic it exists to show.
-                                    intent_bridge_state.received().record(&intent.id);
+                                    // traffic it exists to show. The same
+                                    // "was this new" result also gates
+                                    // negotiation, so a BLE resend of the
+                                    // same intent can't propose the same deal
+                                    // twice — see `ReceivedLog::record`.
+                                    if intent_bridge_state.received().record(&intent.id) {
+                                        let negotiation_state = intent_bridge_state.clone();
+                                        let candidate = intent.clone();
+                                        tokio::spawn(async move {
+                                            negotiation::consider(&negotiation_state, &candidate).await;
+                                        });
+                                    }
 
                                     if !intent_bridge_state.runtime_caps().online {
                                         continue;
@@ -358,6 +369,19 @@ pub fn run() {
                         let ble_for_events = ble.clone();
                         tokio::spawn(async move {
                             while let Some(event) = event_rx.recv().await {
+                                // Gated on "was this id new" so a duplicate
+                                // delivery of the same intent (gossipsub can
+                                // redeliver) can't trigger a second match —
+                                // same reasoning as the BLE-bridge path below.
+                                if let mesh::MeshEvent::IntentReceived { intent } = &event {
+                                    if received.record(&intent.id) {
+                                        let negotiation_state = state_for_events.clone();
+                                        let candidate = intent.clone();
+                                        tokio::spawn(async move {
+                                            negotiation::consider(&negotiation_state, &candidate).await;
+                                        });
+                                    }
+                                }
                                 intents::apply_mesh_event(&ledger, &received, &event);
                                 // A device with no IP-plane connectivity has
                                 // nothing to offer a BLE peer asking for a

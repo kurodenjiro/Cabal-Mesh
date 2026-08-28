@@ -1127,7 +1127,7 @@ async fn publish(state: &AppState, intent: &crate::intents::Intent) -> Result<Pu
     }
 }
 
-async fn publish_over_mesh(
+pub(crate) async fn publish_over_mesh(
     services: &crate::state::Services,
     intent: &crate::mesh::PrivacyIntent,
 ) -> Result<usize, &'static str> {
@@ -1166,7 +1166,7 @@ const BLE_INTENT_RESEND_DELAY: std::time::Duration = std::time::Duration::from_s
 /// failure path: BLE not having worked is not itself the reason to show —
 /// the mesh failure from `publish_over_mesh` already is, and this is only
 /// ever consulted after that one failed.
-async fn publish_over_ble(
+pub(crate) async fn publish_over_ble(
     services: &crate::state::Services,
     intent: &crate::mesh::PrivacyIntent,
 ) -> Option<usize> {
