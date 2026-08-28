@@ -59,6 +59,15 @@ impl Network {
         }
     }
 
+    /// EIP-155 chain ID, required to sign a transaction for this network.
+    #[must_use]
+    pub const fn chain_id(self) -> u64 {
+        match self {
+            Self::Fuji => 43_113,
+            Self::Mainnet => 43_114,
+        }
+    }
+
     /// Contract addresses for this network.
     ///
     /// Empty where nothing is deployed yet. An absent address surfaces as a
@@ -117,6 +126,22 @@ pub struct NetworkConfig {
 }
 
 impl NetworkConfig {
+    /// Switches the active network and persists the choice.
+    ///
+    /// Reads and writes the raw file directly rather than going through
+    /// [`NetworkConfig::load`] — that layers desktop environment overrides on
+    /// top, and saving *that* back would bake a temporary env override into
+    /// the persisted file forever.
+    ///
+    /// # Errors
+    ///
+    /// [`cabal_store::StoreError`] if the file cannot be written.
+    pub fn switch(store: &cabal_store::JsonStore, network: Network) -> Result<(), cabal_store::StoreError> {
+        let mut config: Self = store.load_or(Self::default());
+        config.network = network;
+        store.save(&config)
+    }
+
     /// Loads configuration, layering: compiled-in defaults, then the config
     /// file, then environment variables on desktop.
     ///
@@ -217,6 +242,12 @@ mod tests {
     }
 
     #[test]
+    fn each_network_has_its_own_chain_id() {
+        assert_eq!(Network::Fuji.chain_id(), 43_113);
+        assert_eq!(Network::Mainnet.chain_id(), 43_114);
+    }
+
+    #[test]
     fn absent_config_yields_the_testnet_endpoint() {
         let dir = TempDir::new().unwrap();
         let store = cabal_store::JsonStore::new(dir.path().join("network.json"));
@@ -241,6 +272,37 @@ mod tests {
         // writing (docs/intent-chat-and-modules-design.md decisions 0/3),
         // and this must read as "not configured," not a guessed address.
         assert!(NetworkConfig::default().relay_rewards().is_none());
+    }
+
+    #[test]
+    fn switching_network_persists_and_is_read_back() {
+        let dir = TempDir::new().unwrap();
+        let store = cabal_store::JsonStore::new(dir.path().join("network.json"));
+
+        NetworkConfig::switch(&store, Network::Mainnet).unwrap();
+
+        let reloaded = NetworkConfig::load(&store);
+        assert_eq!(reloaded.network, Network::Mainnet);
+        assert!(!reloaded.network.is_testnet());
+    }
+
+    #[test]
+    fn switching_network_preserves_other_config_fields() {
+        let dir = TempDir::new().unwrap();
+        let store = cabal_store::JsonStore::new(dir.path().join("network.json"));
+        store
+            .save(&NetworkConfig {
+                network: Network::Fuji,
+                rpc_url: Some("http://custom".into()),
+                ..NetworkConfig::default()
+            })
+            .unwrap();
+
+        NetworkConfig::switch(&store, Network::Mainnet).unwrap();
+
+        let raw: NetworkConfig = store.load().unwrap();
+        assert_eq!(raw.network, Network::Mainnet);
+        assert_eq!(raw.rpc_url.as_deref(), Some("http://custom"));
     }
 
     #[test]

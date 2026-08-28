@@ -57,6 +57,7 @@ export function Vault({
   const [revealed, setRevealed] = useState(false);
   const [security, setSecurity] = useState<SecurityStatus | null>(null);
   const [address, setAddress] = useState<string | null>(null);
+  const [refreshingBalance, setRefreshingBalance] = useState(false);
 
   useEffect(() => {
     const command = COMMAND[tab];
@@ -104,6 +105,22 @@ export function Vault({
       .catch(() => setSecurity(null));
   };
   useEffect(refreshSecurity, []);
+
+  // Re-syncs from RPC rather than re-reading the cached snapshot — the whole
+  // point of the button is to catch a balance that changed since the last
+  // sync (bootstrap, or the last time this ran).
+  const refreshBalance = async () => {
+    if (refreshingBalance) return;
+    setRefreshingBalance(true);
+    try {
+      setRows(await invoke<VaultRow[]>("vault_refresh_balance"));
+    } catch {
+      // Offline or RPC unreachable — keep showing the last known snapshot
+      // rather than clearing it.
+    } finally {
+      setRefreshingBalance(false);
+    }
+  };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-6)", padding: "var(--space-6)" }}>
@@ -176,7 +193,23 @@ export function Vault({
       )}
 
       {tab !== "MODULES" && (
-        <Panel label={tab}>
+        <Panel
+          label={tab}
+          action={
+            tab === "ASSETS" ? (
+              <IconButton
+                size="sm"
+                tone="outline"
+                className="cm-touch"
+                aria-label="Refresh balance"
+                disabled={refreshingBalance}
+                onClick={() => void refreshBalance()}
+              >
+                {refreshingBalance ? "…" : "↻"}
+              </IconButton>
+            ) : undefined
+          }
+        >
           {rows === null ? null : rows.length === 0 ? (
             <Empty tab={tab} />
           ) : (

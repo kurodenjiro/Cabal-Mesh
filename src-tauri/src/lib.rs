@@ -176,16 +176,14 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 // Shared Bridge Resource (Created here first)
                 // Desktop only: there is no .env file in a mobile bundle, and no
-                // environment to read it into. Mobile falls through to the
-                // compiled-in default until ticket 24 replaces this with a
-                // per-network address table.
+                // environment to read it into. `BlockchainBridge::new` resolves
+                // rpc_url/chain_id/contract addrs from `NetworkConfig`, which
+                // layers this `.env` on top of network.json on desktop and
+                // falls through to the compiled-in per-network table on mobile.
                 #[cfg(desktop)]
                 dotenv::dotenv().ok();
 
-                let rpc_url = std::env::var("AVAX_RPC_URL")
-                    .unwrap_or_else(|_| blockchain_bridge::DEFAULT_AVAX_RPC_URL.to_string());
-
-                let bridge = Arc::new(Mutex::new(BlockchainBridge::new(Some(rpc_url))));
+                let bridge = Arc::new(Mutex::new(BlockchainBridge::new()));
                 let guardian_service = Arc::new(Mutex::new(guardian::GuardianService::open(&app_paths::data_dir())));
                 let guardian_approvals = guardian_actor::PendingApprovals::new();
 
@@ -481,6 +479,7 @@ pub fn run() {
             commands::cancel_intent,
             commands::intent_proof,
             commands::vault_assets,
+            commands::vault_refresh_balance,
             commands::vault_address,
             commands::vault_identities,
             commands::vault_keys,
@@ -508,6 +507,7 @@ pub fn run() {
             commands::vault_unequip_module,
             commands::vault_redeem_module,
             commands::profile_summary,
+            commands::network_set,
             commands::set_offline_mode,
         ])
         .build(tauri::generate_context!())

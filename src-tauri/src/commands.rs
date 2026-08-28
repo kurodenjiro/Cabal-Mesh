@@ -1941,23 +1941,68 @@ pub async fn vault_assets(state: State<'_, AppState>) -> Result<Vec<VaultRow>, A
 
     // The native balance is the one thing actually known. Listing tokens the
     // wallet has never held would be inventing holdings.
-    let snapshot = bridge.get_latest_snapshot().ok();
-    let rows = snapshot
+    Ok(vault_rows_from_snapshot(bridge.get_latest_snapshot().ok()))
+}
+
+/// Re-syncs the native AVAX balance from RPC on demand — the ASSETS tab's
+/// refresh button — then returns the same shape `vault_assets` does, so the
+/// frontend can swap `rows` straight from the response instead of making a
+/// second round trip that could race a concurrent poll.
+///
+/// # Errors
+///
+/// [`AppError::NotReady`] before bootstrap. [`AppError::Internal`] if the RPC
+/// sync fails (offline, endpoint down); the caller keeps showing the last
+/// known snapshot in that case.
+#[tauri::command]
+pub async fn vault_refresh_balance(state: State<'_, AppState>) -> Result<Vec<VaultRow>, AppError> {
+    let services = state.services()?;
+    let bridge = services.bridge.lock().await;
+    bridge.sync_state("ignored_override").await.map_err(AppError::internal_msg)?;
+    Ok(vault_rows_from_snapshot(bridge.get_latest_snapshot().ok()))
+}
+
+fn vault_rows_from_snapshot(snapshot: Option<crate::blockchain_bridge::Snapshot>) -> Vec<VaultRow> {
+    snapshot
         .map(|snapshot| {
             snapshot
                 .assets
                 .into_iter()
                 .map(|asset| VaultRow {
                     tag: asset.symbol.chars().take(3).collect::<String>().to_uppercase(),
+                    amount: format_native_amount(&asset.amount),
                     name: asset.symbol,
-                    amount: asset.amount,
                     detail: None,
                 })
                 .collect()
         })
-        .unwrap_or_default();
+        .unwrap_or_default()
+}
 
-    Ok(rows)
+/// The snapshot stores native balance as a decimal wei string — the same raw
+/// precision `build_form_options` matches against `ASSETS`' decimals table —
+/// but `VaultRow.amount` is display-only text, with no decimals field for the
+/// frontend to divide by itself. Falls back to the raw string on a parse
+/// failure rather than hiding a malformed snapshot behind a blank amount.
+fn format_native_amount(wei: &str) -> String {
+    wei.parse::<alloy::primitives::U256>()
+        .map(alloy::primitives::utils::format_ether)
+        .unwrap_or_else(|_| wei.to_string())
+}
+
+#[cfg(test)]
+mod vault_amount_tests {
+    use super::format_native_amount;
+
+    #[test]
+    fn formats_wei_as_avax() {
+        assert_eq!(format_native_amount("10000000000000000"), "0.010000000000000000");
+    }
+
+    #[test]
+    fn falls_back_to_raw_on_unparseable_input() {
+        assert_eq!(format_native_amount("not-a-number"), "not-a-number");
+    }
 }
 
 /// This device's chain address — what someone sends assets to.
@@ -2231,6 +2276,32 @@ pub async fn profile_summary(state: State<'_, AppState>) -> Result<ProfileView, 
         network: network.network.label().to_string(),
         is_testnet: network.network.is_testnet(),
     })
+}
+
+/// Switches the network the app talks to — Fuji testnet or Avalanche mainnet.
+///
+/// **Takes effect on next launch, not immediately.** `BlockchainBridge`
+/// resolves rpc_url, chain_id and every contract address from this same
+/// config once at startup; switching mid-session would leave in-flight
+/// signing and balance calls split across two networks. The frontend's own
+/// copy is what tells the user to restart — this command only persists the
+/// choice.
+///
+/// # Errors
+///
+/// [`AppError::internal`] if `network.json` cannot be written.
+#[tauri::command]
+pub async fn network_set(mainnet: bool) -> Result<(), AppError> {
+    let network = if mainnet {
+        crate::network_config::Network::Mainnet
+    } else {
+        crate::network_config::Network::Fuji
+    };
+    crate::network_config::NetworkConfig::switch(
+        &cabal_store::JsonStore::new(crate::app_paths::in_data_dir("network.json")),
+        network,
+    )
+    .map_err(AppError::internal)
 }
 
 /// Stops or resumes mesh participation.

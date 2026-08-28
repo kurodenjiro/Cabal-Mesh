@@ -20,8 +20,6 @@ use alloy::{
 use aes_gcm::aead::{OsRng, rand_core::RngCore};
 use tokio::time::{timeout, Duration};
 
-pub const DEFAULT_AVAX_RPC_URL: &str = "https://api.avax-test.network/ext/bc/C/rpc";
-
 sol! {
     #[sol(rpc)]
     IEscrow,
@@ -297,6 +295,7 @@ pub struct BlockchainBridge {
     /// `get_relay_multiplier`.
     pub equipped_modules_path: PathBuf,
     pub rpc_url: String,
+    pub chain_id: u64,
     pub escrow_address: Option<Address>,
     pub marketplace_address: Option<Address>,
     pub voucher_address: Option<Address>,
@@ -307,9 +306,7 @@ pub struct BlockchainBridge {
 }
 
 impl BlockchainBridge {
-    pub fn new(rpc_url_override: Option<String>) -> Self {
-        let rpc_url = rpc_url_override.unwrap_or_else(|| DEFAULT_AVAX_RPC_URL.to_string());
-
+    pub fn new() -> Self {
         // No fallback here: an absent/invalid address should surface as a clear
         // runtime error the first time a contract call is attempted, not a
         // silently-wrong placeholder.
@@ -319,6 +316,12 @@ impl BlockchainBridge {
         let network = crate::network_config::NetworkConfig::load(&JsonStore::new(
             crate::app_paths::in_data_dir("network.json"),
         ));
+
+        // Same source as the contract addresses below, so rpc_url/chain_id can
+        // never point at a different network than escrow/marketplace/voucher
+        // resolve against.
+        let rpc_url = network.rpc_url();
+        let chain_id = network.network.chain_id();
 
         let escrow_address = network.escrow().and_then(|s| Address::from_str(&s).ok());
         let marketplace_address = network.marketplace().and_then(|s| Address::from_str(&s).ok());
@@ -359,6 +362,7 @@ impl BlockchainBridge {
             received_content_path: app_dir.join("received_content.json"),
             equipped_modules_path: app_dir.join("equipped_modules.json"),
             rpc_url,
+            chain_id,
             escrow_address,
             marketplace_address,
             voucher_address,
@@ -696,7 +700,7 @@ impl BlockchainBridge {
             .with_input(calldata)
             .with_value(value)
             .with_nonce(cache.nonce)
-            .with_chain_id(43113)
+            .with_chain_id(self.chain_id)
             .with_gas_limit(400_000)
             .with_max_fee_per_gas(buffered_gas_price)
             .with_max_priority_fee_per_gas(buffered_gas_price);
@@ -1628,6 +1632,7 @@ mod offline_signing_tests {
             equipped_modules_path: tmp_dir.join("equipped_modules.json"),
             // Deliberately unreachable — proves sign_offline never touches the network.
             rpc_url: "http://127.0.0.1:9".to_string(),
+            chain_id: crate::network_config::Network::Fuji.chain_id(),
             escrow_address: None,
             marketplace_address: None,
             voucher_address: None,
@@ -1669,6 +1674,62 @@ mod offline_signing_tests {
 
         std::fs::remove_dir_all(&tmp_dir).ok();
     }
+
+    /// The signed tx must carry *this bridge's* configured chain ID, not a
+    /// hardcoded one — otherwise switching the app to Mainnet would still
+    /// silently sign every offline transaction for Fuji.
+    #[tokio::test]
+    async fn signs_offline_using_the_bridges_configured_chain_id() {
+        let tmp_dir = std::env::temp_dir().join(format!("cabalmesh_test_chainid_{}", std::process::id()));
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+
+        let mut bridge = BlockchainBridge {
+            identities: Vec::new(),
+            identity_vault: Vault::new(
+                tmp_dir.join("vault.enc"),
+                Box::new(crate::vault_key::platform_provider(tmp_dir.join("vault.key"))),
+            ),
+            vault_path: tmp_dir.join("vault.enc"),
+            vault_key_path: tmp_dir.join("vault.key"),
+            vault_salt_path: tmp_dir.join("vault.salt"),
+            security_state_path: tmp_dir.join("security.json"),
+            locked: false,
+            storage_path: tmp_dir.join("snapshot.enc"),
+            chain_cache_path: tmp_dir.join("chain_cache.json"),
+            pending_relay_path: tmp_dir.join("pending_relay_txs.json"),
+            relayed_history_path: tmp_dir.join("relayed_history.json"),
+            content_store_path: tmp_dir.join("content_store.json"),
+            received_content_path: tmp_dir.join("received_content.json"),
+            equipped_modules_path: tmp_dir.join("equipped_modules.json"),
+            rpc_url: "http://127.0.0.1:9".to_string(),
+            chain_id: crate::network_config::Network::Mainnet.chain_id(),
+            escrow_address: None,
+            marketplace_address: None,
+            voucher_address: None,
+            relay_rewards_address: None,
+            current_session: None,
+        };
+        bridge.generate_new_identity("Test".to_string(), "🧪".to_string()).unwrap();
+        bridge
+            .save_chain_cache(&ChainStateCache {
+                nonce: 0,
+                gas_price_wei: "30000000000".to_string(),
+                cached_at: Utc::now(),
+            })
+            .unwrap();
+
+        let to = Address::from_str("0x0000000000000000000000000000000000000001").unwrap();
+        let queued = bridge
+            .sign_offline(to, Bytes::from(vec![0xde, 0xad]), U256::from(0), "test tx")
+            .await
+            .expect("sign_offline should succeed");
+
+        let raw_bytes = hex::decode(queued.raw_tx_hex.trim_start_matches("0x")).unwrap();
+        let envelope = TxEnvelope::decode_2718(&mut raw_bytes.as_slice()).unwrap();
+        assert_eq!(envelope.chain_id(), Some(crate::network_config::Network::Mainnet.chain_id()));
+
+        std::fs::remove_dir_all(&tmp_dir).ok();
+    }
 }
 
 #[cfg(test)]
@@ -1695,6 +1756,7 @@ mod content_commitment_tests {
             received_content_path: tmp_dir.join("received_content.json"),
             equipped_modules_path: tmp_dir.join("equipped_modules.json"),
             rpc_url: "http://127.0.0.1:9".to_string(),
+            chain_id: crate::network_config::Network::Fuji.chain_id(),
             escrow_address: None,
             marketplace_address: None,
             voucher_address: None,
@@ -1835,6 +1897,7 @@ mod security_tests {
             received_content_path: tmp_dir.join("received_content.json"),
             equipped_modules_path: tmp_dir.join("equipped_modules.json"),
             rpc_url: "http://127.0.0.1:9".to_string(),
+            chain_id: crate::network_config::Network::Fuji.chain_id(),
             escrow_address: None,
             marketplace_address: None,
             voucher_address: None,
