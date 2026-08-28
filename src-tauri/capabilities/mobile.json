@@ -46,6 +46,7 @@
     "allow-subscribe-mesh-log",
     "allow-subscribe-settlement-log",
     "allow-unsubscribe",
+    "allow-vault-address",
     "allow-vault-assets",
     "allow-vault-equip-module",
     "allow-vault-export-key",

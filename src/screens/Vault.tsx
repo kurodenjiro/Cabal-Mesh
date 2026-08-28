@@ -56,6 +56,7 @@ export function Vault({
   const [rows, setRows] = useState<VaultRow[] | null>(null);
   const [revealed, setRevealed] = useState(false);
   const [security, setSecurity] = useState<SecurityStatus | null>(null);
+  const [address, setAddress] = useState<string | null>(null);
 
   useEffect(() => {
     const command = COMMAND[tab];
@@ -70,6 +71,24 @@ export function Vault({
       })
       .catch(() => {
         if (!cancelled) setRows([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tab]);
+
+  // Only ASSETS shows the address — it's what someone sends assets *to*, so
+  // it belongs beside the balances rather than on IDENTITIES, which already
+  // shows a truncated form for a different purpose (telling identities apart).
+  useEffect(() => {
+    if (tab !== "ASSETS") return;
+    let cancelled = false;
+    invoke<string | null>("vault_address")
+      .then((next) => {
+        if (!cancelled) setAddress(next);
+      })
+      .catch(() => {
+        if (!cancelled) setAddress(null);
       });
     return () => {
       cancelled = true;
@@ -116,6 +135,8 @@ export function Vault({
           </button>
         ))}
       </div>
+
+      {tab === "ASSETS" && address && <AddressPanel address={address} />}
 
       {tab === "ASSETS" && (
         <Panel label="TOTAL VALUE (PRIVATE)">
@@ -181,6 +202,84 @@ export function Vault({
       {tab === "KEYS" && <AdvancedPanel />}
     </div>
   );
+}
+
+/**
+ * The address this device receives assets at. Unlike the export-key flow,
+ * nothing here is sensitive — an address is meant to be handed out — so it
+ * renders immediately with no reveal gate, full and copyable rather than
+ * truncated like the identity list's own display-only form.
+ */
+function AddressPanel({ address }: { address: string }) {
+  const [copyLabel, setCopyLabel] = useState<"COPY" | "COPIED" | "COPY FAILED">("COPY");
+
+  const copy = async () => {
+    try {
+      await copyText(address);
+      setCopyLabel("COPIED");
+    } catch {
+      setCopyLabel("COPY FAILED");
+    }
+    window.setTimeout(() => setCopyLabel("COPY"), 2_000);
+  };
+
+  return (
+    <Panel label="YOUR ADDRESS">
+      <div
+        className="cm-row"
+        style={{
+          padding: "var(--space-6)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: "var(--space-5)",
+        }}
+      >
+        <span
+          style={{
+            fontFamily: "var(--type-data-family)",
+            fontSize: "var(--text-2xs)",
+            letterSpacing: "var(--type-data-tracking)",
+            color: "var(--text-primary)",
+            wordBreak: "break-all",
+          }}
+        >
+          {address}
+        </span>
+        <Button tone="ghost" size="sm" className="cm-touch" aria-live="polite" onClick={() => void copy()}>
+          {copyLabel}
+        </Button>
+      </div>
+    </Panel>
+  );
+}
+
+/**
+ * Android WebView does not consistently expose the asynchronous Clipboard
+ * API. Try the user-gesture-safe selection path first, then use the modern API
+ * where it is available. The temporary field never contains key material —
+ * only the public chain address already rendered above.
+ */
+async function copyText(text: string): Promise<void> {
+  const field = document.createElement("textarea");
+  field.value = text;
+  field.readOnly = true;
+  field.style.position = "fixed";
+  field.style.opacity = "0";
+  document.body.appendChild(field);
+  field.select();
+  field.setSelectionRange(0, text.length);
+
+  let copied = false;
+  try {
+    copied = document.execCommand("copy");
+  } finally {
+    field.remove();
+  }
+
+  if (copied) return;
+  if (!navigator.clipboard?.writeText) throw new Error("clipboard unavailable");
+  await navigator.clipboard.writeText(text);
 }
 
 /**

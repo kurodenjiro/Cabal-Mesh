@@ -49,6 +49,7 @@ const COMMANDS: &[&str] = &[
     "subscribe_mesh_log",
     "subscribe_settlement_log",
     "unsubscribe",
+    "vault_address",
     "vault_assets",
     "vault_equip_module",
     "vault_export_key",

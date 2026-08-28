@@ -1960,6 +1960,26 @@ pub async fn vault_assets(state: State<'_, AppState>) -> Result<Vec<VaultRow>, A
     Ok(rows)
 }
 
+/// This device's chain address — what someone sends assets to.
+///
+/// A passphrase gates *unlocking* the vault; it says nothing about whether an
+/// identity exists behind it. By the time this is called the onboarding flow
+/// has already created one, so `None` only means the rare case where it
+/// somehow has not — not "locked," which `services()` and the passphrase
+/// prompt already guard further up the stack.
+///
+/// # Errors
+///
+/// [`AppError::NotReady`] before bootstrap.
+#[tauri::command]
+pub async fn vault_address(state: State<'_, AppState>) -> Result<Option<String>, AppError> {
+    let services = state.services()?;
+    let bridge = services.bridge.lock().await;
+
+    let address = bridge.get_primary_address();
+    Ok((address != "unknown").then_some(address))
+}
+
 /// Identities this device holds.
 ///
 /// # Errors
