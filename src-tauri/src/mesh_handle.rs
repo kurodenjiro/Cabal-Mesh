@@ -166,6 +166,7 @@ mod tests {
 
     fn intent() -> PrivacyIntent {
         PrivacyIntent {
+            id: "test-intent".into(),
             intent_type: "trade".into(),
             payload: "{}".into(),
             encrypted: true,

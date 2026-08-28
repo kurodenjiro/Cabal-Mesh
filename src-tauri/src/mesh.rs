@@ -84,6 +84,13 @@ impl From<gossipsub::Event> for MeshBehaviourEvent {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrivacyIntent {
+    /// The composing device's own intent id, carried verbatim.
+    ///
+    /// Lets a receiver dedupe: the BLE fallback resends the identical intent
+    /// several times against a link with no delivery confirmation, so without
+    /// this a "received" count would report retries as distinct trades.
+    #[serde(default)]
+    pub id: String,
     pub intent_type: String,
     pub payload: String,
     pub encrypted: bool,

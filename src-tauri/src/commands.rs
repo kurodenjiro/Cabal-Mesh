@@ -211,10 +211,25 @@ pub async fn mesh_snapshot(state: State<'_, AppState>) -> Result<MeshSnapshotVie
         None => StatTile::plain("INTENTS SETTLED", standing.value()),
     };
 
+    // Broadcasted: ledger entries this device has actually pushed off the
+    // device — a `Draft` is composed but nothing has left yet, so it does not
+    // count. Received: distinct intents seen from other peers, over the mesh
+    // or bridged in from BLE — see `ReceivedLog` for why it dedupes rather
+    // than counting every delivery attempt. Both read local state, so like
+    // `settled_tile` they hold with no mesh connected at all.
+    let broadcasted = state
+        .intents()
+        .all()
+        .iter()
+        .filter(|intent| !matches!(intent.status, cabal_core::IntentStatus::Draft))
+        .count();
+
     let stats = vec![
         StatTile::plain("NETWORK NODES", separated(snapshot.peer_count as u64)),
         StatTile::plain("RELAYED BYTES", separated(snapshot.relay_bytes)),
         settled_tile,
+        StatTile::plain("BROADCASTED", separated(broadcasted as u64)),
+        StatTile::plain("RECEIVED", separated(state.received().count() as u64)),
     ];
 
     Ok(MeshSnapshotView {
@@ -1021,6 +1036,49 @@ pub async fn broadcast_intent(
     Ok(intent.id.to_string())
 }
 
+/// Retries every intent still sitting in `Draft` — composed but never
+/// broadcast — now that connectivity might reach further than it did when
+/// each one was queued.
+///
+/// Fired from `lib.rs` on `MeshEvent::ConnectivityChanged { online: true }`:
+/// that is the one moment a relay reservation just landed, so it is also the
+/// one moment retrying is likely to do anything different from the attempt
+/// that queued the intent in the first place. A still-failing retry stays
+/// silent rather than re-recording "QUEUED LOCALLY." — the original attempt
+/// already said that, and a device that reconnects and drops repeatedly
+/// would otherwise fill the ledger with copies of the same line.
+pub(crate) async fn retry_queued_intents(state: &AppState) {
+    use crate::bindings::LogTone;
+    use crate::intents::line;
+
+    let ledger = state.intents();
+    let queued: Vec<_> = ledger
+        .all()
+        .into_iter()
+        .filter(|intent| matches!(intent.status, cabal_core::IntentStatus::Draft))
+        .collect();
+
+    for intent in queued {
+        let route_len = match publish(state, &intent).await {
+            Ok(PublishRoute::Mesh(peers)) => {
+                ledger.record(&intent.id, line("BROADCAST TO MESH.", LogTone::Ok));
+                peers
+            }
+            Ok(PublishRoute::Ble(peers)) => {
+                ledger.record(&intent.id, line("BROADCAST VIA BLUETOOTH GATEWAY.", LogTone::Ok));
+                peers
+            }
+            Err(_) => continue,
+        };
+        let route_len = u8::try_from(route_len).unwrap_or(u8::MAX);
+        let _ = ledger.advance(
+            &intent.id,
+            cabal_core::IntentStatus::Broadcast { route_len },
+            crate::intents::now_ms(),
+        );
+    }
+}
+
 /// Which plane actually carried a published intent, and how many peers it
 /// reached there — the two planes report peer counts that mean different
 /// things, so keeping them apart rather than collapsing to one `usize`
@@ -1046,10 +1104,15 @@ async fn publish(state: &AppState, intent: &crate::intents::Intent) -> Result<Pu
     // ceremony rather than protection.
     let payload = serde_json::to_string(&intent.draft).map_err(|_| "COULD NOT ENCODE. QUEUED LOCALLY.")?;
     let privacy_intent = crate::mesh::PrivacyIntent {
+        id: intent.id.to_string(),
         intent_type: "intent".into(),
         payload,
         encrypted: false,
-        relay_path: Vec::new(),
+        // `verify_relay_integrity` rejects an empty relay path outright — it
+        // exists to catch a hop-stripped intent, but a fresh one hasn't been
+        // relayed by anyone yet, so it has to carry its own origin stamp from
+        // the moment it's created, not first grow one somewhere downstream.
+        relay_path: vec!["origin_node".into()],
         relay_fee: None,
     };
 
@@ -1082,6 +1145,23 @@ async fn publish_over_mesh(
     Ok(snapshot.peer_count)
 }
 
+/// Extra attempts after the first, spaced [`BLE_INTENT_RESEND_DELAY`] apart.
+///
+/// The radio's send is fire-and-forget the whole way down — Android's writer
+/// thread queues bytes and reports success before a single one reaches the
+/// socket, so a link that dies mid-write is indistinguishable, from here, from
+/// one that delivered. `Announce` gets away with the same radio because it is
+/// periodic and self-heals; `Intent` is submitted once. In a two-peer room
+/// there is nobody else to relay a copy that never arrived, so the origin has
+/// to be the one that tries again.
+const BLE_INTENT_RESENDS: u8 = 2;
+
+/// Gap between resends. Long enough that a link mid-glare (both sides having
+/// just dialled each other) has settled to one usable connection by the next
+/// attempt, short enough that all retries land inside the few seconds a
+/// composing user is still watching the screen.
+const BLE_INTENT_RESEND_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
+
 /// The BLE fallback. Returns `None` rather than an error string on every
 /// failure path: BLE not having worked is not itself the reason to show —
 /// the mesh failure from `publish_over_mesh` already is, and this is only
@@ -1097,7 +1177,25 @@ async fn publish_over_ble(
     }
 
     let payload = serde_json::to_vec(intent).ok()?;
-    ble.broadcast(cabal_ble::wire::PacketKind::Intent, payload).await.ok()?;
+    ble.broadcast(cabal_ble::wire::PacketKind::Intent, payload.clone())
+        .await
+        .ok()?;
+
+    // Resent in the background: the caller already has what it needs (a
+    // route to record and a peer count to show) the moment the first send is
+    // handed to the radio, and making it wait out every retry would hold a
+    // "compose" button spinner hostage to a link that may never confirm
+    // anything, ever, by design.
+    let retry_ble = ble.clone();
+    tokio::spawn(async move {
+        for _ in 0..BLE_INTENT_RESENDS {
+            tokio::time::sleep(BLE_INTENT_RESEND_DELAY).await;
+            let _ = retry_ble
+                .broadcast(cabal_ble::wire::PacketKind::Intent, payload.clone())
+                .await;
+        }
+    });
+
     Some(status.reachable_peers)
 }
 

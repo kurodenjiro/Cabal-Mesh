@@ -288,14 +288,22 @@ pub fn run() {
                         loop {
                             match intent_bridge_events.recv().await {
                                 Ok(ble::BleEvent::Received { kind: cabal_ble::wire::PacketKind::Intent, payload, .. }) => {
+                                    let Ok(intent) = serde_json::from_slice::<mesh::PrivacyIntent>(&payload) else {
+                                        continue;
+                                    };
+                                    // Counted on arrival, ahead of the
+                                    // online-gate below: a "received" count
+                                    // that only incremented when this device
+                                    // happened to have a gateway to bridge
+                                    // onto would undercount the very radio
+                                    // traffic it exists to show.
+                                    intent_bridge_state.received().record(&intent.id);
+
                                     if !intent_bridge_state.runtime_caps().online {
                                         continue;
                                     }
                                     let Ok(services) = intent_bridge_state.services() else { continue };
                                     let Some(mesh_handle) = services.mesh.as_ref() else { continue };
-                                    let Ok(intent) = serde_json::from_slice::<mesh::PrivacyIntent>(&payload) else {
-                                        continue;
-                                    };
                                     match mesh_handle.publish(intent).await {
                                         Ok(()) => tracing::info!(
                                             "bridged a BLE intent from an offline peer onto the IP mesh"
@@ -345,11 +353,12 @@ pub fn run() {
                         // arriving five seconds after the peer sent it.
                         let handle_clone = app_handle.clone();
                         let ledger = state.intents().clone();
+                        let received = state.received().clone();
                         let state_for_events = state.clone();
                         let ble_for_events = ble.clone();
                         tokio::spawn(async move {
                             while let Some(event) = event_rx.recv().await {
-                                intents::apply_mesh_event(&ledger, &event);
+                                intents::apply_mesh_event(&ledger, &received, &event);
                                 // A device with no IP-plane connectivity has
                                 // nothing to offer a BLE peer asking for a
                                 // gateway; one that just regained it does.
@@ -366,6 +375,13 @@ pub fn run() {
                                         if let Err(error) = ble.set_gateway(*online).await {
                                             tracing::warn!(%error, "failed to update BLE gateway capability");
                                         }
+                                    }
+
+                                    if *online {
+                                        // Anything composed while offline is
+                                        // sitting in `Draft` waiting for
+                                        // exactly this reconnection.
+                                        commands::retry_queued_intents(&state_for_events).await;
                                     }
                                 }
                                 let _ = handle_clone.emit("mesh-event", event);

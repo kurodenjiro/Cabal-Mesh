@@ -350,6 +350,57 @@ struct Acceptance {
     price: Option<String>,
 }
 
+/// Intents this device has seen from other peers — over the IP mesh directly,
+/// or bridged in from BLE. The mirror of [`Ledger`]: that tracks what this
+/// device composed, this tracks the opposite direction, so a device that only
+/// ever relays or receives is not blank on both counts forever.
+///
+/// Deduped by [`crate::mesh::PrivacyIntent::id`] rather than counted per
+/// delivery: the BLE fallback resends an unconfirmed broadcast a few seconds
+/// apart, and without dedup a single intent would inflate the count with its
+/// own retries.
+#[derive(Clone)]
+pub struct ReceivedLog {
+    inner: Arc<Mutex<std::collections::HashSet<String>>>,
+    store: Arc<cabal_store::JsonStore>,
+}
+
+impl ReceivedLog {
+    /// Opens the log, adopting whatever was persisted.
+    #[must_use]
+    pub fn open(store: cabal_store::JsonStore) -> Self {
+        let seen = store.load_or(std::collections::HashSet::new());
+        Self {
+            inner: Arc::new(Mutex::new(seen)),
+            store: Arc::new(store),
+        }
+    }
+
+    /// Records a sighting, deduped by id.
+    ///
+    /// A blank id — an old build's payload, or a malformed one — is never
+    /// recorded: an empty string would dedupe every such intent into one slot
+    /// instead of counting none of them.
+    pub fn record(&self, id: &str) {
+        if id.is_empty() {
+            return;
+        }
+        let mut seen = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        if !seen.insert(id.to_string()) {
+            return;
+        }
+        if let Err(error) = self.store.save(&*seen) {
+            tracing::error!(target: "cabalmesh::intents", %error, "could not persist the received log");
+        }
+    }
+
+    /// Distinct intents seen from other peers, ever.
+    #[must_use]
+    pub fn count(&self) -> usize {
+        self.inner.lock().unwrap_or_else(PoisonError::into_inner).len()
+    }
+}
+
 /// Applies a mesh event to the ledger.
 ///
 /// Called on the forwarding path so negotiation reaches the detail screen as it
@@ -357,10 +408,19 @@ struct Acceptance {
 /// after the peer sent it, which on a screen with an elapsed timer beside it is
 /// visibly wrong.
 ///
+/// Also the only place [`MeshEvent::IntentReceived`](crate::mesh::MeshEvent::IntentReceived)
+/// goes — it carries no ledger entry of its own to update, only a sighting for
+/// `received` to count.
+///
 /// Unrecognised events and unparseable payloads are ignored rather than logged
 /// as errors: this topic carries traffic for the whole mesh, and most of it is
 /// legitimately not about any intent this device composed.
-pub fn apply_mesh_event(ledger: &Ledger, event: &crate::mesh::MeshEvent) {
+pub fn apply_mesh_event(ledger: &Ledger, received: &ReceivedLog, event: &crate::mesh::MeshEvent) {
+    if let crate::mesh::MeshEvent::IntentReceived { intent } = event {
+        received.record(&intent.id);
+        return;
+    }
+
     let crate::mesh::MeshEvent::DealAccepted { details } = event else {
         return;
     };
