@@ -254,6 +254,12 @@ impl MeshNetwork {
         // always reflects what the swarm is actually doing.
         let mut listening_on: Vec<String> = Vec::new();
         let mut offline = false;
+        // Edge-triggered against `self.swarm.connected_peers()` on every
+        // connection open/close below, rather than recomputed on each
+        // `Snapshot` poll: a gossipsub `publish` only reaches anyone once at
+        // least one peer is connected, so "have a connected peer" is exactly
+        // the condition this device can usefully act as a gateway under.
+        let mut online = false;
 
         loop {
             tokio::select! {
@@ -265,6 +271,7 @@ impl MeshNetwork {
                                 peer_count: self.swarm.connected_peers().count(),
                                 listening_on: listening_on.clone(),
                                 offline,
+                                online,
                                 relay_bytes: self.relay_bytes.load(std::sync::atomic::Ordering::Relaxed),
                             });
                             continue;
@@ -419,6 +426,14 @@ impl MeshNetwork {
                             }
                             _ => {}
                         },
+                        SwarmEvent::ConnectionEstablished { .. } | SwarmEvent::ConnectionClosed { .. } => {
+                            let now_online = self.swarm.connected_peers().count() > 0;
+                            if now_online != online {
+                                online = now_online;
+                                tracing::info!(online, "IP plane connectivity changed");
+                                let _ = tx.send(MeshEvent::ConnectivityChanged { online });
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -504,4 +519,10 @@ pub enum MeshEvent {
     /// A peer's real AVAX wallet address, learned from its "presence" broadcast
     /// (not from mDNS discovery, which only knows the ephemeral libp2p PeerID).
     PeerIdentity { peer_id: String, address: String },
+    /// The IP plane gained or lost its last connected peer. `online` answers
+    /// "can this device currently reach the internet" — see `set_gateway` on
+    /// `cabal_ble::Engine`, which is what this is meant to drive: a node with
+    /// no IP-plane connectivity has nothing to offer a BLE peer asking for a
+    /// gateway, so it must not advertise the capability bit.
+    ConnectivityChanged { online: bool },
 }

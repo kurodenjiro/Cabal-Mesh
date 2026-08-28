@@ -300,9 +300,29 @@ pub fn run() {
                         // arriving five seconds after the peer sent it.
                         let handle_clone = app_handle.clone();
                         let ledger = state.intents().clone();
+                        let state_for_events = state.clone();
+                        let ble_for_events = ble.clone();
                         tokio::spawn(async move {
                             while let Some(event) = event_rx.recv().await {
                                 intents::apply_mesh_event(&ledger, &event);
+                                // A device with no IP-plane connectivity has
+                                // nothing to offer a BLE peer asking for a
+                                // gateway; one that just regained it does.
+                                // This is the only place either fact is
+                                // learned, so it is also the only place that
+                                // can keep `RuntimeCaps.online` and the BLE
+                                // engine's gateway bit from going stale.
+                                if let mesh::MeshEvent::ConnectivityChanged { online } = &event {
+                                    let mut caps = state_for_events.runtime_caps();
+                                    caps.online = *online;
+                                    state_for_events.set_runtime_caps(caps);
+
+                                    if let Some(ble) = &ble_for_events {
+                                        if let Err(error) = ble.set_gateway(*online).await {
+                                            tracing::warn!(%error, "failed to update BLE gateway capability");
+                                        }
+                                    }
+                                }
                                 let _ = handle_clone.emit("mesh-event", event);
                             }
                         });
