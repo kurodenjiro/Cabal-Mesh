@@ -268,6 +268,51 @@ pub fn run() {
                         }
                     });
 
+                    // Bridges an offline peer's BLE-broadcast intent onto the
+                    // IP mesh, once this device has one to bridge onto. This
+                    // is the other half of `commands.rs`'s `publish_over_ble`
+                    // fallback: an intent composed with no Wi-Fi floods over
+                    // Bluetooth instead of just queueing, and whichever
+                    // nearby device is currently online — the gateway from
+                    // the connectivity fix above — is the one that actually
+                    // republishes it where the rest of the mesh can see it.
+                    // Gated on `runtime_caps().online` rather than merely
+                    // `services.mesh` existing: a mesh handle can exist with
+                    // zero connected peers, and `MeshHandle::publish` treats
+                    // that as a harmless local no-op rather than an error, so
+                    // checking only "is there a handle" would silently drop
+                    // the very peers this bridge exists to reach.
+                    let mut intent_bridge_events = handle.subscribe();
+                    let intent_bridge_state = state.clone();
+                    tokio::spawn(async move {
+                        loop {
+                            match intent_bridge_events.recv().await {
+                                Ok(ble::BleEvent::Received { kind: cabal_ble::wire::PacketKind::Intent, payload, .. }) => {
+                                    if !intent_bridge_state.runtime_caps().online {
+                                        continue;
+                                    }
+                                    let Ok(services) = intent_bridge_state.services() else { continue };
+                                    let Some(mesh_handle) = services.mesh.as_ref() else { continue };
+                                    let Ok(intent) = serde_json::from_slice::<mesh::PrivacyIntent>(&payload) else {
+                                        continue;
+                                    };
+                                    match mesh_handle.publish(intent).await {
+                                        Ok(()) => tracing::info!(
+                                            "bridged a BLE intent from an offline peer onto the IP mesh"
+                                        ),
+                                        Err(error) => tracing::debug!(
+                                            %error,
+                                            "could not bridge a BLE intent onto the IP mesh"
+                                        ),
+                                    }
+                                }
+                                Ok(_) => {}
+                                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                            }
+                        }
+                    });
+
                     handle
                 });
                 if ble.is_none() {

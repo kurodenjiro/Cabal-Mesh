@@ -988,8 +988,22 @@ pub async fn broadcast_intent(
     let published = publish(&state, &intent).await;
 
     match published {
-        Ok(peers) => {
+        Ok(PublishRoute::Mesh(peers)) => {
             ledger.record(&intent.id, line("BROADCAST TO MESH.", LogTone::Ok));
+            let route_len = u8::try_from(peers).unwrap_or(u8::MAX);
+            let _ = ledger.advance(
+                &intent.id,
+                cabal_core::IntentStatus::Broadcast { route_len },
+                crate::intents::now_ms(),
+            );
+        }
+        Ok(PublishRoute::Ble(peers)) => {
+            // No internet here, but a BLE-reachable peer heard it — flooded
+            // through the room the same way an `Announce` is, so a gateway
+            // among those peers can carry it onward. See the BLE `Intent`
+            // bridge in `lib.rs`: whichever gateway sees this over the radio
+            // is the one that actually reaches the mesh on our behalf.
+            ledger.record(&intent.id, line("BROADCAST VIA BLUETOOTH GATEWAY.", LogTone::Ok));
             let route_len = u8::try_from(peers).unwrap_or(u8::MAX);
             let _ = ledger.advance(
                 &intent.id,
@@ -1007,12 +1021,53 @@ pub async fn broadcast_intent(
     Ok(intent.id.to_string())
 }
 
-/// Publishes an intent to the mesh, reporting the peer count it reached.
+/// Which plane actually carried a published intent, and how many peers it
+/// reached there — the two planes report peer counts that mean different
+/// things, so keeping them apart rather than collapsing to one `usize`
+/// avoids attributing an IP peer count to a Bluetooth broadcast or the
+/// reverse.
+enum PublishRoute {
+    Mesh(usize),
+    Ble(usize),
+}
+
+/// Publishes an intent, preferring the IP mesh and falling back to the BLE
+/// room when there is no internet — a device with Bluetooth peers but no
+/// Wi-Fi is not actually offline, it just has to hop through a gateway
+/// instead of reaching the topic directly. See `docs/ble-mesh-design.md` §8.
 ///
 /// The error is the on-voice line to record, not a message to show raw —
 /// every path through here ends up in the terminal the user is reading.
-async fn publish(state: &AppState, intent: &crate::intents::Intent) -> Result<usize, &'static str> {
+async fn publish(state: &AppState, intent: &crate::intents::Intent) -> Result<PublishRoute, &'static str> {
     let services = state.services().map_err(|_| "MESH NOT READY. QUEUED LOCALLY.")?;
+
+    // The payload is the draft, serialized. Encryption is the transport's job:
+    // Noise already covers every hop, and a second layer here would be
+    // ceremony rather than protection.
+    let payload = serde_json::to_string(&intent.draft).map_err(|_| "COULD NOT ENCODE. QUEUED LOCALLY.")?;
+    let privacy_intent = crate::mesh::PrivacyIntent {
+        intent_type: "intent".into(),
+        payload,
+        encrypted: false,
+        relay_path: Vec::new(),
+        relay_fee: None,
+    };
+
+    match publish_over_mesh(&services, &privacy_intent).await {
+        Ok(peers) => return Ok(PublishRoute::Mesh(peers)),
+        Err(mesh_reason) => {
+            if let Some(peers) = publish_over_ble(&services, &privacy_intent).await {
+                return Ok(PublishRoute::Ble(peers));
+            }
+            Err(mesh_reason)
+        }
+    }
+}
+
+async fn publish_over_mesh(
+    services: &crate::state::Services,
+    intent: &crate::mesh::PrivacyIntent,
+) -> Result<usize, &'static str> {
     let mesh = services.mesh.as_ref().ok_or("NO MESH. QUEUED LOCALLY.")?;
 
     let snapshot = mesh.snapshot().await.map_err(|_| "MESH UNREACHABLE. QUEUED LOCALLY.")?;
@@ -1023,21 +1078,27 @@ async fn publish(state: &AppState, intent: &crate::intents::Intent) -> Result<us
         return Err("NO PEERS IN RANGE. QUEUED LOCALLY.");
     }
 
-    // The payload is the draft, serialized. Encryption is the transport's job:
-    // Noise already covers every hop, and a second layer here would be
-    // ceremony rather than protection.
-    let payload = serde_json::to_string(&intent.draft).map_err(|_| "COULD NOT ENCODE. QUEUED LOCALLY.")?;
-    mesh.publish(crate::mesh::PrivacyIntent {
-        intent_type: "intent".into(),
-        payload,
-        encrypted: false,
-        relay_path: Vec::new(),
-        relay_fee: None,
-    })
-    .await
-    .map_err(|_| "PUBLISH REFUSED. QUEUED LOCALLY.")?;
-
+    mesh.publish(intent.clone()).await.map_err(|_| "PUBLISH REFUSED. QUEUED LOCALLY.")?;
     Ok(snapshot.peer_count)
+}
+
+/// The BLE fallback. Returns `None` rather than an error string on every
+/// failure path: BLE not having worked is not itself the reason to show —
+/// the mesh failure from `publish_over_mesh` already is, and this is only
+/// ever consulted after that one failed.
+async fn publish_over_ble(
+    services: &crate::state::Services,
+    intent: &crate::mesh::PrivacyIntent,
+) -> Option<usize> {
+    let ble = services.ble.as_ref()?;
+    let status = ble.status().await.ok()?;
+    if status.offline || status.reachable_peers == 0 {
+        return None;
+    }
+
+    let payload = serde_json::to_vec(intent).ok()?;
+    ble.broadcast(cabal_ble::wire::PacketKind::Intent, payload).await.ok()?;
+    Some(status.reachable_peers)
 }
 
 /// Everything the detail screen renders.
