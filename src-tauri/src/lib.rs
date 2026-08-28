@@ -117,7 +117,9 @@ pub fn run() {
             let app_handle = app.handle().clone();
 
             // Create consistent Ollama instance
-            let ollama_manager = Arc::new(OllamaManager::new(Some("llama2".to_string())));
+            let ollama_manager = Arc::new(OllamaManager::new(Some(
+                ollama_config::INTENT_MODEL.to_string(),
+            )));
             let ollama_init = ollama_manager.clone();
             
             // Initialize Ollama in background

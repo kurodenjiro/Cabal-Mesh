@@ -4,6 +4,18 @@ use std::sync::RwLock;
 
 use crate::app_paths;
 
+/// Model used to translate free text into the `NEW INTENT` form.
+pub const INTENT_MODEL: &str = "llama3.1:8b";
+
+/// Android Emulator's stable alias for the development host.
+///
+/// A physical Android device must persist a reachable LAN URL with
+/// [`set_url`]; `localhost` and `10.0.2.2` both refer to something other than
+/// the developer machine there.
+#[cfg(target_os = "android")]
+pub const DEFAULT_URL: &str = "http://10.0.2.2:11434";
+
+#[cfg(not(target_os = "android"))]
 pub const DEFAULT_URL: &str = "http://localhost:11434";
 pub const ENV_VAR: &str = "CABALMESH_OLLAMA_URL";
 
@@ -18,8 +30,9 @@ fn config_path() -> PathBuf {
 /// Base URL of the Ollama server, without a trailing slash.
 ///
 /// Resolution order: `CABALMESH_OLLAMA_URL`, then whatever `set_url` last
-/// stored, then localhost. Mobile has no local Ollama and cannot spawn one, so
-/// the default is unreachable there and a remote URL must be supplied.
+/// stored, then the platform default. Android Emulator uses its `10.0.2.2`
+/// host alias; other platforms use localhost. Physical mobile devices cannot
+/// spawn Ollama and must be pointed at a reachable server with [`set_url`].
 pub fn url() -> String {
     if let Ok(from_env) = std::env::var(ENV_VAR) {
         if let Some(cleaned) = normalize(&from_env) {
@@ -48,7 +61,9 @@ pub fn set_url(new_url: &str) -> Result<String, String> {
     match &cleaned {
         Some(u) => {
             if !u.starts_with("http://") && !u.starts_with("https://") {
-                return Err(format!("Ollama URL must start with http:// or https://, got {u}"));
+                return Err(format!(
+                    "Ollama URL must start with http:// or https://, got {u}"
+                ));
             }
             fs::write(config_path(), u).map_err(|e| format!("Failed to save Ollama URL: {e}"))?;
         }

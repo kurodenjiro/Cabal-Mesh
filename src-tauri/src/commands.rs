@@ -930,7 +930,7 @@ async fn will_broadcast(state: &AppState) -> bool {
 pub async fn parse_intent_chat(text: String, state: State<'_, AppState>) -> Result<IntentFields, AppError> {
     let options = build_form_options(&state).await;
     let services = state.services()?;
-    services.intent_chat.parse(&text, &options).await.map_err(AppError::internal_msg)
+    services.intent_chat.parse(&text, &options).await.map_err(AppError::internal)
 }
 
 /// Validates a draft and returns what the confirm dialog shows.
