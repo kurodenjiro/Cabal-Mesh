@@ -3,6 +3,7 @@ mod app_paths;
 mod platform;
 mod ollama_config;
 mod ollama_manager;
+mod negotiation;
 
 // Public because their types *are* the IPC contract: everything below
 // serializes across the boundary to the webview, so the shapes are already
@@ -117,7 +118,9 @@ pub fn run() {
             let app_handle = app.handle().clone();
 
             // Create consistent Ollama instance
-            let ollama_manager = Arc::new(OllamaManager::new(Some("llama2".to_string())));
+            let ollama_manager = Arc::new(OllamaManager::new(Some(
+                ollama_config::INTENT_MODEL.to_string(),
+            )));
             let ollama_init = ollama_manager.clone();
             
             // Initialize Ollama in background
@@ -173,16 +176,14 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 // Shared Bridge Resource (Created here first)
                 // Desktop only: there is no .env file in a mobile bundle, and no
-                // environment to read it into. Mobile falls through to the
-                // compiled-in default until ticket 24 replaces this with a
-                // per-network address table.
+                // environment to read it into. `BlockchainBridge::new` resolves
+                // rpc_url/chain_id/contract addrs from `NetworkConfig`, which
+                // layers this `.env` on top of network.json on desktop and
+                // falls through to the compiled-in per-network table on mobile.
                 #[cfg(desktop)]
                 dotenv::dotenv().ok();
 
-                let rpc_url = std::env::var("AVAX_RPC_URL")
-                    .unwrap_or_else(|_| blockchain_bridge::DEFAULT_AVAX_RPC_URL.to_string());
-
-                let bridge = Arc::new(Mutex::new(BlockchainBridge::new(Some(rpc_url))));
+                let bridge = Arc::new(Mutex::new(BlockchainBridge::new()));
                 let guardian_service = Arc::new(Mutex::new(guardian::GuardianService::open(&app_paths::data_dir())));
                 let guardian_approvals = guardian_actor::PendingApprovals::new();
 
@@ -266,6 +267,69 @@ pub fn run() {
                         }
                     });
 
+                    // Bridges an offline peer's BLE-broadcast intent onto the
+                    // IP mesh, once this device has one to bridge onto. This
+                    // is the other half of `commands.rs`'s `publish_over_ble`
+                    // fallback: an intent composed with no Wi-Fi floods over
+                    // Bluetooth instead of just queueing, and whichever
+                    // nearby device is currently online — the gateway from
+                    // the connectivity fix above — is the one that actually
+                    // republishes it where the rest of the mesh can see it.
+                    // Gated on `runtime_caps().online` rather than merely
+                    // `services.mesh` existing: a mesh handle can exist with
+                    // zero connected peers, and `MeshHandle::publish` treats
+                    // that as a harmless local no-op rather than an error, so
+                    // checking only "is there a handle" would silently drop
+                    // the very peers this bridge exists to reach.
+                    let mut intent_bridge_events = handle.subscribe();
+                    let intent_bridge_state = state.clone();
+                    tokio::spawn(async move {
+                        loop {
+                            match intent_bridge_events.recv().await {
+                                Ok(ble::BleEvent::Received { kind: cabal_ble::wire::PacketKind::Intent, payload, .. }) => {
+                                    let Ok(intent) = serde_json::from_slice::<mesh::PrivacyIntent>(&payload) else {
+                                        continue;
+                                    };
+                                    // Counted on arrival, ahead of the
+                                    // online-gate below: a "received" count
+                                    // that only incremented when this device
+                                    // happened to have a gateway to bridge
+                                    // onto would undercount the very radio
+                                    // traffic it exists to show. The same
+                                    // "was this new" result also gates
+                                    // negotiation, so a BLE resend of the
+                                    // same intent can't propose the same deal
+                                    // twice — see `ReceivedLog::record`.
+                                    if intent_bridge_state.received().record(&intent.id) {
+                                        let negotiation_state = intent_bridge_state.clone();
+                                        let candidate = intent.clone();
+                                        tokio::spawn(async move {
+                                            negotiation::consider(&negotiation_state, &candidate).await;
+                                        });
+                                    }
+
+                                    if !intent_bridge_state.runtime_caps().online {
+                                        continue;
+                                    }
+                                    let Ok(services) = intent_bridge_state.services() else { continue };
+                                    let Some(mesh_handle) = services.mesh.as_ref() else { continue };
+                                    match mesh_handle.publish(intent).await {
+                                        Ok(()) => tracing::info!(
+                                            "bridged a BLE intent from an offline peer onto the IP mesh"
+                                        ),
+                                        Err(error) => tracing::debug!(
+                                            %error,
+                                            "could not bridge a BLE intent onto the IP mesh"
+                                        ),
+                                    }
+                                }
+                                Ok(_) => {}
+                                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                            }
+                        }
+                    });
+
                     handle
                 });
                 if ble.is_none() {
@@ -298,9 +362,50 @@ pub fn run() {
                         // arriving five seconds after the peer sent it.
                         let handle_clone = app_handle.clone();
                         let ledger = state.intents().clone();
+                        let received = state.received().clone();
+                        let state_for_events = state.clone();
+                        let ble_for_events = ble.clone();
                         tokio::spawn(async move {
                             while let Some(event) = event_rx.recv().await {
-                                intents::apply_mesh_event(&ledger, &event);
+                                // Gated on "was this id new" so a duplicate
+                                // delivery of the same intent (gossipsub can
+                                // redeliver) can't trigger a second match —
+                                // same reasoning as the BLE-bridge path below.
+                                if let mesh::MeshEvent::IntentReceived { intent } = &event {
+                                    if received.record(&intent.id) {
+                                        let negotiation_state = state_for_events.clone();
+                                        let candidate = intent.clone();
+                                        tokio::spawn(async move {
+                                            negotiation::consider(&negotiation_state, &candidate).await;
+                                        });
+                                    }
+                                }
+                                intents::apply_mesh_event(&ledger, &received, &event);
+                                // A device with no IP-plane connectivity has
+                                // nothing to offer a BLE peer asking for a
+                                // gateway; one that just regained it does.
+                                // This is the only place either fact is
+                                // learned, so it is also the only place that
+                                // can keep `RuntimeCaps.online` and the BLE
+                                // engine's gateway bit from going stale.
+                                if let mesh::MeshEvent::ConnectivityChanged { online } = &event {
+                                    let mut caps = state_for_events.runtime_caps();
+                                    caps.online = *online;
+                                    state_for_events.set_runtime_caps(caps);
+
+                                    if let Some(ble) = &ble_for_events {
+                                        if let Err(error) = ble.set_gateway(*online).await {
+                                            tracing::warn!(%error, "failed to update BLE gateway capability");
+                                        }
+                                    }
+
+                                    if *online {
+                                        // Anything composed while offline is
+                                        // sitting in `Draft` waiting for
+                                        // exactly this reconnection.
+                                        commands::retry_queued_intents(&state_for_events).await;
+                                    }
+                                }
                                 let _ = handle_clone.emit("mesh-event", event);
                             }
                         });
@@ -374,6 +479,8 @@ pub fn run() {
             commands::cancel_intent,
             commands::intent_proof,
             commands::vault_assets,
+            commands::vault_refresh_balance,
+            commands::vault_address,
             commands::vault_identities,
             commands::vault_keys,
             commands::security_status,
@@ -400,6 +507,7 @@ pub fn run() {
             commands::vault_unequip_module,
             commands::vault_redeem_module,
             commands::profile_summary,
+            commands::network_set,
             commands::set_offline_mode,
         ])
         .build(tauri::generate_context!())

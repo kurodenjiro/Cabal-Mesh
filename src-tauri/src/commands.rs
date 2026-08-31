@@ -211,10 +211,25 @@ pub async fn mesh_snapshot(state: State<'_, AppState>) -> Result<MeshSnapshotVie
         None => StatTile::plain("INTENTS SETTLED", standing.value()),
     };
 
+    // Broadcasted: ledger entries this device has actually pushed off the
+    // device — a `Draft` is composed but nothing has left yet, so it does not
+    // count. Received: distinct intents seen from other peers, over the mesh
+    // or bridged in from BLE — see `ReceivedLog` for why it dedupes rather
+    // than counting every delivery attempt. Both read local state, so like
+    // `settled_tile` they hold with no mesh connected at all.
+    let broadcasted = state
+        .intents()
+        .all()
+        .iter()
+        .filter(|intent| !matches!(intent.status, cabal_core::IntentStatus::Draft))
+        .count();
+
     let stats = vec![
         StatTile::plain("NETWORK NODES", separated(snapshot.peer_count as u64)),
         StatTile::plain("RELAYED BYTES", separated(snapshot.relay_bytes)),
         settled_tile,
+        StatTile::plain("BROADCASTED", separated(broadcasted as u64)),
+        StatTile::plain("RECEIVED", separated(state.received().count() as u64)),
     ];
 
     Ok(MeshSnapshotView {
@@ -930,7 +945,7 @@ async fn will_broadcast(state: &AppState) -> bool {
 pub async fn parse_intent_chat(text: String, state: State<'_, AppState>) -> Result<IntentFields, AppError> {
     let options = build_form_options(&state).await;
     let services = state.services()?;
-    services.intent_chat.parse(&text, &options).await.map_err(AppError::internal_msg)
+    services.intent_chat.parse(&text, &options).await.map_err(AppError::internal)
 }
 
 /// Validates a draft and returns what the confirm dialog shows.
@@ -988,8 +1003,22 @@ pub async fn broadcast_intent(
     let published = publish(&state, &intent).await;
 
     match published {
-        Ok(peers) => {
+        Ok(PublishRoute::Mesh(peers)) => {
             ledger.record(&intent.id, line("BROADCAST TO MESH.", LogTone::Ok));
+            let route_len = u8::try_from(peers).unwrap_or(u8::MAX);
+            let _ = ledger.advance(
+                &intent.id,
+                cabal_core::IntentStatus::Broadcast { route_len },
+                crate::intents::now_ms(),
+            );
+        }
+        Ok(PublishRoute::Ble(peers)) => {
+            // No internet here, but a BLE-reachable peer heard it — flooded
+            // through the room the same way an `Announce` is, so a gateway
+            // among those peers can carry it onward. See the BLE `Intent`
+            // bridge in `lib.rs`: whichever gateway sees this over the radio
+            // is the one that actually reaches the mesh on our behalf.
+            ledger.record(&intent.id, line("BROADCAST VIA BLUETOOTH GATEWAY.", LogTone::Ok));
             let route_len = u8::try_from(peers).unwrap_or(u8::MAX);
             let _ = ledger.advance(
                 &intent.id,
@@ -1007,12 +1036,101 @@ pub async fn broadcast_intent(
     Ok(intent.id.to_string())
 }
 
-/// Publishes an intent to the mesh, reporting the peer count it reached.
+/// Retries every intent still sitting in `Draft` — composed but never
+/// broadcast — now that connectivity might reach further than it did when
+/// each one was queued.
+///
+/// Fired from `lib.rs` on `MeshEvent::ConnectivityChanged { online: true }`:
+/// that is the one moment a relay reservation just landed, so it is also the
+/// one moment retrying is likely to do anything different from the attempt
+/// that queued the intent in the first place. A still-failing retry stays
+/// silent rather than re-recording "QUEUED LOCALLY." — the original attempt
+/// already said that, and a device that reconnects and drops repeatedly
+/// would otherwise fill the ledger with copies of the same line.
+pub(crate) async fn retry_queued_intents(state: &AppState) {
+    use crate::bindings::LogTone;
+    use crate::intents::line;
+
+    let ledger = state.intents();
+    let queued: Vec<_> = ledger
+        .all()
+        .into_iter()
+        .filter(|intent| matches!(intent.status, cabal_core::IntentStatus::Draft))
+        .collect();
+
+    for intent in queued {
+        let route_len = match publish(state, &intent).await {
+            Ok(PublishRoute::Mesh(peers)) => {
+                ledger.record(&intent.id, line("BROADCAST TO MESH.", LogTone::Ok));
+                peers
+            }
+            Ok(PublishRoute::Ble(peers)) => {
+                ledger.record(&intent.id, line("BROADCAST VIA BLUETOOTH GATEWAY.", LogTone::Ok));
+                peers
+            }
+            Err(_) => continue,
+        };
+        let route_len = u8::try_from(route_len).unwrap_or(u8::MAX);
+        let _ = ledger.advance(
+            &intent.id,
+            cabal_core::IntentStatus::Broadcast { route_len },
+            crate::intents::now_ms(),
+        );
+    }
+}
+
+/// Which plane actually carried a published intent, and how many peers it
+/// reached there — the two planes report peer counts that mean different
+/// things, so keeping them apart rather than collapsing to one `usize`
+/// avoids attributing an IP peer count to a Bluetooth broadcast or the
+/// reverse.
+enum PublishRoute {
+    Mesh(usize),
+    Ble(usize),
+}
+
+/// Publishes an intent, preferring the IP mesh and falling back to the BLE
+/// room when there is no internet — a device with Bluetooth peers but no
+/// Wi-Fi is not actually offline, it just has to hop through a gateway
+/// instead of reaching the topic directly. See `docs/ble-mesh-design.md` §8.
 ///
 /// The error is the on-voice line to record, not a message to show raw —
 /// every path through here ends up in the terminal the user is reading.
-async fn publish(state: &AppState, intent: &crate::intents::Intent) -> Result<usize, &'static str> {
+async fn publish(state: &AppState, intent: &crate::intents::Intent) -> Result<PublishRoute, &'static str> {
     let services = state.services().map_err(|_| "MESH NOT READY. QUEUED LOCALLY.")?;
+
+    // The payload is the draft, serialized. Encryption is the transport's job:
+    // Noise already covers every hop, and a second layer here would be
+    // ceremony rather than protection.
+    let payload = serde_json::to_string(&intent.draft).map_err(|_| "COULD NOT ENCODE. QUEUED LOCALLY.")?;
+    let privacy_intent = crate::mesh::PrivacyIntent {
+        id: intent.id.to_string(),
+        intent_type: "intent".into(),
+        payload,
+        encrypted: false,
+        // `verify_relay_integrity` rejects an empty relay path outright — it
+        // exists to catch a hop-stripped intent, but a fresh one hasn't been
+        // relayed by anyone yet, so it has to carry its own origin stamp from
+        // the moment it's created, not first grow one somewhere downstream.
+        relay_path: vec!["origin_node".into()],
+        relay_fee: None,
+    };
+
+    match publish_over_mesh(&services, &privacy_intent).await {
+        Ok(peers) => return Ok(PublishRoute::Mesh(peers)),
+        Err(mesh_reason) => {
+            if let Some(peers) = publish_over_ble(&services, &privacy_intent).await {
+                return Ok(PublishRoute::Ble(peers));
+            }
+            Err(mesh_reason)
+        }
+    }
+}
+
+pub(crate) async fn publish_over_mesh(
+    services: &crate::state::Services,
+    intent: &crate::mesh::PrivacyIntent,
+) -> Result<usize, &'static str> {
     let mesh = services.mesh.as_ref().ok_or("NO MESH. QUEUED LOCALLY.")?;
 
     let snapshot = mesh.snapshot().await.map_err(|_| "MESH UNREACHABLE. QUEUED LOCALLY.")?;
@@ -1023,21 +1141,62 @@ async fn publish(state: &AppState, intent: &crate::intents::Intent) -> Result<us
         return Err("NO PEERS IN RANGE. QUEUED LOCALLY.");
     }
 
-    // The payload is the draft, serialized. Encryption is the transport's job:
-    // Noise already covers every hop, and a second layer here would be
-    // ceremony rather than protection.
-    let payload = serde_json::to_string(&intent.draft).map_err(|_| "COULD NOT ENCODE. QUEUED LOCALLY.")?;
-    mesh.publish(crate::mesh::PrivacyIntent {
-        intent_type: "intent".into(),
-        payload,
-        encrypted: false,
-        relay_path: Vec::new(),
-        relay_fee: None,
-    })
-    .await
-    .map_err(|_| "PUBLISH REFUSED. QUEUED LOCALLY.")?;
-
+    mesh.publish(intent.clone()).await.map_err(|_| "PUBLISH REFUSED. QUEUED LOCALLY.")?;
     Ok(snapshot.peer_count)
+}
+
+/// Extra attempts after the first, spaced [`BLE_INTENT_RESEND_DELAY`] apart.
+///
+/// The radio's send is fire-and-forget the whole way down — Android's writer
+/// thread queues bytes and reports success before a single one reaches the
+/// socket, so a link that dies mid-write is indistinguishable, from here, from
+/// one that delivered. `Announce` gets away with the same radio because it is
+/// periodic and self-heals; `Intent` is submitted once. In a two-peer room
+/// there is nobody else to relay a copy that never arrived, so the origin has
+/// to be the one that tries again.
+const BLE_INTENT_RESENDS: u8 = 2;
+
+/// Gap between resends. Long enough that a link mid-glare (both sides having
+/// just dialled each other) has settled to one usable connection by the next
+/// attempt, short enough that all retries land inside the few seconds a
+/// composing user is still watching the screen.
+const BLE_INTENT_RESEND_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// The BLE fallback. Returns `None` rather than an error string on every
+/// failure path: BLE not having worked is not itself the reason to show —
+/// the mesh failure from `publish_over_mesh` already is, and this is only
+/// ever consulted after that one failed.
+pub(crate) async fn publish_over_ble(
+    services: &crate::state::Services,
+    intent: &crate::mesh::PrivacyIntent,
+) -> Option<usize> {
+    let ble = services.ble.as_ref()?;
+    let status = ble.status().await.ok()?;
+    if status.offline || status.reachable_peers == 0 {
+        return None;
+    }
+
+    let payload = serde_json::to_vec(intent).ok()?;
+    ble.broadcast(cabal_ble::wire::PacketKind::Intent, payload.clone())
+        .await
+        .ok()?;
+
+    // Resent in the background: the caller already has what it needs (a
+    // route to record and a peer count to show) the moment the first send is
+    // handed to the radio, and making it wait out every retry would hold a
+    // "compose" button spinner hostage to a link that may never confirm
+    // anything, ever, by design.
+    let retry_ble = ble.clone();
+    tokio::spawn(async move {
+        for _ in 0..BLE_INTENT_RESENDS {
+            tokio::time::sleep(BLE_INTENT_RESEND_DELAY).await;
+            let _ = retry_ble
+                .broadcast(cabal_ble::wire::PacketKind::Intent, payload.clone())
+                .await;
+        }
+    });
+
+    Some(status.reachable_peers)
 }
 
 /// Everything the detail screen renders.
@@ -1782,23 +1941,88 @@ pub async fn vault_assets(state: State<'_, AppState>) -> Result<Vec<VaultRow>, A
 
     // The native balance is the one thing actually known. Listing tokens the
     // wallet has never held would be inventing holdings.
-    let snapshot = bridge.get_latest_snapshot().ok();
-    let rows = snapshot
+    Ok(vault_rows_from_snapshot(bridge.get_latest_snapshot().ok()))
+}
+
+/// Re-syncs the native AVAX balance from RPC on demand — the ASSETS tab's
+/// refresh button — then returns the same shape `vault_assets` does, so the
+/// frontend can swap `rows` straight from the response instead of making a
+/// second round trip that could race a concurrent poll.
+///
+/// # Errors
+///
+/// [`AppError::NotReady`] before bootstrap. [`AppError::Internal`] if the RPC
+/// sync fails (offline, endpoint down); the caller keeps showing the last
+/// known snapshot in that case.
+#[tauri::command]
+pub async fn vault_refresh_balance(state: State<'_, AppState>) -> Result<Vec<VaultRow>, AppError> {
+    let services = state.services()?;
+    let bridge = services.bridge.lock().await;
+    bridge.sync_state("ignored_override").await.map_err(AppError::internal_msg)?;
+    Ok(vault_rows_from_snapshot(bridge.get_latest_snapshot().ok()))
+}
+
+fn vault_rows_from_snapshot(snapshot: Option<crate::blockchain_bridge::Snapshot>) -> Vec<VaultRow> {
+    snapshot
         .map(|snapshot| {
             snapshot
                 .assets
                 .into_iter()
                 .map(|asset| VaultRow {
                     tag: asset.symbol.chars().take(3).collect::<String>().to_uppercase(),
+                    amount: format_native_amount(&asset.amount),
                     name: asset.symbol,
-                    amount: asset.amount,
                     detail: None,
                 })
                 .collect()
         })
-        .unwrap_or_default();
+        .unwrap_or_default()
+}
 
-    Ok(rows)
+/// The snapshot stores native balance as a decimal wei string — the same raw
+/// precision `build_form_options` matches against `ASSETS`' decimals table —
+/// but `VaultRow.amount` is display-only text, with no decimals field for the
+/// frontend to divide by itself. Falls back to the raw string on a parse
+/// failure rather than hiding a malformed snapshot behind a blank amount.
+fn format_native_amount(wei: &str) -> String {
+    wei.parse::<alloy::primitives::U256>()
+        .map(alloy::primitives::utils::format_ether)
+        .unwrap_or_else(|_| wei.to_string())
+}
+
+#[cfg(test)]
+mod vault_amount_tests {
+    use super::format_native_amount;
+
+    #[test]
+    fn formats_wei_as_avax() {
+        assert_eq!(format_native_amount("10000000000000000"), "0.010000000000000000");
+    }
+
+    #[test]
+    fn falls_back_to_raw_on_unparseable_input() {
+        assert_eq!(format_native_amount("not-a-number"), "not-a-number");
+    }
+}
+
+/// This device's chain address — what someone sends assets to.
+///
+/// A passphrase gates *unlocking* the vault; it says nothing about whether an
+/// identity exists behind it. By the time this is called the onboarding flow
+/// has already created one, so `None` only means the rare case where it
+/// somehow has not — not "locked," which `services()` and the passphrase
+/// prompt already guard further up the stack.
+///
+/// # Errors
+///
+/// [`AppError::NotReady`] before bootstrap.
+#[tauri::command]
+pub async fn vault_address(state: State<'_, AppState>) -> Result<Option<String>, AppError> {
+    let services = state.services()?;
+    let bridge = services.bridge.lock().await;
+
+    let address = bridge.get_primary_address();
+    Ok((address != "unknown").then_some(address))
 }
 
 /// Identities this device holds.
@@ -2052,6 +2276,32 @@ pub async fn profile_summary(state: State<'_, AppState>) -> Result<ProfileView, 
         network: network.network.label().to_string(),
         is_testnet: network.network.is_testnet(),
     })
+}
+
+/// Switches the network the app talks to — Fuji testnet or Avalanche mainnet.
+///
+/// **Takes effect on next launch, not immediately.** `BlockchainBridge`
+/// resolves rpc_url, chain_id and every contract address from this same
+/// config once at startup; switching mid-session would leave in-flight
+/// signing and balance calls split across two networks. The frontend's own
+/// copy is what tells the user to restart — this command only persists the
+/// choice.
+///
+/// # Errors
+///
+/// [`AppError::internal`] if `network.json` cannot be written.
+#[tauri::command]
+pub async fn network_set(mainnet: bool) -> Result<(), AppError> {
+    let network = if mainnet {
+        crate::network_config::Network::Mainnet
+    } else {
+        crate::network_config::Network::Fuji
+    };
+    crate::network_config::NetworkConfig::switch(
+        &cabal_store::JsonStore::new(crate::app_paths::in_data_dir("network.json")),
+        network,
+    )
+    .map_err(AppError::internal)
 }
 
 /// Stops or resumes mesh participation.

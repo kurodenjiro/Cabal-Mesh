@@ -84,6 +84,13 @@ impl From<gossipsub::Event> for MeshBehaviourEvent {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrivacyIntent {
+    /// The composing device's own intent id, carried verbatim.
+    ///
+    /// Lets a receiver dedupe: the BLE fallback resends the identical intent
+    /// several times against a link with no delivery confirmation, so without
+    /// this a "received" count would report retries as distinct trades.
+    #[serde(default)]
+    pub id: String,
     pub intent_type: String,
     pub payload: String,
     pub encrypted: bool,
@@ -237,11 +244,27 @@ impl MeshNetwork {
         let bootstrap = crate::bootstrap_config::BootstrapConfig::load(
             &cabal_store::JsonStore::new(crate::app_paths::in_data_dir("bootstrap.json")),
         );
+        // Peer id of each configured relay, so the reservation below can be
+        // requested once the dial actually connects rather than raced against
+        // it — a circuit-listen has nothing to attach to before that and
+        // closes right back up (`ListenerClosed { reason: Ok(()) }`, no error
+        // at all, which is what made this take two attempts to get right).
+        let mut pending_relay_reservations: std::collections::HashMap<
+            libp2p::PeerId,
+            libp2p::Multiaddr,
+        > = std::collections::HashMap::new();
         if bootstrap.has_relays() {
             for address in bootstrap.parsed() {
                 match self.swarm.dial(address.clone()) {
                     Ok(()) => tracing::info!(%address, "dialling bootstrap peer"),
                     Err(error) => tracing::warn!(%address, %error, "bootstrap dial failed"),
+                }
+                if let Some(peer_id) = address.iter().find_map(|p| match p {
+                    libp2p::multiaddr::Protocol::P2p(id) => Some(id),
+                    _ => None,
+                }) {
+                    let circuit = address.clone().with(libp2p::multiaddr::Protocol::P2pCircuit);
+                    pending_relay_reservations.insert(peer_id, circuit);
                 }
             }
         } else {
@@ -254,6 +277,12 @@ impl MeshNetwork {
         // always reflects what the swarm is actually doing.
         let mut listening_on: Vec<String> = Vec::new();
         let mut offline = false;
+        // Edge-triggered against `self.swarm.connected_peers()` on every
+        // connection open/close below, rather than recomputed on each
+        // `Snapshot` poll: a gossipsub `publish` only reaches anyone once at
+        // least one peer is connected, so "have a connected peer" is exactly
+        // the condition this device can usefully act as a gateway under.
+        let mut online = false;
 
         loop {
             tokio::select! {
@@ -265,6 +294,7 @@ impl MeshNetwork {
                                 peer_count: self.swarm.connected_peers().count(),
                                 listening_on: listening_on.clone(),
                                 offline,
+                                online,
                                 relay_bytes: self.relay_bytes.load(std::sync::atomic::Ordering::Relaxed),
                             });
                             continue;
@@ -417,8 +447,54 @@ impl MeshNetwork {
                                     }
                                 }
                             }
+                            MeshBehaviourEvent::Relay(event) => {
+                                // Nothing downstream reacted to these before —
+                                // silently swallowed by the catch-all this arm
+                                // replaces. Logged at info while the
+                                // reservation-based bootstrap path is new
+                                // enough to still need eyes on it; a reservation
+                                // that is silently refused or never requested
+                                // looks identical to one that succeeded, from
+                                // every other log line in this file.
+                                tracing::info!(?event, "relay client event");
+                            }
                             _ => {}
                         },
+                        SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+                            // `remove` rather than `get`: a relay dialled on
+                            // both TCP and QUIC connects twice, and the second
+                            // arrival should not re-request a reservation
+                            // already in flight from the first.
+                            if let Some(circuit) = pending_relay_reservations.remove(&peer_id) {
+                                match self.swarm.listen_on(circuit.clone()) {
+                                    Ok(_) => tracing::info!(%peer_id, %circuit, "requesting relay reservation"),
+                                    Err(error) => tracing::warn!(%peer_id, %circuit, %error, "could not request relay reservation"),
+                                }
+                            }
+                            let now_online = self.swarm.connected_peers().count() > 0;
+                            if now_online != online {
+                                online = now_online;
+                                tracing::info!(online, "IP plane connectivity changed");
+                                let _ = tx.send(MeshEvent::ConnectivityChanged { online });
+                            }
+                        }
+                        SwarmEvent::ConnectionClosed { .. } => {
+                            let now_online = self.swarm.connected_peers().count() > 0;
+                            if now_online != online {
+                                online = now_online;
+                                tracing::info!(online, "IP plane connectivity changed");
+                                let _ = tx.send(MeshEvent::ConnectivityChanged { online });
+                            }
+                        }
+                        SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
+                            tracing::warn!(peer_id = ?peer_id, %error, "outgoing connection failed");
+                        }
+                        SwarmEvent::ListenerError { listener_id, error, .. } => {
+                            tracing::warn!(?listener_id, %error, "listener error — a relay reservation attempt likely failed here");
+                        }
+                        SwarmEvent::ListenerClosed { listener_id, reason, .. } => {
+                            tracing::warn!(?listener_id, ?reason, "listener closed");
+                        }
                         _ => {}
                     }
                 }
@@ -504,4 +580,10 @@ pub enum MeshEvent {
     /// A peer's real AVAX wallet address, learned from its "presence" broadcast
     /// (not from mDNS discovery, which only knows the ephemeral libp2p PeerID).
     PeerIdentity { peer_id: String, address: String },
+    /// The IP plane gained or lost its last connected peer. `online` answers
+    /// "can this device currently reach the internet" — see `set_gateway` on
+    /// `cabal_ble::Engine`, which is what this is meant to drive: a node with
+    /// no IP-plane connectivity has nothing to offer a BLE peer asking for a
+    /// gateway, so it must not advertise the capability bit.
+    ConnectivityChanged { online: bool },
 }
