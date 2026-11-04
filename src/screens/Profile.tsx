@@ -23,11 +23,17 @@ const ROWS: ReadonlyArray<{ label: string; icon: GlyphName }> = [
  * It needs no mesh: this is local history, not network state.
  *
  * The network is shown plainly, with testnet marked, so nobody mistakes a test
- * balance for a real one.
+ * balance for a real one. Switchable via the MAINNET switch below it, but only
+ * takes effect after a restart — see `toggleNetwork`.
  */
 export function Profile({ onLeave }: { onLeave: () => void }) {
   const [profile, setProfile] = useState<ProfileView | null>(null);
   const [busy, setBusy] = useState(false);
+  const [networkBusy, setNetworkBusy] = useState(false);
+  // Switching only writes network.json — BlockchainBridge resolves rpc_url,
+  // chain_id and every contract address from it once at startup, so the
+  // change has nothing to apply to until the app restarts.
+  const [restartNeeded, setRestartNeeded] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -50,6 +56,23 @@ export function Profile({ onLeave }: { onLeave: () => void }) {
       window.clearInterval(timer);
     };
   }, []);
+
+  const toggleNetwork = async () => {
+    if (!profile || networkBusy) return;
+    const goingMainnet = profile.isTestnet;
+    setNetworkBusy(true);
+    // Optimistic, like toggleOffline above — reverted on failure since
+    // nothing was actually persisted.
+    setProfile({ ...profile, isTestnet: !profile.isTestnet });
+    try {
+      await invoke("network_set", { mainnet: goingMainnet });
+      setRestartNeeded(true);
+    } catch {
+      setProfile((previous) => (previous ? { ...previous, isTestnet: !previous.isTestnet } : previous));
+    } finally {
+      setNetworkBusy(false);
+    }
+  };
 
   const toggleOffline = async () => {
     if (!profile || busy) return;
@@ -84,6 +107,47 @@ export function Profile({ onLeave }: { onLeave: () => void }) {
               </span>
             ) : null}
           </div>
+
+          {profile && (
+            <div
+              className="cm-row"
+              style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "var(--space-5)" }}
+            >
+              <span
+                id="mainnet-label"
+                style={{
+                  fontFamily: "var(--type-label-family)",
+                  fontSize: "var(--text-2xs)",
+                  letterSpacing: "var(--tracking-widest)",
+                  color: "var(--text-secondary)",
+                }}
+              >
+                MAINNET — REAL FUNDS
+              </span>
+              <Switch
+                checked={!profile.isTestnet}
+                role="switch"
+                aria-checked={!profile.isTestnet}
+                aria-labelledby="mainnet-label"
+                className="cm-touch"
+                onClick={() => void toggleNetwork()}
+              />
+            </div>
+          )}
+
+          {restartNeeded && (
+            <span
+              style={{
+                fontFamily: "var(--type-label-family)",
+                fontSize: "var(--text-2xs)",
+                letterSpacing: "var(--tracking-widest)",
+                color: "var(--text-muted)",
+                textTransform: "uppercase",
+              }}
+            >
+              Restart CABAL MESH to apply.
+            </span>
+          )}
         </div>
       </Panel>
 

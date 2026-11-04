@@ -150,6 +150,10 @@ struct Inner {
     /// because the mesh does not, and putting the ledger behind bootstrap
     /// would make the queue unreadable in the state it was built for.
     intents: crate::intents::Ledger,
+    /// Every intent seen from other peers. Outside `Services` for the same
+    /// reason as `intents`: a sighting bridged in from BLE happens precisely
+    /// when there is no mesh, so it cannot live behind bootstrap either.
+    received: crate::intents::ReceivedLog,
 }
 
 /// Managed application state.
@@ -177,6 +181,9 @@ impl AppState {
                 subscriptions: Registry::new(),
                 intents: crate::intents::Ledger::open(cabal_store::JsonStore::new(
                     crate::app_paths::in_data_dir("intents.json"),
+                )),
+                received: crate::intents::ReceivedLog::open(cabal_store::JsonStore::new(
+                    crate::app_paths::in_data_dir("received_intents.json"),
                 )),
             }),
         }
@@ -237,6 +244,12 @@ impl AppState {
     #[must_use]
     pub fn intents(&self) -> &crate::intents::Ledger {
         &self.inner.intents
+    }
+
+    /// Every intent seen from other peers, over the mesh or bridged from BLE.
+    #[must_use]
+    pub fn received(&self) -> &crate::intents::ReceivedLog {
+        &self.inner.received
     }
 
     /// Seconds since the process started.

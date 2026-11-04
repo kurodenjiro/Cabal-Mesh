@@ -79,6 +79,9 @@ pub struct MeshSnapshot {
     pub peer_count: usize,
     pub listening_on: Vec<String>,
     pub offline: bool,
+    /// Whether the IP plane currently has at least one connected peer —
+    /// see [`crate::mesh::MeshEvent::ConnectivityChanged`].
+    pub online: bool,
     pub relay_bytes: u64,
 }
 
@@ -163,6 +166,7 @@ mod tests {
 
     fn intent() -> PrivacyIntent {
         PrivacyIntent {
+            id: "test-intent".into(),
             intent_type: "trade".into(),
             payload: "{}".into(),
             encrypted: true,

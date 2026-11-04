@@ -107,6 +107,15 @@ async fn run(
             )),
             ping: ping::Behaviour::new(ping::Config::new().with_interval(Duration::from_secs(30))),
         })?
+        // The swarm's own default is `Duration::ZERO`: a connection with no
+        // protocol actively demanding a stream — which is the normal state of
+        // a client just holding a reservation — reads as idle and gets closed
+        // within a handler's keep-alive gap, regardless of ping succeeding.
+        // Observed on real devices as a bootstrap connection that reports
+        // `online` for ~15s and then drops it, repeating forever. The app side
+        // already sets 60s for the same reason; the relay needs the same floor
+        // or it is the side that hangs up first.
+        .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(60)))
         .build();
 
     for address in [
